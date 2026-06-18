@@ -1,0 +1,5 @@
+rootProject.name = 'stock-batch-service'
+
+include 'web-common-core'
+
+project(':web-common-core').projectDir = file('../web-common-core')

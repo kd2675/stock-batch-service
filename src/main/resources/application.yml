@@ -1,0 +1,80 @@
+spring:
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:stock-batch-service/.env[.properties]
+  application:
+    name: stock-batch-service
+  profiles:
+    active: local
+    group:
+      local: local
+      test: test
+      dev: dev
+      prod: prod
+  devtools:
+    livereload:
+      enabled: false
+    restart:
+      enabled: false
+  cloud:
+    discovery:
+      enabled: true
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 5000
+            readTimeout: 5000
+            loggerLevel: basic
+  data:
+    redis:
+      host: ${STOCK_REDIS_HOST:localhost}
+      port: ${STOCK_REDIS_PORT:6379}
+
+stock:
+  batch:
+    internal:
+      token: ${STOCK_BATCH_INTERNAL_TOKEN:}
+      allow-empty-token: false
+    market-data:
+      enabled: true
+      provider: ${STOCK_BATCH_MARKET_DATA_PROVIDER:mock}
+      price-cache-ttl-seconds: ${STOCK_PRICE_CACHE_TTL_SECONDS:60}
+      kis:
+        base-url: ${KIS_BASE_URL:https://openapi.koreainvestment.com:9443}
+        app-key: ${KIS_APP_KEY:}
+        app-secret: ${KIS_APP_SECRET:}
+        market-div-code: ${KIS_MARKET_DIV_CODE:J}
+      initial-delay-ms: 30000
+      fixed-delay-ms: 60000
+    execution:
+      enabled: true
+      mode: ${STOCK_BATCH_EXECUTION_MODE:virtual-market-price}
+      initial-delay-ms: 35000
+      fixed-delay-ms: 5000
+      scan-limit: 100
+    settlement:
+      enabled: true
+      cron: ${STOCK_BATCH_SETTLEMENT_CRON:0 40 15 * * MON-FRI}
+      zone: ${STOCK_BATCH_SETTLEMENT_ZONE:Asia/Seoul}
+
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8761/eureka/
+    registerWithEureka: true
+    fetchRegistry: true
+  instance:
+    preferIpAddress: true
+    hostname: localhost
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always

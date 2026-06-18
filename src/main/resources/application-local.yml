@@ -1,0 +1,26 @@
+server:
+  port: 20481
+
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${STOCK_DB_URL:jdbc:mysql://kimd0.iptime.org:23306/STOCK_SERVICE?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${STOCK_DB_USERNAME:root}
+    password: ${STOCK_DB_PASSWORD:1234}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 8
+      connection-timeout: 30000
+      max-lifetime: 540000
+      keepalive-time: 300000
+  data:
+    redis:
+      host: ${STOCK_REDIS_HOST:kimd0.iptime.org}
+      port: ${STOCK_REDIS_PORT:26379}
+
+stock:
+  batch:
+    internal:
+      allow-empty-token: true

@@ -1,0 +1,45 @@
+server:
+  port: 30481
+
+spring:
+  config:
+    activate:
+      on-profile: test
+  cloud:
+    discovery:
+      enabled: false
+  datasource:
+    url: jdbc:h2:mem:stock_batch_testdb;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+    hikari:
+      maximum-pool-size: 4
+      connection-timeout: 30000
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/ddl/stock_h2.sql
+  data:
+    redis:
+      repositories:
+        enabled: false
+
+stock:
+  batch:
+    internal:
+      allow-empty-token: true
+    market-data:
+      enabled: false
+      initial-delay-ms: 600000
+      fixed-delay-ms: 600000
+    execution:
+      enabled: false
+    settlement:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+    registerWithEureka: false
+    fetchRegistry: false

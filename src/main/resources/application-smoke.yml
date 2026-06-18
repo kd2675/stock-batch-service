@@ -1,0 +1,7 @@
+spring:
+  config:
+    activate:
+      on-profile: smoke
+  sql:
+    init:
+      data-locations: classpath:db/ddl/stock_h2_smoke_data.sql
