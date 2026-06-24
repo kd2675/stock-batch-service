@@ -24,15 +24,33 @@ public class MarketPriceRefreshTargetReader {
                         select symbol, cast(null as decimal(19, 2)) as reference_price
                         from stock_instrument
                         where enabled = true
+                          and not exists (
+                              select 1
+                              from stock_order_book_instrument obi
+                              where obi.symbol = stock_instrument.symbol
+                                and obi.enabled = false
+                          )
                         union all
                         select symbol, limit_price as reference_price
                         from stock_order
                         where status in ('PENDING', 'PARTIALLY_FILLED')
                           and limit_price is not null
+                          and not exists (
+                              select 1
+                              from stock_order_book_instrument obi
+                              where obi.symbol = stock_order.symbol
+                                and obi.enabled = false
+                          )
                         union all
                         select symbol, average_price as reference_price
                         from stock_holding
                         where quantity > 0
+                          and not exists (
+                              select 1
+                              from stock_order_book_instrument obi
+                              where obi.symbol = stock_holding.symbol
+                                and obi.enabled = false
+                          )
                     ) watched_raw
                     group by symbol
                 ) watched

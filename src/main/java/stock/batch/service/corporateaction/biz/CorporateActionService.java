@@ -10,6 +10,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
+import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
+import stock.batch.service.batch.corporateaction.model.DelistingOrderRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
 import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
@@ -28,13 +30,18 @@ public class CorporateActionService {
     private static final String CASH_DIVIDEND = "CASH_DIVIDEND";
     private static final String BONUS_ISSUE = "BONUS_ISSUE";
     private static final String STOCK_DIVIDEND = "STOCK_DIVIDEND";
+    private static final String DELISTING = "DELISTING";
     private static final String ANNOUNCED = "ANNOUNCED";
     private static final String EX_RIGHTS_APPLIED = "EX_RIGHTS_APPLIED";
     private static final String PAID = "PAID";
     private static final String LISTED = "LISTED";
+    private static final String DELISTED = "DELISTED";
+    private static final String BUY = "BUY";
+    private static final String SELL = "SELL";
     private static final String RIGHTS_PROVIDER = "corporate-action-rights";
     private static final String DIVIDEND_PROVIDER = "corporate-action-dividend";
     private static final String FREE_SHARE_PROVIDER = "corporate-action-free-share";
+    private static final String DELISTING_PROVIDER = "corporate-action-delisting-zero";
 
     private final CorporateActionReader corporateActionReader;
     private final CorporateActionPriceWriter corporateActionPriceWriter;
@@ -51,8 +58,10 @@ public class CorporateActionService {
         int stockDividendListingCount = listDueFreeShareDistributions(today, STOCK_DIVIDEND);
         int additionalIssueCount = listDueAdditionalIssues(today);
         int stockSplitCount = applyDueStockSplits(today);
+        int delistingCount = applyDueDelistings(today);
         return exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
-                + bonusIssueListingCount + stockDividendListingCount + additionalIssueCount + stockSplitCount;
+                + bonusIssueListingCount + stockDividendListingCount + additionalIssueCount + stockSplitCount
+                + delistingCount;
     }
 
     private int applyDueExRights(LocalDate today) {
@@ -205,6 +214,45 @@ public class CorporateActionService {
             processed += updatedAction;
         }
         return processed;
+    }
+
+    private int applyDueDelistings(LocalDate today) {
+        List<DelistingActionRow> rows = corporateActionReader.findDueDelistings(today, DELISTING, ANNOUNCED);
+
+        int processed = 0;
+        for (DelistingActionRow row : rows) {
+            LocalDateTime now = LocalDateTime.now();
+            int updatedAction = corporateActionWriter.markActionDelisted(row.id(), DELISTED, ANNOUNCED, now);
+            if (updatedAction == 0) {
+                continue;
+            }
+            cancelOpenOrderBookOrders(row.symbol(), now);
+            int updatedInstrument = corporateActionWriter.delistInstrument(row.symbol(), now);
+            if (updatedInstrument == 0) {
+                throw new IllegalStateException("Order book instrument not found for delisting: " + row.symbol());
+            }
+            corporateActionWriter.haltOrderBookMarket(row.symbol(), now);
+            corporateActionWriter.disableAutoMarket(row.symbol(), now);
+            corporateActionWriter.disableListingAutoAccount(row.symbol(), now);
+            corporateActionWriter.disableParticipantSymbolConfigs(row.symbol(), now);
+            corporateActionPriceWriter.upsertPrice(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
+            corporateActionPriceWriter.insertPriceTick(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
+            processed += updatedAction;
+        }
+        return processed;
+    }
+
+    private void cancelOpenOrderBookOrders(String symbol, LocalDateTime now) {
+        List<DelistingOrderRow> orders = corporateActionReader.findOpenOrderBookOrdersForUpdate(symbol);
+        for (DelistingOrderRow order : orders) {
+            if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
+                corporateActionWriter.creditCash(order.accountId(), order.reservedCash(), now);
+            }
+            if (SELL.equals(order.side()) && order.remainingQuantity() > 0) {
+                corporateActionWriter.releaseReservedSellQuantity(order.accountId(), order.symbol(), order.remainingQuantity(), now);
+            }
+            corporateActionWriter.cancelOrder(order.id(), now);
+        }
     }
 
     private void createDividendEntitlements(ExRightsActionRow row, LocalDateTime now) {

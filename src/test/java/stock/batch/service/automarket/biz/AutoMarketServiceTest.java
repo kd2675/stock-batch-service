@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 
 import java.math.BigDecimal;
 
@@ -32,6 +33,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_instrument");
         jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_order_book_market_config");
+        jdbcTemplate.update("delete from stock_listing_auto_account_config");
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_market_config");
         jdbcTemplate.update("delete from stock_auto_participant");
@@ -103,6 +105,38 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void runAutoMarketStep_listingSellOnlyAccountCreatesSmallSellOrderWithoutParticipants() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
+        jdbcTemplate.update("delete from stock_auto_participant");
+        insertListingAccount("SELL_ONLY", "0.00", 100L, 0L);
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'SELL'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select quantity from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930'"))
+                .isEqualTo(7L);
+        assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'stock-listing-005930' and h.symbol = '005930'"))
+                .isEqualTo(7L);
+    }
+
+    @Test
+    void runAutoMarketStep_listingBuyOnlyAccountCreatesBuyOrderOnlyWithinCash() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
+        jdbcTemplate.update("delete from stock_auto_participant");
+        insertListingAccount("BUY_ONLY", "150000.00", 0L, 0L);
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'BUY'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'SELL'"))
+                .isZero();
+        assertThat(queryLong("select quantity from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930'"))
+                .isEqualTo(2L);
+    }
+
+    @Test
     void runAutoMarketStep_participantIntensityTen_createsBuyPressureForThatParticipant() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-002'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
@@ -122,7 +156,7 @@ class AutoMarketServiceTest {
     @Test
     void effectiveIntensity_latestReportScoreIsBlendedWithParticipantStrategy() {
         int effectiveIntensity = autoMarketService.effectiveIntensity(
-                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5),
+                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NOISE_TRADER),
                 new stock.batch.service.batch.automarket.model.AutoMarketConfig(
                         "005930",
                         5,
@@ -131,11 +165,152 @@ class AutoMarketServiceTest {
                         300,
                         BigDecimal.ONE,
                         new BigDecimal("70000.00"),
+                        new BigDecimal("70000.00"),
                         10
                 )
         );
 
         assertThat(effectiveIntensity).isEqualTo(7);
+    }
+
+    @Test
+    void effectiveIntensity_newsReactiveProfile_respondsMoreStronglyToReportScore() {
+        int effectiveIntensity = autoMarketService.effectiveIntensity(
+                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NEWS_REACTIVE),
+                new stock.batch.service.batch.automarket.model.AutoMarketConfig(
+                        "005930",
+                        5,
+                        3,
+                        15,
+                        300,
+                        BigDecimal.ONE,
+                        new BigDecimal("70000.00"),
+                        new BigDecimal("70000.00"),
+                        10
+                )
+        );
+
+        assertThat(effectiveIntensity).isEqualTo(8);
+    }
+
+    @Test
+    void buyBias_momentumFollowerAndContrarian_moveOppositeOnRisingPrice() {
+        double momentumFollowerBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.MOMENTUM_FOLLOWER,
+                5,
+                1.0,
+                0,
+                0,
+                5
+        );
+        double contrarianBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.CONTRARIAN,
+                5,
+                1.0,
+                0,
+                0,
+                5
+        );
+
+        assertThat(momentumFollowerBias).isGreaterThan(contrarianBias + 0.25);
+    }
+
+    @Test
+    void buyBias_lossAverseProfile_prefersHoldingOrBuyingWhenPositionIsLosing() {
+        double losingPositionBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.LOSS_AVERSE,
+                5,
+                0,
+                0,
+                -0.10,
+                5
+        );
+        double winningPositionBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.LOSS_AVERSE,
+                5,
+                0,
+                0,
+                0.10,
+                5
+        );
+
+        assertThat(losingPositionBias).isGreaterThan(winningPositionBias + 0.12);
+    }
+
+    @Test
+    void buyBias_herdFollowerFollowsBuyCrowdAndMarketMakerLeansAgainstIt() {
+        double herdFollowerBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.HERD_FOLLOWER,
+                5,
+                0,
+                1.0,
+                0,
+                5
+        );
+        double marketMakerBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.MARKET_MAKER,
+                5,
+                0,
+                1.0,
+                0,
+                5
+        );
+
+        assertThat(herdFollowerBias).isGreaterThan(marketMakerBias + 0.25);
+    }
+
+    @Test
+    void buyBias_panicSellerAndDipBuyer_reactOppositeOnSharpDrop() {
+        double panicSellerBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.PANIC_SELLER,
+                5,
+                -1.0,
+                0,
+                0,
+                5
+        );
+        double dipBuyerBias = autoMarketService.buyBiasForProfile(
+                AutoParticipantProfileType.DIP_BUYER,
+                5,
+                -1.0,
+                0,
+                0,
+                5
+        );
+
+        assertThat(dipBuyerBias).isGreaterThan(panicSellerBias + 0.40);
+    }
+
+    @Test
+    void orderCount_overconfidentProfile_increasesAfterWinningPosition() {
+        int flatOrderCount = autoMarketService.orderCountForProfile(
+                AutoParticipantProfileType.OVERCONFIDENT,
+                8,
+                0
+        );
+        int winningOrderCount = autoMarketService.orderCountForProfile(
+                AutoParticipantProfileType.OVERCONFIDENT,
+                8,
+                0.30
+        );
+
+        assertThat(winningOrderCount).isGreaterThan(flatOrderCount);
+    }
+
+    @Test
+    void orderCount_observerTradesLessOftenThanScalper() {
+        int observerOrderCount = autoMarketService.orderCountForProfile(
+                AutoParticipantProfileType.OBSERVER,
+                5,
+                0
+        );
+        int scalperOrderCount = autoMarketService.orderCountForProfile(
+                AutoParticipantProfileType.SCALPER,
+                5,
+                0
+        );
+
+        assertThat(observerOrderCount).isLessThan(scalperOrderCount);
     }
 
     @Test
@@ -211,6 +386,38 @@ class AutoMarketServiceTest {
                 """,
                 new BigDecimal(amount),
                 userKey
+        );
+    }
+
+    private void insertListingAccount(String positionSide, String cashBalance, long holdingQuantity, long reservedQuantity) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account(user_key, cash_balance, created_at, updated_at)
+                values ('stock-listing-005930', ?, current_timestamp, current_timestamp)
+                """,
+                new BigDecimal(cashBalance)
+        );
+        if (holdingQuantity > 0) {
+            jdbcTemplate.update(
+                    """
+                    insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
+                    select id, '005930', ?, ?, 70000.00, current_timestamp
+                    from stock_account
+                    where user_key = 'stock-listing-005930'
+                    """,
+                    holdingQuantity,
+                    reservedQuantity
+            );
+        }
+        jdbcTemplate.update(
+                """
+                insert into stock_listing_auto_account_config(
+                    symbol, user_key, display_name, enabled, position_side,
+                    max_order_quantity, order_ttl_seconds, price_offset_ticks, created_at, updated_at
+                )
+                values ('005930', 'stock-listing-005930', '삼성전자 상장주관사', true, ?, 7, 30, 0, current_timestamp, current_timestamp)
+                """,
+                positionSide
         );
     }
 

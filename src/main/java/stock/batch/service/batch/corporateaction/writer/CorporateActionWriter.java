@@ -119,6 +119,124 @@ public class CorporateActionWriter {
         );
     }
 
+    public int markActionDelisted(long actionId, String delistedStatus, String sourceStatus, LocalDateTime appliedAt) {
+        return jdbcTemplate.update(
+                """
+                update stock_corporate_action
+                   set status = ?,
+                       applied_at = ?
+                 where id = ?
+                   and status = ?
+                """,
+                delistedStatus,
+                appliedAt,
+                actionId,
+                sourceStatus
+        );
+    }
+
+    public void releaseReservedSellQuantity(long accountId, String symbol, long quantity, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set reserved_quantity = case
+                           when reserved_quantity >= ? then reserved_quantity - ?
+                           else 0
+                       end,
+                       updated_at = ?
+                 where account_id = ?
+                   and symbol = ?
+                """,
+                quantity,
+                quantity,
+                updatedAt,
+                accountId,
+                symbol
+        );
+    }
+
+    public void cancelOrder(long orderId, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_order
+                   set status = 'CANCELLED',
+                       reserved_cash = 0,
+                       updated_at = ?
+                 where id = ?
+                   and status in ('PENDING', 'PARTIALLY_FILLED')
+                """,
+                updatedAt,
+                orderId
+        );
+    }
+
+    public int delistInstrument(String symbol, LocalDateTime updatedAt) {
+        return jdbcTemplate.update(
+                """
+                update stock_order_book_instrument
+                   set enabled = false,
+                       tradable_shares = 0,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                updatedAt,
+                symbol
+        );
+    }
+
+    public void haltOrderBookMarket(String symbol, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_order_book_market_config
+                   set enabled = false,
+                       market_status = 'HALTED',
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                updatedAt,
+                symbol
+        );
+    }
+
+    public void disableAutoMarket(String symbol, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_auto_market_config
+                   set enabled = false,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                updatedAt,
+                symbol
+        );
+    }
+
+    public void disableListingAutoAccount(String symbol, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_listing_auto_account_config
+                   set enabled = false,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                updatedAt,
+                symbol
+        );
+    }
+
+    public void disableParticipantSymbolConfigs(String symbol, LocalDateTime updatedAt) {
+        jdbcTemplate.update(
+                """
+                update stock_auto_participant_symbol_config
+                   set enabled = false,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                updatedAt,
+                symbol
+        );
+    }
+
     public int addIssuedAndTradableShares(String symbol, long shareQuantity, LocalDateTime updatedAt) {
         return jdbcTemplate.update(
                 """

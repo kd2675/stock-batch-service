@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   ex_rights_date DATE NULL,
   payment_date DATE NULL,
   listing_date DATE NULL,
+  delisting_date DATE NULL,
+  delisting_treatment VARCHAR(30) NULL,
   applied_at DATETIME NULL,
   paid_at DATETIME NULL,
   listed_at DATETIME NULL,
@@ -104,9 +106,10 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_stock_corporate_action_symbol_created (symbol, created_at),
-  KEY idx_stock_corporate_action_status_dates (status, ex_rights_date, payment_date, listing_date),
-  CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'ADDITIONAL_ISSUE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 ELSE 0 END = 1),
-  CONSTRAINT chk_stock_corporate_action_status_valid CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'EX_RIGHTS_APPLIED' THEN 1 WHEN 'PAID' THEN 1 WHEN 'LISTED' THEN 1 ELSE 0 END = 1),
+  KEY idx_stock_corporate_action_status_dates (status, ex_rights_date, payment_date, listing_date, delisting_date),
+  CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'ADDITIONAL_ISSUE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 WHEN 'DELISTING' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_corporate_action_status_valid CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'EX_RIGHTS_APPLIED' THEN 1 WHEN 'PAID' THEN 1 WHEN 'LISTED' THEN 1 WHEN 'DELISTED' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_corporate_action_delisting_treatment CHECK (delisting_treatment IS NULL OR delisting_treatment = 'ZERO_VALUE'),
   CONSTRAINT chk_stock_corporate_action_share_quantity CHECK (share_quantity IS NULL OR share_quantity > 0),
   CONSTRAINT chk_stock_corporate_action_issue_price CHECK (issue_price IS NULL OR issue_price > 0),
   CONSTRAINT chk_stock_corporate_action_dividend_amount CHECK (dividend_amount IS NULL OR dividend_amount > 0),
@@ -162,6 +165,13 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
       AND listing_date IS NOT NULL
     )
   ),
+  CONSTRAINT chk_stock_corporate_action_delisting_required CHECK (
+    action_type <> 'DELISTING'
+    OR (
+      delisting_date IS NOT NULL
+      AND delisting_treatment = 'ZERO_VALUE'
+    )
+  ),
   CONSTRAINT chk_stock_corporate_action_field_scope CHECK (
     (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR share_quantity IS NULL)
     AND (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE') OR issue_price IS NULL)
@@ -171,6 +181,8 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR ex_rights_date IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND') OR payment_date IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE', 'STOCK_SPLIT', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR listing_date IS NULL)
+    AND (action_type = 'DELISTING' OR delisting_date IS NULL)
+    AND (action_type = 'DELISTING' OR delisting_treatment IS NULL)
     AND (action_type = 'STOCK_SPLIT' OR (split_from IS NULL AND split_to IS NULL))
   ),
   CONSTRAINT chk_stock_corporate_action_initial_listed CHECK (
@@ -213,8 +225,8 @@ CREATE TABLE IF NOT EXISTS stock_price (
   price_time DATETIME NOT NULL,
   provider VARCHAR(40) NOT NULL,
   PRIMARY KEY (symbol),
-  CONSTRAINT chk_stock_price_current_positive CHECK (current_price > 0),
-  CONSTRAINT chk_stock_price_previous_close_positive CHECK (previous_close > 0)
+  CONSTRAINT chk_stock_price_current_non_negative CHECK (current_price >= 0),
+  CONSTRAINT chk_stock_price_previous_close_non_negative CHECK (previous_close >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS stock_price_tick (
@@ -226,7 +238,7 @@ CREATE TABLE IF NOT EXISTS stock_price_tick (
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_stock_price_tick_symbol_time (symbol, price_time),
-  CONSTRAINT chk_stock_price_tick_price_positive CHECK (price > 0)
+  CONSTRAINT chk_stock_price_tick_price_non_negative CHECK (price >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS stock_order (
@@ -312,10 +324,32 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
   user_key VARCHAR(64) NOT NULL,
   display_name VARCHAR(80) NOT NULL,
   enabled BIT NOT NULL,
+  profile_type VARCHAR(40) NOT NULL DEFAULT 'NOISE_TRADER',
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   withdrawn_at DATETIME NULL,
-  PRIMARY KEY (user_key)
+  PRIMARY KEY (user_key),
+  CONSTRAINT chk_stock_auto_participant_profile_type CHECK (
+    CASE `profile_type`
+      WHEN 'NEWS_REACTIVE' THEN 1
+      WHEN 'MOMENTUM_FOLLOWER' THEN 1
+      WHEN 'CONTRARIAN' THEN 1
+      WHEN 'LOSS_AVERSE' THEN 1
+      WHEN 'OVERCONFIDENT' THEN 1
+      WHEN 'HERD_FOLLOWER' THEN 1
+      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'NOISE_TRADER' THEN 1
+      WHEN 'VALUE_ANCHOR' THEN 1
+      WHEN 'SCALPER' THEN 1
+      WHEN 'PANIC_SELLER' THEN 1
+      WHEN 'DIP_BUYER' THEN 1
+      WHEN 'LIQUIDITY_AVOIDANT' THEN 1
+      WHEN 'WHALE' THEN 1
+      WHEN 'SMALL_DIVERSIFIER' THEN 1
+      WHEN 'OBSERVER' THEN 1
+      ELSE 0
+    END = 1
+  )
 );
 
 CREATE TABLE IF NOT EXISTS stock_virtual_market_config (
@@ -352,6 +386,26 @@ CREATE TABLE IF NOT EXISTS stock_auto_market_config (
   CONSTRAINT chk_stock_auto_market_order_ttl_seconds CHECK (order_ttl_seconds > 0)
 );
 
+CREATE TABLE IF NOT EXISTS stock_listing_auto_account_config (
+  symbol VARCHAR(20) NOT NULL,
+  user_key VARCHAR(64) NOT NULL,
+  display_name VARCHAR(80) NOT NULL,
+  enabled BIT NOT NULL,
+  position_side VARCHAR(20) NOT NULL,
+  max_order_quantity INT NOT NULL,
+  order_ttl_seconds INT NOT NULL,
+  price_offset_ticks INT NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (symbol),
+  UNIQUE KEY uk_stock_listing_auto_account_user_key (user_key),
+  KEY idx_stock_listing_auto_account_enabled (enabled, symbol),
+  CONSTRAINT chk_stock_listing_auto_account_position CHECK (CASE `position_side` WHEN 'SELL_ONLY' THEN 1 WHEN 'BUY_ONLY' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_listing_auto_account_max_order_quantity CHECK (max_order_quantity > 0),
+  CONSTRAINT chk_stock_listing_auto_account_order_ttl_seconds CHECK (order_ttl_seconds > 0),
+  CONSTRAINT chk_stock_listing_auto_account_price_offset CHECK (price_offset_ticks >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
   user_key VARCHAR(64) NOT NULL,
   symbol VARCHAR(20) NOT NULL,
@@ -379,7 +433,7 @@ CREATE TABLE IF NOT EXISTS stock_instrument_report_event (
   KEY idx_stock_report_symbol_time (symbol, created_at, id),
   CONSTRAINT chk_stock_report_event_type CHECK (CASE `event_type` WHEN 'PUBLISH' THEN 1 WHEN 'UPDATE' THEN 1 WHEN 'DELETE' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_report_score CHECK (score IS NULL OR score between 1 and 10),
-  CONSTRAINT chk_stock_report_content_scope CHECK ((event_type = 'DELETE' AND title IS NULL AND summary IS NULL AND score IS NULL AND rise_reason IS NULL AND fall_reason IS NULL) OR (event_type IN ('PUBLISH', 'UPDATE') AND title IS NOT NULL AND summary IS NOT NULL AND score IS NOT NULL AND rise_reason IS NOT NULL AND fall_reason IS NOT NULL))
+  CONSTRAINT chk_stock_report_content_scope CHECK ((event_type = 'DELETE' AND title IS NULL AND summary IS NULL AND score IS NULL AND rise_reason IS NULL AND fall_reason IS NULL) OR (event_type IN ('PUBLISH', 'UPDATE') AND title IS NOT NULL AND summary IS NOT NULL AND score IS NOT NULL))
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshot (

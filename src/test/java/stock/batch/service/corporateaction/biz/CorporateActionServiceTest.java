@@ -11,6 +11,7 @@ import org.springframework.test.context.ActiveProfiles;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -37,6 +38,10 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_corporate_action where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_price_tick where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_price where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_listing_auto_account_config where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_auto_market_config where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_order_book_market_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order_book_instrument where symbol like 'ZQ%'");
     }
 
@@ -396,6 +401,56 @@ class CorporateActionServiceTest {
                 .isEqualTo(100000L);
     }
 
+    @Test
+    void applyDueCorporateActions_zeroValueDelisting_cancelsOrdersAndDisablesTrading() {
+        insertOrderBookInstrument("ZQ015", 100000L, 100000L);
+        insertPrice("ZQ015", "70000.00");
+        insertOrderBookMarketConfig("ZQ015");
+        insertAutoMarketConfig("ZQ015");
+        insertListingAutoConfig("ZQ015");
+        insertParticipantSymbolConfig("ZQ015");
+        insertAccount("delisting-buyer");
+        insertAccount("delisting-seller");
+        insertHolding("delisting-seller", "ZQ015", 10L, 4L, "70000.00");
+        insertReservedBuyOrder("delisting-buy-order", "delisting-buyer", "ZQ015", "140000.00");
+        insertReservedSellOrder("delisting-sell-order", "delisting-seller", "ZQ015", 4L);
+        insertDelisting("ZQ015", LocalDate.now().minusDays(1));
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ015'"))
+                .isEqualTo("DELISTED");
+        assertThat(queryLong("select case when enabled then 1 else 0 end from stock_order_book_instrument where symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryLong("select tradable_shares from stock_order_book_instrument where symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryString("select market_status from stock_order_book_market_config where symbol = 'ZQ015'"))
+                .isEqualTo("HALTED");
+        assertThat(queryLong("select case when enabled then 1 else 0 end from stock_auto_market_config where symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryLong("select case when enabled then 1 else 0 end from stock_listing_auto_account_config where symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryLong("select case when enabled then 1 else 0 end from stock_auto_participant_symbol_config where symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ015'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(queryDecimal("select previous_close from stock_price where symbol = 'ZQ015'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(queryString("select provider from stock_price where symbol = 'ZQ015'"))
+                .isEqualTo("corporate-action-delisting-zero");
+        assertThat(queryLong("select count(*) from stock_price_tick where symbol = 'ZQ015' and price = 0 and provider = 'corporate-action-delisting-zero'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from stock_order where symbol = 'ZQ015' and status = 'CANCELLED' and reserved_cash = 0"))
+                .isEqualTo(2L);
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'delisting-buyer'"))
+                .isEqualByComparingTo(new BigDecimal("10000000.00"));
+        assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'delisting-seller' and h.symbol = 'ZQ015'"))
+                .isZero();
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'delisting-seller' and h.symbol = 'ZQ015'"))
+                .isEqualTo(10L);
+    }
+
     private void insertOrderBookInstrument(String symbol, long issuedShares, long tradableShares) {
         jdbcTemplate.update(
                 """
@@ -471,6 +526,88 @@ class CorporateActionServiceTest {
                 accountId,
                 symbol,
                 LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertReservedBuyOrder(String clientOrderId, String userKey, String symbol, String reservedCash) {
+        Long accountId = accountIdFor(userKey);
+        BigDecimal reservedCashAmount = new BigDecimal(reservedCash);
+        jdbcTemplate.update(
+                "update stock_account set cash_balance = cash_balance - ?, updated_at = ? where id = ?",
+                reservedCashAmount,
+                LocalDateTime.now(),
+                accountId
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
+                  quantity, filled_quantity, reserved_cash, created_at, updated_at
+                ) values (?, ?, ?, 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING', 70000.00, 2, 0, ?, ?, ?)
+                """,
+                clientOrderId,
+                accountId,
+                symbol,
+                reservedCashAmount,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertReservedSellOrder(String clientOrderId, String userKey, String symbol, long quantity) {
+        Long accountId = accountIdFor(userKey);
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
+                  quantity, filled_quantity, reserved_cash, created_at, updated_at
+                ) values (?, ?, ?, 'ORDER_BOOK', 'SELL', 'LIMIT', 'PENDING', 70000.00, ?, 0, 0, ?, ?)
+                """,
+                clientOrderId,
+                accountId,
+                symbol,
+                quantity,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertOrderBookMarketConfig(String symbol) {
+        jdbcTemplate.update(
+                "insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at) values (?, true, 'OPEN', ?)",
+                symbol,
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertAutoMarketConfig(String symbol) {
+        jdbcTemplate.update(
+                "insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at) values (?, true, 5, 3, 15, ?)",
+                symbol,
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertListingAutoConfig(String symbol) {
+        jdbcTemplate.update(
+                """
+                insert into stock_listing_auto_account_config(
+                    symbol, user_key, display_name, enabled, position_side, max_order_quantity,
+                    order_ttl_seconds, price_offset_ticks, created_at, updated_at
+                ) values (?, ?, '상장주관사', true, 'SELL_ONLY', 10, 30, 3, ?, ?)
+                """,
+                symbol,
+                "stock-listing-" + symbol.toLowerCase(Locale.ROOT),
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertParticipantSymbolConfig(String symbol) {
+        jdbcTemplate.update(
+                "insert into stock_auto_participant_symbol_config(user_key, symbol, enabled, intensity, updated_at) values ('stock-auto-test', ?, true, 5, ?)",
+                symbol,
                 LocalDateTime.now()
         );
     }
@@ -601,6 +738,19 @@ class CorporateActionServiceTest {
                 new BigDecimal(theoreticalExRightsPrice),
                 exRightsDate,
                 paymentDate,
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertDelisting(String symbol, LocalDate delistingDate) {
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action(
+                  symbol, action_type, status, delisting_date, delisting_treatment, description, created_at
+                ) values (?, 'DELISTING', 'ANNOUNCED', ?, 'ZERO_VALUE', 'test delisting', ?)
+                """,
+                symbol,
+                delistingDate,
                 LocalDateTime.now()
         );
     }

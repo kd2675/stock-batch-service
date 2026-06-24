@@ -2,15 +2,15 @@ package stock.batch.service.batch.automarket.model;
 
 import java.math.BigDecimal;
 
-public record AutoMarketConfig(
+public record ListingAutoAccountConfig(
         String symbol,
-        int intensity,
+        long accountId,
+        String userKey,
+        String positionSide,
         int maxOrderQuantity,
         int orderTtlSeconds,
-        long tradableShares,
+        int priceOffsetTicks,
         BigDecimal tickSize,
-        BigDecimal currentPrice,
-        BigDecimal previousClose,
-        Integer reportScore
+        BigDecimal currentPrice
 ) {
 }

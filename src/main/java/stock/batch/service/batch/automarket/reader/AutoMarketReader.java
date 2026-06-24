@@ -14,7 +14,9 @@ import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 
 @Component
 @RequiredArgsConstructor
@@ -28,7 +30,8 @@ public class AutoMarketReader {
         return jdbcTemplate.query(
                 """
                 select user_key,
-                       display_name
+                       display_name,
+                       profile_type
                 from stock_auto_participant
                 where enabled = true
                   and withdrawn_at is null
@@ -36,7 +39,8 @@ public class AutoMarketReader {
                 """,
                 (rs, rowNum) -> new AutoParticipant(
                         rs.getString("user_key"),
-                        rs.getString("display_name")
+                        rs.getString("display_name"),
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type"))
                 )
         );
     }
@@ -60,6 +64,7 @@ public class AutoMarketReader {
                        i.tradable_shares,
                        i.tick_size,
                        p.current_price,
+                       p.previous_close,
                        r.score as report_score
                 from stock_auto_market_config c
                 join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
@@ -85,7 +90,8 @@ public class AutoMarketReader {
         return jdbcTemplate.query(
                 """
                 select a.id as account_id,
-                       coalesce(ps.intensity, ?) as intensity
+                       coalesce(ps.intensity, ?) as intensity,
+                       p.profile_type
                 from stock_auto_participant p
                 join stock_account a on a.user_key = p.user_key
                 left join stock_auto_participant_symbol_config ps
@@ -98,9 +104,46 @@ public class AutoMarketReader {
                 """,
                 (rs, rowNum) -> new AutoParticipantStrategy(
                         rs.getLong("account_id"),
-                        clamp(rs.getInt("intensity"), 1, 10)
+                        clamp(rs.getInt("intensity"), 1, 10),
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type"))
                 ),
                 config.intensity(),
+                config.symbol()
+        );
+    }
+
+    public List<ListingAutoAccountConfig> findEnabledListingAutoAccountConfigs(AutoMarketConfig config) {
+        return jdbcTemplate.query(
+                """
+                select c.symbol,
+                       a.id as account_id,
+                       c.user_key,
+                       c.position_side,
+                       c.max_order_quantity,
+                       c.order_ttl_seconds,
+                       c.price_offset_ticks,
+                       i.tick_size,
+                       p.current_price
+                from stock_listing_auto_account_config c
+                join stock_account a on a.user_key = c.user_key and a.status = 'ACTIVE'
+                join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
+                join stock_order_book_market_config m on m.symbol = c.symbol and m.enabled = true and m.market_status = 'OPEN'
+                join stock_price p on p.symbol = c.symbol
+                where c.enabled = true
+                  and c.symbol = ?
+                order by c.symbol asc
+                """,
+                (rs, rowNum) -> new ListingAutoAccountConfig(
+                        normalizeSymbol(rs.getString("symbol")),
+                        rs.getLong("account_id"),
+                        rs.getString("user_key"),
+                        rs.getString("position_side"),
+                        Math.max(1, rs.getInt("max_order_quantity")),
+                        Math.max(1, rs.getInt("order_ttl_seconds")),
+                        Math.max(0, rs.getInt("price_offset_ticks")),
+                        positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
+                        rs.getBigDecimal("current_price")
+                ),
                 config.symbol()
         );
     }
@@ -130,6 +173,35 @@ public class AutoMarketReader {
                         rs.getBigDecimal("reserved_cash")
                 ),
                 config.symbol(),
+                threshold
+        );
+    }
+
+    public List<AutoOrder> findExpiredListingAutoOrders(ListingAutoAccountConfig config, LocalDateTime threshold) {
+        return jdbcTemplate.query(
+                """
+                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
+                from stock_order o
+                where o.symbol = ?
+                  and o.account_id = ?
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.created_at < ?
+                order by o.created_at asc
+                limit 200
+                for update
+                """,
+                (rs, rowNum) -> new AutoOrder(
+                        rs.getLong("id"),
+                        rs.getLong("account_id"),
+                        rs.getString("symbol"),
+                        rs.getString("side"),
+                        rs.getLong("quantity"),
+                        rs.getLong("filled_quantity"),
+                        rs.getBigDecimal("reserved_cash")
+                ),
+                config.symbol(),
+                config.accountId(),
                 threshold
         );
     }
@@ -184,6 +256,60 @@ public class AutoMarketReader {
         return cash == null ? BigDecimal.ZERO : cash;
     }
 
+    public BigDecimal getAveragePrice(long accountId, String symbol) {
+        BigDecimal averagePrice = jdbcTemplate.queryForObject(
+                """
+                select coalesce(max(average_price), 0)
+                from stock_holding
+                where account_id = ?
+                  and symbol = ?
+                  and quantity > 0
+                """,
+                BigDecimal.class,
+                accountId,
+                symbol
+        );
+        return averagePrice == null ? BigDecimal.ZERO : averagePrice;
+    }
+
+    public long getOpenOrderQuantity(String symbol, String side) {
+        Long quantity = jdbcTemplate.queryForObject(
+                """
+                select coalesce(sum(quantity - filled_quantity), 0)
+                from stock_order
+                where symbol = ?
+                  and side = ?
+                  and market_type = 'ORDER_BOOK'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and quantity > filled_quantity
+                """,
+                Long.class,
+                symbol,
+                side
+        );
+        return quantity == null ? 0L : Math.max(0L, quantity);
+    }
+
+    public long getOpenOrderQuantity(long accountId, String symbol, String side) {
+        Long quantity = jdbcTemplate.queryForObject(
+                """
+                select coalesce(sum(quantity - filled_quantity), 0)
+                from stock_order
+                where account_id = ?
+                  and symbol = ?
+                  and side = ?
+                  and market_type = 'ORDER_BOOK'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and quantity > filled_quantity
+                """,
+                Long.class,
+                accountId,
+                symbol,
+                side
+        );
+        return quantity == null ? 0L : Math.max(0L, quantity);
+    }
+
     private AutoMarketConfig mapConfig(ResultSet rs) throws SQLException {
         return new AutoMarketConfig(
                 normalizeSymbol(rs.getString("symbol")),
@@ -193,6 +319,7 @@ public class AutoMarketReader {
                 Math.max(0L, rs.getLong("tradable_shares")),
                 positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
                 rs.getBigDecimal("current_price"),
+                positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
                 nullableInt(rs, "report_score")
         );
     }

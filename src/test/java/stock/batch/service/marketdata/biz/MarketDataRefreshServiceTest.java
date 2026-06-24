@@ -65,6 +65,7 @@ class MarketDataRefreshServiceTest {
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_account");
         jdbcTemplate.update("delete from stock_price");
+        jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_instrument");
     }
 
@@ -145,6 +146,24 @@ class MarketDataRefreshServiceTest {
                 .isEqualTo(1L);
         verify(valueOperations).set("stock:price:654321", "83100.00", Duration.ofSeconds(60));
         verifyPublishedPriceEvent("stock.price.654321", "654321", "83100.00", priceTime, "test-provider");
+    }
+
+    @Test
+    void refreshWatchedPrices_delistedOrderBookHolding_keepsZeroValuePrice() {
+        insertOrderBookInstrument("ZQ015", false);
+        insertPrice("ZQ015", "0.00");
+        insertHolding("delisted-holder", "ZQ015", "70000.00");
+
+        int refreshedCount = marketDataRefreshService.refreshWatchedPrices();
+
+        assertThat(refreshedCount).isZero();
+        assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ015'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        org.mockito.Mockito.verifyNoInteractions(valueOperations);
+        org.mockito.Mockito.verify(redisTemplate, org.mockito.Mockito.never()).convertAndSend(
+                org.mockito.Mockito.anyString(),
+                org.mockito.Mockito.anyString()
+        );
     }
 
     @Test
@@ -297,6 +316,22 @@ class MarketDataRefreshServiceTest {
                 symbol,
                 "테스트종목",
                 enabled,
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertOrderBookInstrument(String symbol, boolean enabled) {
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(
+                    symbol, name, market, initial_price, issued_shares, tradable_shares,
+                    enabled, created_at, updated_at
+                ) values (?, ?, 'ORDERBOOK', 70000.00, 100000, 0, ?, ?, ?)
+                """,
+                symbol,
+                "상장폐지종목",
+                enabled,
+                LocalDateTime.now(),
                 LocalDateTime.now()
         );
     }

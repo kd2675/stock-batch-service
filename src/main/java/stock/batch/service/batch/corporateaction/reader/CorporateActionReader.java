@@ -8,6 +8,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
+import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
+import stock.batch.service.batch.corporateaction.model.DelistingOrderRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
 import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
@@ -129,6 +131,55 @@ public class CorporateActionReader {
                 actionType,
                 status,
                 today
+        );
+    }
+
+    public List<DelistingActionRow> findDueDelistings(LocalDate today, String actionType, String status) {
+        return jdbcTemplate.query(
+                """
+                select id, symbol
+                  from stock_corporate_action
+                 where action_type = ?
+                   and status = ?
+                   and delisting_date <= ?
+                   and delisting_treatment = 'ZERO_VALUE'
+                 order by delisting_date asc, id asc
+                """,
+                (rs, rowNum) -> new DelistingActionRow(
+                        rs.getLong("id"),
+                        rs.getString("symbol")
+                ),
+                actionType,
+                status,
+                today
+        );
+    }
+
+    public List<DelistingOrderRow> findOpenOrderBookOrdersForUpdate(String symbol) {
+        return jdbcTemplate.query(
+                """
+                select id,
+                       account_id,
+                       symbol,
+                       side,
+                       quantity - filled_quantity as remaining_quantity,
+                       reserved_cash
+                  from stock_order
+                 where symbol = ?
+                   and market_type = 'ORDER_BOOK'
+                   and status in ('PENDING', 'PARTIALLY_FILLED')
+                 order by created_at asc, id asc
+                 for update
+                """,
+                (rs, rowNum) -> new DelistingOrderRow(
+                        rs.getLong("id"),
+                        rs.getLong("account_id"),
+                        rs.getString("symbol"),
+                        rs.getString("side"),
+                        rs.getLong("remaining_quantity"),
+                        rs.getBigDecimal("reserved_cash")
+                ),
+                symbol
         );
     }
 
