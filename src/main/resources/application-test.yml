@@ -29,11 +29,29 @@ stock:
   batch:
     internal:
       allow-empty-token: true
+    repository:
+      schema:
+        initialize: true
+        location: classpath:db/schema/batch-metadata-h2.sql
+      datasource:
+        url: jdbc:h2:mem:stock_batch_metadata_testdb;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false
+        driver-class-name: org.h2.Driver
+        username: sa
+        password:
+        hikari:
+          maximum-pool-size: 2
+          connection-timeout: 30000
     market-data:
       enabled: false
       initial-delay-ms: 600000
       fixed-delay-ms: 600000
-    execution:
+    virtual-price-execution:
+      enabled: false
+    order-book-execution:
+      enabled: false
+    corporate-actions:
+      enabled: false
+    auto-market:
       enabled: false
     settlement:
       enabled: false

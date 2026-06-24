@@ -9,6 +9,11 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
+import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
+import stock.batch.service.batch.marketdata.processor.MarketPriceRefreshProcessor;
+import stock.batch.service.batch.marketdata.reader.MarketPriceQuoteReader;
+import stock.batch.service.batch.marketdata.reader.MarketPriceRefreshTargetReader;
+import stock.batch.service.batch.marketdata.writer.MarketPriceRefreshWriter;
 import stock.batch.service.marketdata.provider.MarketPriceProvider;
 import stock.batch.service.marketdata.provider.MarketPriceQuote;
 
@@ -30,7 +35,9 @@ class MarketDataRefreshServiceTest {
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> valueOperations;
     private MarketPriceProvider marketPriceProvider;
+    private MarketPriceRefreshWriter marketPriceRefreshWriter;
     private MarketDataRefreshService marketDataRefreshService;
+    private StockPriceRedisPublisher stockPriceRedisPublisher;
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -42,12 +49,21 @@ class MarketDataRefreshServiceTest {
         marketPriceProvider = mock(MarketPriceProvider.class);
         objectMapper = new ObjectMapper();
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        marketDataRefreshService = new MarketDataRefreshService(jdbcTemplate, redisTemplate, marketPriceProvider, objectMapper);
-        ReflectionTestUtils.setField(marketDataRefreshService, "priceCacheTtlSeconds", 60L);
+        stockPriceRedisPublisher = new StockPriceRedisPublisher(redisTemplate, objectMapper);
+        marketPriceRefreshWriter = new MarketPriceRefreshWriter(jdbcTemplate);
+        marketDataRefreshService = new MarketDataRefreshService(
+                new MarketPriceRefreshTargetReader(jdbcTemplate),
+                new MarketPriceQuoteReader(marketPriceProvider),
+                new MarketPriceRefreshProcessor(),
+                marketPriceRefreshWriter,
+                stockPriceRedisPublisher
+        );
+        ReflectionTestUtils.setField(stockPriceRedisPublisher, "priceCacheTtlSeconds", 60L);
 
         jdbcTemplate.update("delete from stock_price_tick");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_order");
+        jdbcTemplate.update("delete from stock_account");
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_instrument");
     }
@@ -222,7 +238,7 @@ class MarketDataRefreshServiceTest {
         LocalDateTime priceTime = LocalDateTime.of(2026, 6, 17, 9, 29);
         insertInstrument("005930", true);
         insertPrice("005930", "70000.00");
-        ReflectionTestUtils.setField(marketDataRefreshService, "priceCacheTtlSeconds", 0L);
+        ReflectionTestUtils.setField(stockPriceRedisPublisher, "priceCacheTtlSeconds", 0L);
         when(marketPriceProvider.fetch("005930", new BigDecimal("70000.00")))
                 .thenReturn(new MarketPriceQuote("005930", new BigDecimal("70450.00"), "test-provider", priceTime));
 
@@ -296,14 +312,16 @@ class MarketDataRefreshServiceTest {
     }
 
     private void insertPendingOrder(String clientOrderId, String symbol) {
+        Long accountId = accountIdFor("watch-user");
         jdbcTemplate.update(
                 """
                 insert into stock_order(
-                  client_order_id, user_key, symbol, side, order_type, status, limit_price,
+                  client_order_id, account_id, symbol, side, order_type, status, limit_price,
                   quantity, filled_quantity, reserved_cash, created_at, updated_at
-                ) values (?, 'watch-user', ?, 'BUY', 'LIMIT', 'PENDING', 70000.00, 1, 0, 70000.00, ?, ?)
+                ) values (?, ?, ?, 'BUY', 'LIMIT', 'PENDING', 70000.00, 1, 0, 70000.00, ?, ?)
                 """,
                 clientOrderId,
+                accountId,
                 symbol,
                 LocalDateTime.now(),
                 LocalDateTime.now()
@@ -311,12 +329,13 @@ class MarketDataRefreshServiceTest {
     }
 
     private void insertHolding(String userKey, String symbol, String averagePrice) {
+        Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
                 """
-                insert into stock_holding(user_key, symbol, quantity, reserved_quantity, average_price, updated_at)
+                insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
                 values (?, ?, 1, 0, ?, ?)
                 """,
-                userKey,
+                accountId,
                 symbol,
                 new BigDecimal(averagePrice),
                 LocalDateTime.now()
@@ -333,5 +352,36 @@ class MarketDataRefreshServiceTest {
 
     private Long queryLong(String sql) {
         return jdbcTemplate.queryForObject(sql, Long.class);
+    }
+
+    private Long accountIdFor(String userKey) {
+        Long existing = jdbcTemplate.queryForObject(
+                "select count(*) from stock_account where user_key = ?",
+                Long.class,
+                userKey
+        );
+        if (existing == null || existing == 0) {
+            jdbcTemplate.update(
+                    "insert into stock_account(user_key, cash_balance, created_at, updated_at) values (?, 10000000.00, ?, ?)",
+                    userKey,
+                    LocalDateTime.now(),
+                    LocalDateTime.now()
+            );
+            jdbcTemplate.update(
+                    """
+                    insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                    select id, 'DEPOSIT', 10000000.00, 'OPENING_GRANT', 'SYSTEM', ?
+                    from stock_account
+                    where user_key = ?
+                    """,
+                    LocalDateTime.now(),
+                    userKey
+            );
+        }
+        return jdbcTemplate.queryForObject(
+                "select id from stock_account where user_key = ?",
+                Long.class,
+                userKey
+        );
     }
 }

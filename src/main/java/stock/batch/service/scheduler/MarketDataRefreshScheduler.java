@@ -4,21 +4,21 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import stock.batch.service.common.biz.StockBatchJobService;
+import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 
 @Component
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "stock.batch.market-data", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MarketDataRefreshScheduler {
 
-    private final StockBatchJobService stockBatchJobService;
+    private final StockBatchJobLauncher stockBatchJobLauncher;
 
     @Scheduled(
             initialDelayString = "${stock.batch.market-data.initial-delay-ms:30000}",
             fixedDelayString = "${stock.batch.market-data.fixed-delay-ms:60000}"
     )
     public void refreshMarketData() {
-        stockBatchJobService.refreshMarketData();
+        stockBatchJobLauncher.refreshMarketData();
     }
 
 }

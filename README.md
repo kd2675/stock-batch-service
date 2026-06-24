@@ -14,20 +14,27 @@
 
 - `GET /internal/stock-batch/v1/system/status`
 - `POST /internal/stock-batch/v1/jobs/market-data/refresh`
-- `POST /internal/stock-batch/v1/jobs/order-execution/run`
+- `POST /internal/stock-batch/v1/jobs/virtual-price-execution/run`
+- `POST /internal/stock-batch/v1/jobs/order-book-execution/run`
+- `POST /internal/stock-batch/v1/jobs/auto-market/run`
 - `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run`
+- `POST /internal/stock-batch/v1/jobs/market-close/rollover`
+- `POST /internal/stock-batch/v1/jobs/corporate-actions/run`
 
 ## 현재 잡
 
 - `MarketDataRefreshScheduler`: 관심/보유/미체결 종목 가격 갱신, Redis 최신가/채널 발행
+- `AutoMarketScheduler`: DB에 등록된 자동 참여자가 실제 `stock_order` 원장에 지정가 주문을 넣고 내부 주문장 체결을 실행
 - `MarketPriceProvider`: 실제 시세 provider 교체 지점. 현재 기본값은 `stock.batch.market-data.provider=mock`
 - `KisMarketPriceProvider`: `stock.batch.market-data.provider=kis`일 때 KIS OpenAPI 국내주식 현재가 시세를 호출
-- `OrderExecutionScheduler`: 미체결 주문 스캔, 현재가 기반 가상 체결
-- `InternalOrderBookExecutionService`: `stock.batch.execution.mode=internal-order-book`일 때 사용자 매수/매도 주문을 가격 우선, 시간 우선으로 매칭
+- `VirtualPriceExecutionScheduler`: `market_type=VIRTUAL_PRICE` 미체결 주문을 현재가 기준으로 체결
+- `OrderBookExecutionScheduler`: `market_type=ORDER_BOOK` 사용자 매수/매도 주문을 가격 우선, 시간 우선으로 매칭
+- `InternalOrderBookExecutionService`: 주문장 체결 엔진
   - 지정가끼리는 교차된 호가를 체결합니다.
   - 시장가 매수는 최우선 지정가 매도 호가와, 시장가 매도는 최우선 지정가 매수 호가와 체결합니다.
   - 양쪽이 모두 시장가이면 가격 기준이 없으므로 체결하지 않고 다음 스캔을 기다립니다.
 - `PortfolioSettlementScheduler`: 일별 자산/수익률 스냅샷 정산
+- `MarketCloseRolloverService`: 장마감 종가를 다음 장 가격제한폭 기준가로 넘기기 위해 `stock_price.current_price`를 `previous_close`로 복사
 
 ## 실행과 검증
 
@@ -36,6 +43,7 @@
 ```bash
 ./gradlew :stock-batch-service:bootRun
 ./gradlew :stock-batch-service:bootRun --args='--spring.profiles.active=local'
+./gradlew :stock-batch-service:bootRun --args='--spring.profiles.active=local-direct'
 ./gradlew :stock-batch-service:compileJava
 ./gradlew :stock-batch-service:test
 scripts/stock-smoke.sh
@@ -45,14 +53,24 @@ ZEROQ_GATEWAY_SHARED_SECRET=<secret> STOCK_BATCH_INTERNAL_TOKEN=<token> STOCK_SM
 scripts/stock-gateway-h2-smoke.sh
 ```
 
+일반 `scripts/stock-smoke.sh`는 기본 종목을 가정하지 않습니다. `STOCK_SMOKE_EXPECT_SEEDED_MARKET=true` 또는 `STOCK_SMOKE_PLACE_ORDER=true`로 종목 기반 검증을 켤 때는 `STOCK_SMOKE_SYMBOL`을 명시해야 합니다. H2 smoke는 별도 smoke data를 넣기 때문에 wrapper에서 symbol을 명시합니다.
+
 ## 포트
 
 | Profile | Port |
 |---|---:|
 | `local` | `20481` |
+| `local-direct` | `20481` |
 | `dev` | `20481` |
 | `prod` | `10481` |
 | `test` | `30481` |
+
+## Local Direct / Gateway 전환
+
+- 기본 활성 profile은 `local-direct`입니다.
+- `local-direct`는 `local` DB/Redis 설정을 재사용하면서 Eureka 등록/탐색을 끕니다.
+- batch는 stock-back을 HTTP로 호출하지 않고 같은 DB/Redis 원장을 기준으로 처리하므로 direct 모드에서 별도 service URL 전환은 없습니다.
+- Gateway/Eureka 경유로 되돌리려면 `local` profile을 사용합니다.
 
 ## 내부 의존성
 
@@ -62,19 +80,27 @@ scripts/stock-gateway-h2-smoke.sh
 
 - DB schema: `STOCK_SERVICE`
 - DDL: `src/main/resources/db/ddl/stock_all.sql`
-- 루트 `.env` 또는 `stock-batch-service/.env`는 optional import로 읽습니다.
-- 독립 저장소로 실행할 때는 `.env.example`을 기준으로 로컬 환경 변수를 맞춥니다.
+- Batch metadata schema: `STOCK_BATCH_METADATA`
+- Batch metadata DDL:
+  - MySQL: `src/main/resources/db/schema/batch-metadata-mysql.sql`
+  - H2/test: `src/main/resources/db/schema/batch-metadata-h2.sql`
 - `local`/`dev` 기본값은 다른 백엔드 서비스와 맞춰 원격 개발 MySQL `kimd0.iptime.org:23306`과 Redis `kimd0.iptime.org:26379`입니다.
-- 별도 로컬 MySQL/Redis를 쓰려면 `.env`에서 `STOCK_DB_URL`, `STOCK_REDIS_HOST`, `STOCK_REDIS_PORT`를 직접 오버라이드합니다.
+- `local`/`dev` 접속값은 기존 백엔드 프로젝트처럼 `application-local.yml`, `application-dev.yml`에 직접 둡니다.
 - `prod`는 DB와 Redis 값을 환경 변수로 명시 주입합니다.
-- batch는 JPA entity/repository 서버가 아니라 `JdbcTemplate` 기반 워커이므로, stock-back의 `database/pub/PubDataConfig` 구조를 복제하지 않고 Spring Boot 단일 `spring.datasource` 자동 구성을 사용합니다.
+- batch는 business DB용 `spring.datasource`와 Spring Batch metadata용 `stock.batch.repository.datasource`를 분리합니다. business 원장은 `STOCK_SERVICE`, `JobRepository` metadata는 `STOCK_BATCH_METADATA`를 사용합니다.
 - Hikari 풀은 local/dev 기본 8개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
-- DDL은 기본 관심 종목과 최초 가격을 idempotent seed로 넣어 stock-back보다 batch가 먼저 떠도 가격 수집 대상이 비지 않도록 합니다.
+- Batch metadata Hikari 풀은 local/dev 기본 4개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
+- DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
 - Redis key: `stock:price:{symbol}`. 값은 현재 단일 가격 문자열이며 `stock-back-service` 시장 가격 API가 우선 조회합니다. TTL 기본값은 60초이며 `STOCK_PRICE_CACHE_TTL_SECONDS`로 조정합니다.
 - Redis channel: `stock.price.{symbol}`
 - Redis에는 최신가 문자열과 pub/sub 메시지만 다루므로 `StringRedisTemplate` 기반 설정을 사용합니다. JSON Redis serializer는 현재 Spring Data Redis 4.x에서 removal deprecated 경고가 있어 사용하지 않습니다.
 - 가격 수집 이력은 `stock_price_tick`에 append-only로 저장하며, `stock-back-service`의 `/api/stock/v1/markets/prices/{symbol}/ticks` API가 최근 이력을 조회합니다.
 - 정산 평가는 DB 현재가를 우선 사용하되, 내부 주문장 체결처럼 아직 `stock_price`가 없는 보유 종목은 보유 평단가로 fallback합니다.
+- 자동장은 `stock_auto_participant`, `stock_auto_market_config`를 읽어 실제 `stock_order`에 자동 참여자 주문을 넣습니다.
+- 자동장 주문 방향 강도는 참여자별 1~10 성향을 기본으로 하되, 주문장 종목의 최신 평가 보고서 점수가 있으면 함께 반영합니다. 최신 보고서 이벤트가 `DELETE`이거나 보고서가 없으면 보고서 신호 없이 참여자 성향만 사용합니다.
+- 실제 주식시장 기능 확장 범위와 우선순위는 `../stock-back-service/STOCK_MARKET_FEATURE_ROADMAP.md`를 기준으로 봅니다.
+- 기능별 현재 구현, 코드 위치, 다음 개발 순서는 `../stock-back-service/docs/market-simulation/00-overview.md`부터 확인합니다.
+- batch 코드 파일별 책임은 `../stock-back-service/docs/market-simulation/13-code-ownership-map.md`, 기능별 변경 순서는 `../stock-back-service/docs/market-simulation/14-feature-change-playbooks.md`를 기준으로 봅니다.
 
 ## 외부 시세 Provider
 
@@ -95,7 +121,13 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.market-data.kis.app-key`
 - `stock.batch.market-data.kis.app-secret`
 - `stock.batch.market-data.kis.market-div-code`
-- `stock.batch.execution.mode`: `virtual-market-price` 또는 `internal-order-book`
+- `stock.batch.virtual-price-execution.enabled`: 현재가 기준 체결 job 활성화 여부
+- `stock.batch.order-book-execution.enabled`: 주문장 체결 job 활성화 여부
+- `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
+- `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
+- 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리하고, 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
+- `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
+- `stock.batch.execution.sell-tax-rate`: 매도 거래세율. 기본값 `0.0000`
 - `stock.batch.settlement.cron`: 장 마감 정산 cron. 기본값 `0 40 15 * * MON-FRI`
 - `stock.batch.settlement.zone`: 장 마감 정산 기준 timezone. 기본값 `Asia/Seoul`
 
@@ -109,7 +141,7 @@ KIS provider는 OAuth 접근토큰을 발급받은 뒤 `/uapi/domestic-stock/v1/
 
 ```bash
 STOCK_BATCH_INTERNAL_TOKEN=change-me ./gradlew :stock-batch-service:bootRun
-curl -X POST http://localhost:20481/internal/stock-batch/v1/jobs/order-execution/run \
+curl -X POST http://localhost:20481/internal/stock-batch/v1/jobs/order-book-execution/run \
   -H 'X-Internal-Token: change-me'
 ```
 
@@ -120,6 +152,11 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 
 ## 패키지 경계
 
+- `batch/common/support`: job 실행 잠금, 실패 응답 변환, 공통 job 실행 계약
+- `batch/<domain>/job`: 스케줄러/API가 실행할 도메인별 job 흐름
+- `batch/<domain>/reader`: DB에서 처리 대상을 읽는 read-only 컴포넌트
+- `batch/<domain>/processor`: provider 결과 검증, 순수 계산, command 변환
+- `batch/<domain>/writer`: DB/Redis snapshot/outbox 등 한 종류의 반영 책임
 - `marketdata`: 외부 시세 Provider client, 최신가 캐시 writer
 - `execution`: 미체결 주문 조회와 가상 체결 판단
 - `settlement`: 일별 평가, 수익률, 랭킹 정산
@@ -127,13 +164,25 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 
 ## 설계 기준
 
-- 초기 단계에서는 Spring Batch 메타 테이블을 만들지 않고 `@Scheduled` 기반 워커로 시작합니다.
+- Spring Batch 6.x JDBC `JobRepository`를 별도 metadata schema로 사용합니다.
+- 스케줄러는 실행 시점만 결정하고, 수동 API와 스케줄러는 모두 `StockBatchJobLauncher`를 통해 같은 job 컴포넌트를 실행합니다.
+- job 실행 잠금, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환, `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록은 `StockBatchJobRunner`에서 공통 처리합니다.
+- `marketdata`, `settlement`, `marketclose`는 batch 문서 기준에 맞춰 reader/processor/writer 또는 writer 단위로 책임을 분리합니다.
 - 시세는 모든 종목을 무조건 갱신하지 않고 관심 종목, 보유 종목, 미체결 주문이 있는 종목을 우선 갱신합니다.
 - 시세 provider는 `MarketPriceProvider`로 분리하고, 실제 외부 API 연동은 provider 구현 교체로 처리합니다.
 - 외부 provider 장애는 해당 종목 가격 갱신만 건너뛰고 나머지 종목 처리를 계속합니다.
 - 유실되면 안 되는 주문/체결 결과는 Pub/Sub이 아니라 DB 원장에 기록합니다.
 - 매도 체결은 `stock_holding.quantity`와 `reserved_quantity`를 함께 차감해 미체결 매도 예약과 실제 보유 원장을 맞춥니다.
-- 기본 체결 모드는 `virtual-market-price`입니다. 내부 사용자 간 수요/공급 매칭은 `internal-order-book` 모드로 전환해 같은 `stock_order` 원장 위에서 실행합니다.
-- `internal-order-book` 모드의 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
+- 현재가 기준 체결과 주문장 체결은 더 이상 mode 스위치로 고르지 않고 별도 job으로 동시에 존재합니다.
+- `VIRTUAL_PRICE` 주문은 현재가 기준 체결 job만 처리하고, `ORDER_BOOK` 주문은 주문장 체결 job만 처리합니다.
+- 유상증자 기업 이벤트는 corporate action job이 처리합니다. 권리락일에는 이론권리락가격을 `stock_price`, `stock_price_tick`에 반영하고, 납입일에는 상태를 `PAID`로 바꾸며, 신주상장일에는 `stock_order_book_instrument.issued_shares`, `tradable_shares`를 증가시킵니다.
+- 추가발행 기업 이벤트는 신주상장일에 `issued_shares`, `tradable_shares`만 증가시키고 가격은 직접 조정하지 않습니다.
+- 액면분할 기업 이벤트는 효력일에 `issued_shares`, `tradable_shares`, 보유수량, 예약수량을 배율만큼 늘리고 현재가, 전일종가, 평균단가를 같은 배율로 나눕니다. 효력일에 미체결 주문이 있으면 가격/수량 기준이 꼬이지 않도록 적용을 대기합니다.
+- 현금배당 기업 이벤트는 배당락일에 배당락 가격을 `stock_price`, `stock_price_tick`에 반영하고 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다.
+- 무상증자와 주식배당 기업 이벤트는 배당락일에 이론권리락가격을 반영하고 현재 보유수량 기준으로 신주 entitlement를 만듭니다. 신주상장일에는 `issued_shares`, `tradable_shares`, 보유수량을 늘리고 평균단가를 낮춘 뒤 entitlement를 `PAID`로 전이합니다.
+- 체결 수수료와 매도 거래세는 체결 단위로 계산해 `stock_execution`에 `fee_amount`, `tax_amount`, `net_amount`, `realized_profit`으로 기록합니다. 매수 평균단가는 수수료 포함 원가 기준입니다.
+- 자동장 job은 자동 참여자 주문 생성 후 같은 내부 주문장 체결 엔진을 실행하므로, 브라우저 localStorage나 프론트 전용 가짜 주문 상태에 의존하지 않습니다.
+- 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.
+- 주문장 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
 - 내부 주문장 모드는 자전거래 방지를 위해 같은 사용자끼리의 매수/매도 주문은 매칭하지 않습니다.
-- 장 마감 정산 스케줄은 기본적으로 평일 15:40 `Asia/Seoul` 기준으로 실행하며, 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.
+- 장 마감 정산 스케줄은 기본적으로 평일 15:40 `Asia/Seoul` 기준으로 실행하며, 기준가 롤오버 후 포트폴리오 snapshot을 만듭니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.

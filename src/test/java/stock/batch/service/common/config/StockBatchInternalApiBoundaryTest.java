@@ -41,7 +41,7 @@ class StockBatchInternalApiBoundaryTest {
 
     @Test
     void jobRun_withoutConfiguredInternalTokenAndEmptyTokenNotAllowed_returnsUnauthorized() throws Exception {
-        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-execution/run"))
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-book-execution/run"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(content().string(containsString("Internal batch token is not configured")));
     }

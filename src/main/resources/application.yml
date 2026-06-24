@@ -1,14 +1,12 @@
 spring:
-  config:
-    import:
-      - optional:file:.env[.properties]
-      - optional:file:stock-batch-service/.env[.properties]
   application:
     name: stock-batch-service
   profiles:
-    active: local
+    active: local-direct
     group:
       local: local
+      local-direct:
+        - local
       test: test
       dev: dev
       prod: prod
@@ -29,16 +27,33 @@ spring:
             loggerLevel: basic
   data:
     redis:
-      host: ${STOCK_REDIS_HOST:localhost}
-      port: ${STOCK_REDIS_PORT:6379}
+      host: localhost
+      port: 6379
+  batch:
+    job:
+      enabled: false
 
 stock:
   batch:
     internal:
       token: ${STOCK_BATCH_INTERNAL_TOKEN:}
       allow-empty-token: false
+    repository:
+      schema:
+        initialize: ${STOCK_BATCH_SCHEMA_INITIALIZE:false}
+        location: classpath:db/schema/batch-metadata-mysql.sql
+      datasource:
+        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true
+        username: root
+        password: 1234
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        hikari:
+          maximum-pool-size: 4
+          connection-timeout: 30000
+          max-lifetime: 540000
+          keepalive-time: 300000
     market-data:
-      enabled: true
+      enabled: ${STOCK_BATCH_MARKET_DATA_ENABLED:true}
       provider: ${STOCK_BATCH_MARKET_DATA_PROVIDER:mock}
       price-cache-ttl-seconds: ${STOCK_PRICE_CACHE_TTL_SECONDS:60}
       kis:
@@ -49,11 +64,23 @@ stock:
       initial-delay-ms: 30000
       fixed-delay-ms: 60000
     execution:
-      enabled: true
-      mode: ${STOCK_BATCH_EXECUTION_MODE:virtual-market-price}
-      initial-delay-ms: 35000
-      fixed-delay-ms: 5000
       scan-limit: 100
+    virtual-price-execution:
+      enabled: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_INITIAL_DELAY_MS:35000}
+      fixed-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_FIXED_DELAY_MS:5000}
+    order-book-execution:
+      enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_INITIAL_DELAY_MS:36000}
+      fixed-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:1000}
+    corporate-actions:
+      enabled: ${STOCK_BATCH_CORPORATE_ACTIONS_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_CORPORATE_ACTIONS_INITIAL_DELAY_MS:20000}
+      fixed-delay-ms: ${STOCK_BATCH_CORPORATE_ACTIONS_FIXED_DELAY_MS:60000}
+    auto-market:
+      enabled: ${STOCK_BATCH_AUTO_MARKET_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_INITIAL_DELAY_MS:5000}
+      fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:1000}
     settlement:
       enabled: true
       cron: ${STOCK_BATCH_SETTLEMENT_CRON:0 40 15 * * MON-FRI}

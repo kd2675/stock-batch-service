@@ -32,6 +32,20 @@ class InternalOrderBookExecutionServiceTest {
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account");
+        jdbcTemplate.update(
+                """
+                merge into stock_order_book_instrument(symbol, name, market, initial_price, issued_shares, tradable_shares, enabled, created_at, updated_at)
+                key(symbol)
+                values ('005930', '삼성전자 주문장', 'ORDERBOOK', 70000.00, 100000, 100000, true, current_timestamp, current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                merge into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                key(symbol)
+                values ('005930', true, 'OPEN', current_timestamp)
+                """
+        );
     }
 
     @Test
@@ -60,14 +74,14 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo("FILLED");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'seller'"))
                 .isEqualByComparingTo(new BigDecimal("238000.00"));
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'seller' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'seller' and symbol = '005930'"))
                 .isEqualTo(3L);
-        assertThat(queryLong("select reserved_quantity from stock_holding where user_key = 'seller' and symbol = '005930'"))
+        assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'seller' and symbol = '005930'"))
                 .isZero();
 
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'buyer' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'buyer' and symbol = '005930'"))
                 .isEqualTo(2L);
-        assertThat(queryDecimal("select average_price from stock_holding where user_key = 'buyer' and symbol = '005930'"))
+        assertThat(queryDecimal("select average_price from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'buyer' and symbol = '005930'"))
                 .isEqualByComparingTo(new BigDecimal("69000.00"));
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
@@ -97,9 +111,9 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'multi-buyer'"))
                 .isEqualByComparingTo(new BigDecimal("9795000.00"));
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'multi-buyer' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'multi-buyer' and symbol = '005930'"))
                 .isEqualTo(3L);
-        assertThat(queryDecimal("select average_price from stock_holding where user_key = 'multi-buyer' and symbol = '005930'"))
+        assertThat(queryDecimal("select average_price from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'multi-buyer' and symbol = '005930'"))
                 .isEqualByComparingTo(new BigDecimal("68333.33"));
 
         assertThat(queryString("select status from stock_order where client_order_id = 'first-sell'"))
@@ -138,7 +152,7 @@ class InternalOrderBookExecutionServiceTest {
                     .isEqualTo("FILLED");
             assertThat(queryString("select status from stock_order where client_order_id = 'concurrent-sell'"))
                     .isEqualTo("FILLED");
-            assertThat(queryLong("select quantity from stock_holding where user_key = 'concurrent-buyer' and symbol = '005930'"))
+            assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'concurrent-buyer' and symbol = '005930'"))
                     .isEqualTo(1L);
         } finally {
             executor.shutdownNow();
@@ -184,7 +198,7 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryString("select status from stock_order where client_order_id = 'limit-sell-for-market-buy'"))
                 .isEqualTo("FILLED");
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'market-buyer' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'market-buyer' and symbol = '005930'"))
                 .isEqualTo(1L);
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
@@ -209,7 +223,7 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("72000.00"));
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'market-partial-buyer'"))
                 .isEqualByComparingTo(new BigDecimal("9858000.00"));
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'market-partial-buyer' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'market-partial-buyer' and symbol = '005930'"))
                 .isEqualTo(1L);
         assertThat(queryString("select status from stock_order where client_order_id = 'limit-sell-for-partial-market-buy'"))
                 .isEqualTo("FILLED");
@@ -238,7 +252,7 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("71000.00"));
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'market-seller-for-limit-buy'"))
                 .isEqualByComparingTo(new BigDecimal("171000.00"));
-        assertThat(queryLong("select quantity from stock_holding where user_key = 'limit-buyer-for-market-sell' and symbol = '005930'"))
+        assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'limit-buyer-for-market-sell' and symbol = '005930'"))
                 .isEqualTo(1L);
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
@@ -265,7 +279,7 @@ class InternalOrderBookExecutionServiceTest {
 
     @Test
     void executeEligibleOrders_buyWithInsufficientReservedCash_rejectsWithoutMatching() {
-        insertAccount("broken-buyer", "9999900.00", "10000000.00");
+        insertAccount("broken-buyer", "0.00", "10000000.00");
         insertAccount("seller-for-broken-buy", "100000.00", "10000000.00");
         insertHolding("seller-for-broken-buy", "005930", 1, 1, "50000.00");
         insertOrder("broken-buy", "broken-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "100.00", 1);
@@ -279,7 +293,7 @@ class InternalOrderBookExecutionServiceTest {
         assertThat(queryDecimal("select reserved_cash from stock_order where client_order_id = 'broken-buy'"))
                 .isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'broken-buyer'"))
-                .isEqualByComparingTo(new BigDecimal("10000000.00"));
+                .isEqualByComparingTo(new BigDecimal("100.00"));
         assertThat(queryString("select status from stock_order where client_order_id = 'seller-for-broken-buy-order'"))
                 .isEqualTo("PENDING");
         assertThat(queryLong("select count(*) from stock_execution"))
@@ -301,7 +315,7 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo("REJECTED");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'broken-seller'"))
                 .isEqualByComparingTo(new BigDecimal("100000.00"));
-        assertThat(queryLong("select reserved_quantity from stock_holding where user_key = 'broken-seller' and symbol = '005930'"))
+        assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'broken-seller' and symbol = '005930'"))
                 .isZero();
         assertThat(queryString("select status from stock_order where client_order_id = 'buyer-for-broken-sell-order'"))
                 .isEqualTo("PENDING");
@@ -335,21 +349,36 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo(2L);
     }
 
-    private void insertAccount(String userKey, String cashBalance, String initialCash) {
+    private void insertAccount(String userKey, String cashBalance, String openingGrantAmount) {
         jdbcTemplate.update(
-                "insert into stock_account(user_key, cash_balance, initial_cash, created_at, updated_at) values (?, ?, ?, ?, ?)",
+                "insert into stock_account(user_key, cash_balance, created_at, updated_at) values (?, ?, ?, ?)",
                 userKey,
                 new BigDecimal(cashBalance),
-                new BigDecimal(initialCash),
                 LocalDateTime.now(),
                 LocalDateTime.now()
+        );
+        insertCashFlow(userKey, openingGrantAmount);
+    }
+
+    private void insertCashFlow(String userKey, String amount) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                select id, 'DEPOSIT', ?, 'OPENING_GRANT', 'SYSTEM', ?
+                from stock_account
+                where user_key = ?
+                """,
+                new BigDecimal(amount),
+                LocalDateTime.now(),
+                userKey
         );
     }
 
     private void insertHolding(String userKey, String symbol, long quantity, long reservedQuantity, String averagePrice) {
+        Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
-                "insert into stock_holding(user_key, symbol, quantity, reserved_quantity, average_price, updated_at) values (?, ?, ?, ?, ?, ?)",
-                userKey,
+                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at) values (?, ?, ?, ?, ?, ?)",
+                accountId,
                 symbol,
                 quantity,
                 reservedQuantity,
@@ -373,15 +402,16 @@ class InternalOrderBookExecutionServiceTest {
             int secondsOffset
     ) {
         LocalDateTime createdAt = LocalDateTime.now().plusSeconds(secondsOffset);
+        Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
                 """
                 insert into stock_order(
-                  client_order_id, user_key, symbol, side, order_type, status, limit_price,
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
                   quantity, filled_quantity, average_fill_price, reserved_cash, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, 'ORDER_BOOK', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 clientOrderId,
-                userKey,
+                accountId,
                 symbol,
                 side,
                 orderType,
@@ -406,6 +436,14 @@ class InternalOrderBookExecutionServiceTest {
 
     private Long queryLong(String sql) {
         return jdbcTemplate.queryForObject(sql, Long.class);
+    }
+
+    private Long accountIdFor(String userKey) {
+        return jdbcTemplate.queryForObject(
+                "select id from stock_account where user_key = ?",
+                Long.class,
+                userKey
+        );
     }
 
     private int executeAfterStart(CountDownLatch start) throws Exception {

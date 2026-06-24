@@ -33,14 +33,14 @@ class StockBatchInternalApiTokenBoundaryTest {
 
     @Test
     void jobRun_configuredInternalTokenAndMissingHeader_returnsUnauthorized() throws Exception {
-        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-execution/run"))
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-book-execution/run"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(content().string(containsString("Unauthorized internal batch request")));
     }
 
     @Test
     void jobRun_configuredInternalTokenAndWrongHeader_returnsUnauthorized() throws Exception {
-        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-execution/run")
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-book-execution/run")
                         .header("X-Internal-Token", "wrong-token"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(content().string(containsString("Unauthorized internal batch request")));
@@ -48,10 +48,10 @@ class StockBatchInternalApiTokenBoundaryTest {
 
     @Test
     void jobRun_configuredInternalTokenAndMatchingHeader_runsJob() throws Exception {
-        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-execution/run")
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-book-execution/run")
                         .header("X-Internal-Token", "secret-token"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("\"success\":true")))
-                .andExpect(content().string(containsString("\"job\":\"order-execution\"")));
+                .andExpect(content().string(containsString("\"job\":\"order-book-execution\"")));
     }
 }

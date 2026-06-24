@@ -41,13 +41,13 @@ class PortfolioSettlementServiceTest {
         int settledCount = portfolioSettlementService.settleToday();
 
         assertThat(settledCount).isEqualTo(1);
-        assertThat(queryDecimal("select total_asset from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("240000.00"));
-        assertThat(queryDecimal("select market_value from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("140000.00"));
-        assertThat(queryDecimal("select return_rate from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("20.0000"));
-        assertThat(queryDate("select snapshot_date from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualTo(LocalDate.now());
     }
 
@@ -61,9 +61,9 @@ class PortfolioSettlementServiceTest {
         jdbcTemplate.update("update stock_price set current_price = 80000.00 where symbol = '005930'");
         portfolioSettlementService.settleToday();
 
-        assertThat(queryLong("select count(*) from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryLong("select count(*) from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualTo(1L);
-        assertThat(queryDecimal("select total_asset from portfolio_snapshot where user_key = 'ranker'"))
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("260000.00"));
     }
 
@@ -74,11 +74,11 @@ class PortfolioSettlementServiceTest {
 
         portfolioSettlementService.settleToday();
 
-        assertThat(queryDecimal("select cash_balance from portfolio_snapshot where user_key = 'buyer'"))
+        assertThat(queryDecimal("select ps.cash_balance from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(new BigDecimal("9860000.00"));
-        assertThat(queryDecimal("select total_asset from portfolio_snapshot where user_key = 'buyer'"))
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(new BigDecimal("10000000.00"));
-        assertThat(queryDecimal("select return_rate from portfolio_snapshot where user_key = 'buyer'"))
+        assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
@@ -89,22 +89,46 @@ class PortfolioSettlementServiceTest {
 
         portfolioSettlementService.settleToday();
 
-        assertThat(queryDecimal("select market_value from portfolio_snapshot where user_key = 'order-book-user'"))
+        assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'order-book-user'"))
                 .isEqualByComparingTo(new BigDecimal("100000.00"));
-        assertThat(queryDecimal("select total_asset from portfolio_snapshot where user_key = 'order-book-user'"))
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'order-book-user'"))
                 .isEqualByComparingTo(new BigDecimal("200000.00"));
-        assertThat(queryDecimal("select return_rate from portfolio_snapshot where user_key = 'order-book-user'"))
+        assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'order-book-user'"))
                 .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
-    private void insertAccount(String userKey, String cashBalance, String initialCash) {
+    @Test
+    void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
+        insertAccount("stock-listing-zq001", "1.00", "1.00");
+
+        int settledCount = portfolioSettlementService.settleToday();
+
+        assertThat(settledCount).isZero();
+        assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
+    }
+
+    private void insertAccount(String userKey, String cashBalance, String openingGrantAmount) {
         jdbcTemplate.update(
-                "insert into stock_account(user_key, cash_balance, initial_cash, created_at, updated_at) values (?, ?, ?, ?, ?)",
+                "insert into stock_account(user_key, cash_balance, created_at, updated_at) values (?, ?, ?, ?)",
                 userKey,
                 new BigDecimal(cashBalance),
-                new BigDecimal(initialCash),
                 LocalDateTime.now(),
                 LocalDateTime.now()
+        );
+        insertCashFlow(userKey, openingGrantAmount);
+    }
+
+    private void insertCashFlow(String userKey, String amount) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                select id, 'DEPOSIT', ?, 'OPENING_GRANT', 'SYSTEM', ?
+                from stock_account
+                where user_key = ?
+                """,
+                new BigDecimal(amount),
+                LocalDateTime.now(),
+                userKey
         );
     }
 
@@ -119,9 +143,10 @@ class PortfolioSettlementServiceTest {
     }
 
     private void insertHolding(String userKey, String symbol, long quantity, String averagePrice) {
+        Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
-                "insert into stock_holding(user_key, symbol, quantity, average_price, updated_at) values (?, ?, ?, ?, ?)",
-                userKey,
+                "insert into stock_holding(account_id, symbol, quantity, average_price, updated_at) values (?, ?, ?, ?, ?)",
+                accountId,
                 symbol,
                 quantity,
                 new BigDecimal(averagePrice),
@@ -130,15 +155,16 @@ class PortfolioSettlementServiceTest {
     }
 
     private void insertPendingBuyOrder(String clientOrderId, String userKey, String symbol, String reservedCash) {
+        Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
                 """
                 insert into stock_order(
-                  client_order_id, user_key, symbol, side, order_type, status, limit_price,
+                  client_order_id, account_id, symbol, side, order_type, status, limit_price,
                   quantity, filled_quantity, reserved_cash, created_at, updated_at
                 ) values (?, ?, ?, 'BUY', 'LIMIT', 'PENDING', 70000.00, 2, 0, ?, ?, ?)
                 """,
                 clientOrderId,
-                userKey,
+                accountId,
                 symbol,
                 new BigDecimal(reservedCash),
                 LocalDateTime.now(),
@@ -156,5 +182,13 @@ class PortfolioSettlementServiceTest {
 
     private Long queryLong(String sql) {
         return jdbcTemplate.queryForObject(sql, Long.class);
+    }
+
+    private Long accountIdFor(String userKey) {
+        return jdbcTemplate.queryForObject(
+                "select id from stock_account where user_key = ?",
+                Long.class,
+                userKey
+        );
     }
 }
