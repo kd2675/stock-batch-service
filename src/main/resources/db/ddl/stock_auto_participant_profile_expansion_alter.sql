@@ -1,0 +1,52 @@
+USE STOCK_SERVICE;
+
+ALTER TABLE stock_account_cash_flow
+  DROP CHECK chk_stock_account_cash_flow_reason;
+
+ALTER TABLE stock_account_cash_flow
+  ADD CONSTRAINT chk_stock_account_cash_flow_reason CHECK (
+    CASE `reason`
+      WHEN 'OPENING_GRANT' THEN 1
+      WHEN 'ADMIN_DEPOSIT' THEN 1
+      WHEN 'ADMIN_WITHDRAW' THEN 1
+      WHEN 'AUTO_PROFILE_RECURRING_DEPOSIT' THEN 1
+      ELSE 0
+    END = 1
+  );
+
+ALTER TABLE stock_auto_participant
+  DROP CHECK chk_stock_auto_participant_profile_type;
+
+ALTER TABLE stock_auto_participant
+  ADD CONSTRAINT chk_stock_auto_participant_profile_type CHECK (
+    CASE `profile_type`
+      WHEN 'NEWS_REACTIVE' THEN 1
+      WHEN 'MOMENTUM_FOLLOWER' THEN 1
+      WHEN 'CONTRARIAN' THEN 1
+      WHEN 'LOSS_AVERSE' THEN 1
+      WHEN 'OVERCONFIDENT' THEN 1
+      WHEN 'HERD_FOLLOWER' THEN 1
+      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'NOISE_TRADER' THEN 1
+      WHEN 'VALUE_ANCHOR' THEN 1
+      WHEN 'SCALPER' THEN 1
+      WHEN 'DAY_TRADER' THEN 1
+      WHEN 'SWING_TRADER' THEN 1
+      WHEN 'LONG_TERM_HOLDER' THEN 1
+      WHEN 'PAYDAY_ACCUMULATOR' THEN 1
+      WHEN 'DIVIDEND_REINVESTOR' THEN 1
+      WHEN 'LIMIT_DOWN_TRAPPED' THEN 1
+      WHEN 'AVERAGE_DOWN_BUYER' THEN 1
+      WHEN 'STOP_LOSS_TRADER' THEN 1
+      WHEN 'FOMO_BUYER' THEN 1
+      WHEN 'PANIC_SELLER' THEN 1
+      WHEN 'DIP_BUYER' THEN 1
+      WHEN 'PROFIT_LOCKER' THEN 1
+      WHEN 'LIQUIDITY_AVOIDANT' THEN 1
+      WHEN 'CASH_DEFENSIVE' THEN 1
+      WHEN 'WHALE' THEN 1
+      WHEN 'SMALL_DIVERSIFIER' THEN 1
+      WHEN 'OBSERVER' THEN 1
+      ELSE 0
+    END = 1
+  );

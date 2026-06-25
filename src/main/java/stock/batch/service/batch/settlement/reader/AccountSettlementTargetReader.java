@@ -22,11 +22,11 @@ public class AccountSettlementTargetReader {
                        a.user_key,
                        a.cash_balance,
                        coalesce(sum(
-                           case f.flow_type
-                               when 'DEPOSIT' then f.amount
-                               when 'WITHDRAW' then -f.amount
-                               else 0
-                           end
+	                           case
+	                               when f.flow_type = 'DEPOSIT' and f.reason <> 'DIVIDEND_PAYMENT' then f.amount
+	                               when f.flow_type = 'WITHDRAW' then -f.amount
+	                               else 0
+	                           end
                        ), 0) as net_cash_flow
                 from stock_account a
                 left join stock_account_cash_flow f on f.account_id = a.id

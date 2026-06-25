@@ -4,6 +4,28 @@ CREATE DATABASE IF NOT EXISTS STOCK_SERVICE
 
 USE STOCK_SERVICE;
 
+CREATE TABLE IF NOT EXISTS stock_batch_job_control (
+  job_name VARCHAR(100) NOT NULL,
+  runtime_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_by VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (job_name),
+  CONSTRAINT chk_stock_batch_job_control_name CHECK (job_name <> '')
+);
+
+CREATE TABLE IF NOT EXISTS stock_batch_job_lock (
+  job_name VARCHAR(100) NOT NULL,
+  lock_owner VARCHAR(128) NOT NULL,
+  locked_until DATETIME NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (job_name),
+  KEY idx_stock_batch_job_lock_until (locked_until),
+  CONSTRAINT chk_stock_batch_job_lock_name CHECK (job_name <> ''),
+  CONSTRAINT chk_stock_batch_job_lock_owner CHECK (lock_owner <> '')
+);
+
 CREATE TABLE IF NOT EXISTS stock_account (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_key VARCHAR(64) NULL,
@@ -47,6 +69,9 @@ CREATE TABLE IF NOT EXISTS stock_account_cash_flow (
       WHEN 'OPENING_GRANT' THEN 1
       WHEN 'ADMIN_DEPOSIT' THEN 1
       WHEN 'ADMIN_WITHDRAW' THEN 1
+      WHEN 'DIVIDEND_PAYMENT' THEN 1
+      WHEN 'AUTO_PROFILE_RECURRING_DEPOSIT' THEN 1
+      WHEN 'AUTO_PARTICIPANT_RECURRING_DEPOSIT' THEN 1
       ELSE 0
     END = 1
   )
@@ -325,6 +350,9 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
   display_name VARCHAR(80) NOT NULL,
   enabled BIT NOT NULL,
   profile_type VARCHAR(40) NOT NULL DEFAULT 'NOISE_TRADER',
+  recurring_cash_amount DECIMAL(19,2) NULL,
+  recurring_cash_interval_value DECIMAL(12,4) NULL,
+  recurring_cash_interval_unit VARCHAR(20) NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   withdrawn_at DATETIME NULL,
@@ -341,14 +369,138 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
       WHEN 'NOISE_TRADER' THEN 1
       WHEN 'VALUE_ANCHOR' THEN 1
       WHEN 'SCALPER' THEN 1
+      WHEN 'DAY_TRADER' THEN 1
+      WHEN 'SWING_TRADER' THEN 1
+      WHEN 'LONG_TERM_HOLDER' THEN 1
+      WHEN 'PAYDAY_ACCUMULATOR' THEN 1
+      WHEN 'DIVIDEND_REINVESTOR' THEN 1
+      WHEN 'LIMIT_DOWN_TRAPPED' THEN 1
+      WHEN 'AVERAGE_DOWN_BUYER' THEN 1
+      WHEN 'STOP_LOSS_TRADER' THEN 1
+      WHEN 'FOMO_BUYER' THEN 1
       WHEN 'PANIC_SELLER' THEN 1
       WHEN 'DIP_BUYER' THEN 1
+      WHEN 'PROFIT_LOCKER' THEN 1
       WHEN 'LIQUIDITY_AVOIDANT' THEN 1
+      WHEN 'CASH_DEFENSIVE' THEN 1
       WHEN 'WHALE' THEN 1
       WHEN 'SMALL_DIVERSIFIER' THEN 1
       WHEN 'OBSERVER' THEN 1
       ELSE 0
     END = 1
+  ),
+  CONSTRAINT chk_stock_auto_participant_recurring_cash_amount CHECK (recurring_cash_amount IS NULL OR recurring_cash_amount >= 0),
+  CONSTRAINT chk_stock_auto_participant_recurring_cash_interval CHECK (recurring_cash_interval_value IS NULL OR (recurring_cash_interval_value >= 0 AND recurring_cash_interval_value <= 1000)),
+  CONSTRAINT chk_stock_auto_participant_recurring_cash_unit CHECK (
+    recurring_cash_interval_unit IS NULL OR
+    CASE `recurring_cash_interval_unit`
+      WHEN 'SECOND' THEN 1
+      WHEN 'MINUTE' THEN 1
+      WHEN 'HOUR' THEN 1
+      WHEN 'DAY' THEN 1
+      WHEN 'MONTH' THEN 1
+      WHEN 'YEAR' THEN 1
+      ELSE 0
+    END = 1
+  ),
+  CONSTRAINT chk_stock_auto_participant_recurring_cash_complete CHECK (
+    recurring_cash_amount IS NULL
+    OR recurring_cash_amount = 0
+    OR (recurring_cash_interval_value IS NOT NULL AND recurring_cash_interval_value > 0 AND recurring_cash_interval_unit IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
+  profile_type VARCHAR(40) NOT NULL,
+  news_weight DECIMAL(8,4) DEFAULT NULL,
+  momentum_weight DECIMAL(8,4) DEFAULT NULL,
+  contrarian_weight DECIMAL(8,4) DEFAULT NULL,
+  loss_aversion_weight DECIMAL(8,4) DEFAULT NULL,
+  herding_weight DECIMAL(8,4) DEFAULT NULL,
+  market_making_weight DECIMAL(8,4) DEFAULT NULL,
+  overconfidence_weight DECIMAL(8,4) DEFAULT NULL,
+  noise_weight DECIMAL(8,4) DEFAULT NULL,
+  panic_sell_weight DECIMAL(8,4) DEFAULT NULL,
+  dip_buy_weight DECIMAL(8,4) DEFAULT NULL,
+  order_multiplier DECIMAL(8,4) NOT NULL,
+  aggression_multiplier DECIMAL(8,4) NOT NULL,
+  order_ttl_multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+  quantity_multiplier DECIMAL(8,4) NOT NULL,
+  holding_patience_weight DECIMAL(8,4) NOT NULL,
+  deep_loss_hold_weight DECIMAL(8,4) NOT NULL,
+  profit_taking_weight DECIMAL(8,4) NOT NULL DEFAULT 0.0000,
+  recurring_deposit_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
+  recurring_deposit_interval_days INT NOT NULL DEFAULT 30,
+  recurring_deposit_interval_value DECIMAL(12,4) NOT NULL DEFAULT 30.0000,
+  recurring_deposit_interval_unit VARCHAR(20) NOT NULL DEFAULT 'DAY',
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (profile_type),
+  CONSTRAINT chk_stock_auto_profile_config_type CHECK (
+    CASE `profile_type`
+      WHEN 'NEWS_REACTIVE' THEN 1
+      WHEN 'MOMENTUM_FOLLOWER' THEN 1
+      WHEN 'CONTRARIAN' THEN 1
+      WHEN 'LOSS_AVERSE' THEN 1
+      WHEN 'OVERCONFIDENT' THEN 1
+      WHEN 'HERD_FOLLOWER' THEN 1
+      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'NOISE_TRADER' THEN 1
+      WHEN 'VALUE_ANCHOR' THEN 1
+      WHEN 'SCALPER' THEN 1
+      WHEN 'DAY_TRADER' THEN 1
+      WHEN 'SWING_TRADER' THEN 1
+      WHEN 'LONG_TERM_HOLDER' THEN 1
+      WHEN 'PAYDAY_ACCUMULATOR' THEN 1
+      WHEN 'DIVIDEND_REINVESTOR' THEN 1
+      WHEN 'LIMIT_DOWN_TRAPPED' THEN 1
+      WHEN 'AVERAGE_DOWN_BUYER' THEN 1
+      WHEN 'STOP_LOSS_TRADER' THEN 1
+      WHEN 'FOMO_BUYER' THEN 1
+      WHEN 'PANIC_SELLER' THEN 1
+      WHEN 'DIP_BUYER' THEN 1
+      WHEN 'PROFIT_LOCKER' THEN 1
+      WHEN 'LIQUIDITY_AVOIDANT' THEN 1
+      WHEN 'CASH_DEFENSIVE' THEN 1
+      WHEN 'WHALE' THEN 1
+      WHEN 'SMALL_DIVERSIFIER' THEN 1
+      WHEN 'OBSERVER' THEN 1
+      ELSE 0
+    END = 1
+  ),
+  CONSTRAINT chk_stock_auto_profile_news_weight CHECK (news_weight IS NULL OR (news_weight >= 0 AND news_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_momentum_weight CHECK (momentum_weight IS NULL OR (momentum_weight >= 0 AND momentum_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_contrarian_weight CHECK (contrarian_weight IS NULL OR (contrarian_weight >= 0 AND contrarian_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_loss_aversion_weight CHECK (loss_aversion_weight IS NULL OR (loss_aversion_weight >= 0 AND loss_aversion_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_herding_weight CHECK (herding_weight IS NULL OR (herding_weight >= 0 AND herding_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_market_making_weight CHECK (market_making_weight IS NULL OR (market_making_weight >= 0 AND market_making_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_overconfidence_weight CHECK (overconfidence_weight IS NULL OR (overconfidence_weight >= 0 AND overconfidence_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_noise_weight CHECK (noise_weight IS NULL OR (noise_weight >= 0 AND noise_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_panic_sell_weight CHECK (panic_sell_weight IS NULL OR (panic_sell_weight >= 0 AND panic_sell_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_dip_buy_weight CHECK (dip_buy_weight IS NULL OR (dip_buy_weight >= 0 AND dip_buy_weight <= 1)),
+  CONSTRAINT chk_stock_auto_profile_order_multiplier CHECK (order_multiplier >= 0 AND order_multiplier <= 5),
+  CONSTRAINT chk_stock_auto_profile_aggression_multiplier CHECK (aggression_multiplier >= 0 AND aggression_multiplier <= 5),
+  CONSTRAINT chk_stock_auto_profile_order_ttl_multiplier CHECK (order_ttl_multiplier >= 0.1 AND order_ttl_multiplier <= 10),
+  CONSTRAINT chk_stock_auto_profile_quantity_multiplier CHECK (quantity_multiplier >= 0 AND quantity_multiplier <= 5),
+  CONSTRAINT chk_stock_auto_profile_holding_patience CHECK (holding_patience_weight >= 0 AND holding_patience_weight <= 1),
+  CONSTRAINT chk_stock_auto_profile_deep_loss_hold CHECK (deep_loss_hold_weight >= 0 AND deep_loss_hold_weight <= 1),
+  CONSTRAINT chk_stock_auto_profile_profit_taking CHECK (profit_taking_weight >= 0 AND profit_taking_weight <= 1),
+  CONSTRAINT chk_stock_auto_profile_recurring_deposit CHECK (recurring_deposit_amount >= 0),
+  CONSTRAINT chk_stock_auto_profile_recurring_interval CHECK (recurring_deposit_interval_days >= 1),
+  CONSTRAINT chk_stock_auto_profile_recurring_interval_value CHECK (recurring_deposit_interval_value >= 0 AND recurring_deposit_interval_value <= 1000),
+  CONSTRAINT chk_stock_auto_profile_recurring_interval_unit CHECK (
+    CASE `recurring_deposit_interval_unit`
+      WHEN 'SECOND' THEN 1
+      WHEN 'MINUTE' THEN 1
+      WHEN 'HOUR' THEN 1
+      WHEN 'DAY' THEN 1
+      WHEN 'MONTH' THEN 1
+      WHEN 'YEAR' THEN 1
+      ELSE 0
+    END = 1
+  ),
+  CONSTRAINT chk_stock_auto_profile_recurring_interval_complete CHECK (
+    recurring_deposit_amount = 0
+    OR (recurring_deposit_interval_value > 0 AND recurring_deposit_interval_unit IS NOT NULL)
   )
 );
 

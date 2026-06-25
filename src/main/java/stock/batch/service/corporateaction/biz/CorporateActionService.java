@@ -128,6 +128,7 @@ public class CorporateActionService {
                 if (updatedAccount == 0) {
                     throw new IllegalStateException("Stock account not found for dividend entitlement: " + entitlement.accountId());
                 }
+                corporateActionWriter.recordDividendPaymentCashFlow(entitlement.accountId(), entitlement.cashAmount(), now);
                 corporateActionWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
             }
             processed += corporateActionWriter.markActionPaid(actionId, PAID, EX_RIGHTS_APPLIED, now);

@@ -1,3 +1,5 @@
+USE STOCK_SERVICE;
+
 -- ZERO_VALUE delisting support.
 -- Apply once to an existing MySQL stock schema before deploying the delisting feature.
 -- This file contains only the schema changes required by DELISTING corporate actions.

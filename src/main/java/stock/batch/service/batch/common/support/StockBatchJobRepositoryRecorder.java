@@ -1,6 +1,5 @@
 package stock.batch.service.batch.common.support;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -26,7 +25,7 @@ public class StockBatchJobRepositoryRecorder {
 
     public StockBatchJobExecutionRecord start(StockBatchJob job, LocalDateTime startedAt) {
         JobParameters jobParameters = new JobParametersBuilder()
-                .addLocalDate("businessDate", LocalDate.now(), true)
+                .addLocalDate("businessDate", startedAt.toLocalDate(), true)
                 .addString("jobMode", job.executionMode(), true)
                 .addString("runId", UUID.randomUUID().toString(), true)
                 .addString("requestId", UUID.randomUUID().toString(), false)

@@ -1,3 +1,5 @@
+USE STOCK_SERVICE;
+
 -- Make instrument report rise/fall reasons optional.
 -- Apply once to an existing MySQL stock schema if chk_stock_report_content_scope still requires both reason fields.
 

@@ -31,6 +31,7 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_execution where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_holding where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%')");
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'bonus-%'");
@@ -108,6 +109,13 @@ class CorporateActionServiceTest {
                 .isEqualTo("corporate-action-dividend");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'dividend-holder'"))
                 .isEqualByComparingTo(new BigDecimal("10010000.00"));
+        assertThat(queryDecimal("""
+                select amount
+                from stock_account_cash_flow f
+                join stock_account a on a.id = f.account_id
+                where a.user_key = 'dividend-holder'
+                  and f.reason = 'DIVIDEND_PAYMENT'
+                """)).isEqualByComparingTo(new BigDecimal("10000.00"));
         assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ007'"))
                 .isEqualTo("PAID");
     }

@@ -71,6 +71,18 @@ public class CorporateActionWriter {
         );
     }
 
+    public void recordDividendPaymentCashFlow(long accountId, BigDecimal cashAmount, LocalDateTime createdAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                values (?, 'DEPOSIT', ?, 'DIVIDEND_PAYMENT', 'CORPORATE_ACTION', ?)
+                """,
+                accountId,
+                cashAmount,
+                createdAt
+        );
+    }
+
     public void markEntitlementPaid(long entitlementId, String paidStatus, String sourceStatus, LocalDateTime paidAt) {
         jdbcTemplate.update(
                 """

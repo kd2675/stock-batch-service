@@ -29,6 +29,7 @@ class PortfolioSettlementServiceTest {
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_price");
+        jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_account");
     }
 
@@ -98,6 +99,21 @@ class PortfolioSettlementServiceTest {
     }
 
     @Test
+    void settleToday_dividendPaymentImprovesReturnWithoutIncreasingPrincipal() {
+        insertAccount("dividend-user", "110000.00", "200000.00");
+        insertCashFlow("dividend-user", "10000.00", "DIVIDEND_PAYMENT");
+        insertPrice("005930", "70000.00");
+        insertHolding("dividend-user", "005930", 2, "50000.00");
+
+        portfolioSettlementService.settleToday();
+
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'dividend-user'"))
+                .isEqualByComparingTo(new BigDecimal("250000.00"));
+        assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'dividend-user'"))
+                .isEqualByComparingTo(new BigDecimal("25.0000"));
+    }
+
+    @Test
     void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
         insertAccount("stock-listing-zq001", "1.00", "1.00");
 
@@ -119,14 +135,19 @@ class PortfolioSettlementServiceTest {
     }
 
     private void insertCashFlow(String userKey, String amount) {
+        insertCashFlow(userKey, amount, "OPENING_GRANT");
+    }
+
+    private void insertCashFlow(String userKey, String amount, String reason) {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', ?, 'OPENING_GRANT', 'SYSTEM', ?
+                select id, 'DEPOSIT', ?, ?, 'SYSTEM', ?
                 from stock_account
                 where user_key = ?
                 """,
                 new BigDecimal(amount),
+                reason,
                 LocalDateTime.now(),
                 userKey
         );

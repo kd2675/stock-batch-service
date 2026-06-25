@@ -32,12 +32,27 @@ spring:
   batch:
     job:
       enabled: false
+  lifecycle:
+    timeout-per-shutdown-phase: ${STOCK_BATCH_SHUTDOWN_TIMEOUT:70s}
+  task:
+    scheduling:
+      shutdown:
+        await-termination: ${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION:true}
+        await-termination-period: ${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION_PERIOD:60s}
+
+server:
+  shutdown: ${STOCK_BATCH_SERVER_SHUTDOWN:graceful}
 
 stock:
   batch:
+    shutdown:
+      await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}
     internal:
       token: ${STOCK_BATCH_INTERNAL_TOKEN:}
       allow-empty-token: false
+    job-lock:
+      ttl-seconds: ${STOCK_BATCH_JOB_LOCK_TTL_SECONDS:1800}
+      heartbeat-interval-seconds: ${STOCK_BATCH_JOB_LOCK_HEARTBEAT_INTERVAL_SECONDS:30}
     repository:
       schema:
         initialize: ${STOCK_BATCH_SCHEMA_INITIALIZE:false}
@@ -81,8 +96,14 @@ stock:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_INITIAL_DELAY_MS:5000}
       fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:1000}
+    auto-participant-cash-flow:
+      enabled: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_INITIAL_DELAY_MS:5000}
+      fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:1000}
+    market-close:
+      enabled: ${STOCK_BATCH_MARKET_CLOSE_ENABLED:true}
     settlement:
-      enabled: true
+      enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
       cron: ${STOCK_BATCH_SETTLEMENT_CRON:0 40 15 * * MON-FRI}
       zone: ${STOCK_BATCH_SETTLEMENT_ZONE:Asia/Seoul}
 

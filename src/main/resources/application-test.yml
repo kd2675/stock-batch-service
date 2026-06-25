@@ -53,6 +53,10 @@ stock:
       enabled: false
     auto-market:
       enabled: false
+    auto-participant-cash-flow:
+      enabled: false
+    market-close:
+      enabled: false
     settlement:
       enabled: false
 

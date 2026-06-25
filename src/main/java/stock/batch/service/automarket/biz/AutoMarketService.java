@@ -2,8 +2,8 @@ package stock.batch.service.automarket.biz;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -13,6 +13,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import stock.batch.service.automarket.profile.AutoProfileBehavior;
+import stock.batch.service.automarket.profile.AutoProfileBehaviorRegistry;
+import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.ProfileSignalContext;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
@@ -31,7 +35,8 @@ public class AutoMarketService {
     private static final String SELL_ONLY = "SELL_ONLY";
     private static final String BUY_ONLY = "BUY_ONLY";
     private static final BigDecimal DEFAULT_TICK_SIZE = BigDecimal.valueOf(100);
-    private static final Map<AutoParticipantProfileType, ProfilePolicy> PROFILE_POLICIES = createProfilePolicies();
+    private static final Duration DIVIDEND_REINVESTMENT_SIGNAL_WINDOW = Duration.ofDays(7);
+    private static final AutoProfileBehaviorRegistry PROFILE_BEHAVIORS = AutoProfileBehaviorRegistry.createDefault();
 
     private final AutoMarketReader autoMarketReader;
     private final AutoMarketWriter autoMarketWriter;
@@ -45,6 +50,7 @@ public class AutoMarketService {
         }
 
         int processed = 0;
+        Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         if (!participants.isEmpty()) {
             ensureAccounts(participants);
         }
@@ -54,9 +60,9 @@ public class AutoMarketService {
                 processed += runListingAutoAccounts(config);
                 continue;
             }
-            processed += expireOldAutoOrders(config);
+            processed += expireOldAutoOrders(config, profilePolicies);
             processed += runListingAutoAccounts(config);
-            processed += placeAutoOrders(strategies, config);
+            processed += placeAutoOrders(strategies, config, profilePolicies);
         }
         return processed;
     }
@@ -71,21 +77,27 @@ public class AutoMarketService {
         }
     }
 
-    private int expireOldAutoOrders(AutoMarketConfig config) {
-        LocalDateTime threshold = LocalDateTime.now().minusSeconds(config.orderTtlSeconds());
-        List<AutoOrder> orders = autoMarketReader.findExpiredAutoOrders(config, threshold);
-
+    private int expireOldAutoOrders(
+            AutoMarketConfig config,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
+    ) {
         int expired = 0;
         LocalDateTime now = LocalDateTime.now();
-        for (AutoOrder order : orders) {
-            if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
-                autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
+        for (AutoParticipantProfileType profileType : AutoParticipantProfileType.values()) {
+            ProfilePolicy policy = profilePolicy(profilePolicies, profileType);
+            AutoProfileBehavior behavior = PROFILE_BEHAVIORS.behavior(profileType);
+            LocalDateTime threshold = now.minusSeconds(behavior.orderTtlSeconds(config.orderTtlSeconds(), policy));
+            List<AutoOrder> orders = autoMarketReader.findExpiredAutoOrders(config, profileType, threshold);
+            for (AutoOrder order : orders) {
+                if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
+                    autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
+                }
+                if (SELL.equals(order.side())) {
+                    autoMarketWriter.releaseReservedSellQuantity(order, now);
+                }
+                autoMarketWriter.cancelOrder(order, now);
+                expired++;
             }
-            if (SELL.equals(order.side())) {
-                autoMarketWriter.releaseReservedSellQuantity(order, now);
-            }
-            autoMarketWriter.cancelOrder(order, now);
-            expired++;
         }
         return expired;
     }
@@ -176,20 +188,33 @@ public class AutoMarketService {
                 rawPrice = bestAsk.subtract(tick);
             }
         }
-        return normalizePrice(rawPrice.max(tick), tick);
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
-    private int placeAutoOrders(List<AutoParticipantStrategy> strategies, AutoMarketConfig config) {
+    private int placeAutoOrders(
+            List<AutoParticipantStrategy> strategies,
+            AutoMarketConfig config,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
+    ) {
         int placed = 0;
         for (AutoParticipantStrategy strategy : strategies) {
-            int effectiveIntensity = effectiveIntensity(strategy, config);
-            ProfilePolicy policy = profilePolicy(strategy.profileType());
+            AutoProfileBehavior behavior = PROFILE_BEHAVIORS.behavior(strategy.profileType());
+            ProfilePolicy policy = profilePolicy(profilePolicies, strategy.profileType());
+            int effectiveIntensity = behavior.effectiveIntensity(strategy, config, policy);
             double unrealizedReturn = unrealizedReturn(strategy.accountId(), config);
-            int orderCount = orderCount(effectiveIntensity, policy, unrealizedReturn);
+            ProfileSignalContext baseContext = profileContext(strategy, config, policy, effectiveIntensity, unrealizedReturn, 0);
+            int orderCount = behavior.orderCount(baseContext);
             for (int index = 0; index < orderCount; index++) {
-                String side = chooseSide(strategy, config, effectiveIntensity, policy, unrealizedReturn);
-                long quantity = createQuantity(config, policy);
+                ProfileSignalContext context = baseContext.withOrderIndex(index);
+                String side = behavior.chooseSide(context);
+                if (side == null) {
+                    continue;
+                }
                 BigDecimal price = createAutoPrice(config, effectiveIntensity, side, policy);
+                long quantity = createQuantity(strategy.accountId(), config, side, price, policy, behavior);
+                if (quantity <= 0) {
+                    continue;
+                }
                 if (placeOrder(strategy.accountId(), config.symbol(), side, price, quantity)) {
                     placed++;
                 }
@@ -198,47 +223,36 @@ public class AutoMarketService {
         return placed;
     }
 
-    private String chooseSide(
+    private ProfileSignalContext profileContext(
             AutoParticipantStrategy strategy,
             AutoMarketConfig config,
-            int effectiveIntensity,
             ProfilePolicy policy,
-            double unrealizedReturn
+            int effectiveIntensity,
+            double unrealizedReturn,
+            int orderIndex
     ) {
-        long availableQuantity = autoMarketReader.getAvailableQuantity(strategy.accountId(), config.symbol());
-        if (availableQuantity <= 0) {
-            return BUY;
-        }
-        BigDecimal cashBalance = autoMarketReader.getCashBalance(strategy.accountId());
-        BigDecimal oneOrderBudget = config.currentPrice().multiply(BigDecimal.valueOf(config.maxOrderQuantity()));
-        if (cashBalance.compareTo(oneOrderBudget) < 0) {
-            return SELL;
-        }
-        if (effectiveIntensity >= 9 && policy.contrarianWeight() < 0.5) {
-            return BUY;
-        }
-        if (effectiveIntensity <= 2 && policy.dipBuyWeight() < 0.5 && policy.lossAversionWeight() < 0.7) {
-            return SELL;
-        }
-        double buyBias = buyBias(
-                effectiveIntensity,
+        return new ProfileSignalContext(
+                strategy,
+                config,
                 policy,
+                effectiveIntensity,
                 priceMomentum(config),
                 herdPressure(config.symbol()),
                 unrealizedReturn,
-                availableQuantity
+                autoMarketReader.getAvailableQuantity(strategy.accountId(), config.symbol()),
+                autoMarketReader.getCashBalance(strategy.accountId()),
+                autoMarketReader.getRecentDividendCashAmount(
+                        strategy.accountId(),
+                        LocalDateTime.now().minus(DIVIDEND_REINVESTMENT_SIGNAL_WINDOW)
+                ),
+                isAtLowerPriceLimit(config),
+                orderIndex,
+                randomNoise(policy.noiseWeight(), 0.18)
         );
-        return ThreadLocalRandom.current().nextDouble() < buyBias ? BUY : SELL;
     }
 
     int effectiveIntensity(AutoParticipantStrategy strategy, AutoMarketConfig config) {
-        Integer reportScore = config.reportScore();
-        if (reportScore == null) {
-            return clamp(strategy.intensity(), 1, 10);
-        }
-        double reportWeight = profilePolicy(strategy.profileType()).newsWeight();
-        double blended = strategy.intensity() * (1.0 - reportWeight) + clamp(reportScore, 1, 10) * reportWeight;
-        return clamp((int) Math.round(blended), 1, 10);
+        return PROFILE_BEHAVIORS.behavior(strategy.profileType()).effectiveIntensity(strategy, config, profilePolicy(strategy.profileType()));
     }
 
     double buyBiasForProfile(
@@ -249,68 +263,23 @@ public class AutoMarketService {
             double unrealizedReturn,
             long availableQuantity
     ) {
-        return calculateBuyBias(
-                effectiveIntensity,
-                profilePolicy(profileType),
-                momentumPressure,
-                herdPressure,
-                unrealizedReturn,
-                availableQuantity,
-                0
-        );
+        ProfilePolicy policy = profilePolicy(profileType);
+        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, effectiveIntensity, momentumPressure, herdPressure, unrealizedReturn, availableQuantity, BigDecimal.ZERO, false, 0, 0);
+        return PROFILE_BEHAVIORS.behavior(profileType).buyBias(context);
     }
 
     int orderCountForProfile(AutoParticipantProfileType profileType, int effectiveIntensity, double unrealizedReturn) {
-        return orderCount(effectiveIntensity, profilePolicy(profileType), unrealizedReturn);
+        ProfilePolicy policy = profilePolicy(profileType);
+        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, effectiveIntensity, 0, 0, unrealizedReturn, 0, BigDecimal.ZERO, false, 0, 0);
+        return PROFILE_BEHAVIORS.behavior(profileType).orderCount(context);
     }
 
-    private double buyBias(
-            int effectiveIntensity,
-            ProfilePolicy policy,
-            double momentumPressure,
-            double herdPressure,
-            double unrealizedReturn,
-            long availableQuantity
-    ) {
-        return calculateBuyBias(
-                effectiveIntensity,
-                policy,
-                momentumPressure,
-                herdPressure,
-                unrealizedReturn,
-                availableQuantity,
-                randomNoise(policy.noiseWeight(), 0.18)
-        );
+    int quantityUpperBoundForProfile(AutoParticipantProfileType profileType, int maxOrderQuantity) {
+        return PROFILE_BEHAVIORS.behavior(profileType).quantityUpperBound(Math.max(1, maxOrderQuantity), profilePolicy(profileType));
     }
 
-    private double calculateBuyBias(
-            int effectiveIntensity,
-            ProfilePolicy policy,
-            double momentumPressure,
-            double herdPressure,
-            double unrealizedReturn,
-            long availableQuantity,
-            double noise
-    ) {
-        double pressure = pricePressure(effectiveIntensity);
-        double inventoryPenalty = Math.min(availableQuantity, 20) * 0.01;
-        double buyBias = 0.5 + pressure * 0.35 - inventoryPenalty;
-        buyBias += momentumPressure * policy.momentumWeight() * 0.24;
-        buyBias -= momentumPressure * policy.contrarianWeight() * 0.24;
-        buyBias += herdPressure * policy.herdingWeight() * 0.22;
-        buyBias -= herdPressure * policy.marketMakingWeight() * 0.22;
-        if (unrealizedReturn < 0) {
-            buyBias += policy.lossAversionWeight() * 0.18;
-            buyBias += policy.dipBuyWeight() * Math.min(0.25, -unrealizedReturn * 1.6);
-        } else if (unrealizedReturn > 0) {
-            buyBias -= policy.lossAversionWeight() * Math.min(0.12, unrealizedReturn * 0.6);
-        }
-        if (momentumPressure < -0.35) {
-            buyBias -= policy.panicSellWeight() * 0.24;
-            buyBias += policy.dipBuyWeight() * 0.24;
-        }
-        buyBias += noise;
-        return clampDouble(0.08, 0.92, buyBias);
+    int orderTtlSecondsForProfile(AutoParticipantProfileType profileType, int baseTtlSeconds) {
+        return PROFILE_BEHAVIORS.behavior(profileType).orderTtlSeconds(Math.max(1, baseTtlSeconds), profilePolicy(profileType));
     }
 
     private BigDecimal createAutoPrice(AutoMarketConfig config, int intensity, String side, ProfilePolicy policy) {
@@ -327,10 +296,10 @@ public class AutoMarketService {
         boolean downwardAggressive = pressure < 0 && ThreadLocalRandom.current().nextDouble() < aggressiveChance;
 
         if (BUY.equals(side) && upwardAggressive && bestAsk != null) {
-            return normalizePrice(bestAsk.add(tick.multiply(BigDecimal.valueOf(randomInt(0, 1)))), tick);
+            return normalizePriceWithinDailyLimit(bestAsk.add(tick.multiply(BigDecimal.valueOf(randomInt(0, 1)))), config, tick);
         }
         if (SELL.equals(side) && downwardAggressive && bestBid != null) {
-            return normalizePrice(bestBid.subtract(tick.multiply(BigDecimal.valueOf(randomInt(0, 1)))).max(tick), tick);
+            return normalizePriceWithinDailyLimit(bestBid.subtract(tick.multiply(BigDecimal.valueOf(randomInt(0, 1)))).max(tick), config, tick);
         }
 
         int maxSpreadTicks = 2 + (int) Math.ceil(pressureStrength * 6);
@@ -342,7 +311,7 @@ public class AutoMarketService {
         } else {
             rawPrice = config.currentPrice().add(directionalOffset).add(pressure > 0 ? spread : BigDecimal.ZERO);
         }
-        return normalizePrice(rawPrice.max(tick), tick);
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
     private BigDecimal createMarketMakingPrice(
@@ -364,26 +333,40 @@ public class AutoMarketService {
                 rawPrice = bestBid.add(tick);
             }
         }
-        return normalizePrice(rawPrice.max(tick), tick);
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
-    private int orderCount(int effectiveIntensity, ProfilePolicy policy, double unrealizedReturn) {
-        int movementStrength = Math.max(effectiveIntensity, 11 - effectiveIntensity);
-        int baseOrderCount = Math.max(1, (int) Math.ceil(movementStrength / 3.5));
-        double profitBoost = 1.0;
-        if (unrealizedReturn > 0) {
-            profitBoost += Math.min(0.75, unrealizedReturn * 4.0 * policy.overconfidenceWeight());
-        }
-        return clamp((int) Math.round(baseOrderCount * policy.orderMultiplier() * profitBoost), 1, 8);
-    }
-
-    private long createQuantity(AutoMarketConfig config, ProfilePolicy policy) {
+    private long createQuantity(
+            long accountId,
+            AutoMarketConfig config,
+            String side,
+            BigDecimal price,
+            ProfilePolicy policy,
+            AutoProfileBehavior behavior
+    ) {
         int maxQuantity = Math.max(1, config.maxOrderQuantity());
+        long profileQuantity;
         if (policy.quantityMultiplier() >= 1.5 && maxQuantity > 1) {
-            return randomInt(Math.max(1, maxQuantity / 2), maxQuantity);
+            profileQuantity = randomInt(Math.max(1, maxQuantity / 2), behavior.quantityUpperBound(maxQuantity, policy));
+        } else {
+            int upperBound = behavior.quantityUpperBound(maxQuantity, policy);
+            profileQuantity = randomInt(1, upperBound);
         }
-        int upperBound = Math.max(1, (int) Math.floor(maxQuantity * Math.min(1.0, policy.quantityMultiplier())));
-        return randomInt(1, upperBound);
+        if (BUY.equals(side)) {
+            if (price.compareTo(BigDecimal.ZERO) <= 0) {
+                return 0;
+            }
+            long affordableQuantity = autoMarketReader.getCashBalance(accountId)
+                    .divide(price, 0, RoundingMode.DOWN)
+                    .longValue();
+            return Math.min(profileQuantity, affordableQuantity);
+        }
+        long availableQuantity = autoMarketReader.getAvailableQuantity(accountId, config.symbol());
+        return Math.min(profileQuantity, availableQuantity);
+    }
+
+    private boolean isAtLowerPriceLimit(AutoMarketConfig config) {
+        return config.currentPrice().compareTo(dailyLowerLimit(config)) <= 0;
     }
 
     private boolean placeOrder(long accountId, String symbol, String side, BigDecimal price, long quantity) {
@@ -417,6 +400,67 @@ public class AutoMarketService {
         BigDecimal normalizedTick = positiveOrDefault(tick, DEFAULT_TICK_SIZE);
         BigDecimal ticks = rawPrice.divide(normalizedTick, 0, RoundingMode.HALF_UP);
         return ticks.multiply(normalizedTick).max(normalizedTick).setScale(2, RoundingMode.UNNECESSARY);
+    }
+
+    private BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, AutoMarketConfig config, BigDecimal tick) {
+        return normalizePriceWithinDailyLimit(rawPrice, tick, config.currentPrice(), config.previousClose(), config.priceLimitRate());
+    }
+
+    private BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, ListingAutoAccountConfig config, BigDecimal tick) {
+        return normalizePriceWithinDailyLimit(rawPrice, tick, config.currentPrice(), config.previousClose(), config.priceLimitRate());
+    }
+
+    private BigDecimal normalizePriceWithinDailyLimit(
+            BigDecimal rawPrice,
+            BigDecimal tick,
+            BigDecimal currentPrice,
+            BigDecimal previousClose,
+            BigDecimal priceLimitRate
+    ) {
+        BigDecimal normalizedTick = positiveOrDefault(tick, DEFAULT_TICK_SIZE);
+        BigDecimal lowerLimit = dailyLowerLimit(currentPrice, previousClose, priceLimitRate);
+        BigDecimal upperLimit = dailyUpperLimit(currentPrice, previousClose, priceLimitRate);
+        BigDecimal clampedPrice = rawPrice.max(lowerLimit).min(upperLimit);
+        BigDecimal normalizedPrice = normalizePrice(clampedPrice, normalizedTick);
+        if (normalizedPrice.compareTo(lowerLimit) < 0) {
+            normalizedPrice = ceilToTick(lowerLimit, normalizedTick);
+        }
+        if (normalizedPrice.compareTo(upperLimit) > 0) {
+            normalizedPrice = floorToTick(upperLimit, normalizedTick);
+        }
+        return normalizedPrice.max(normalizedTick).setScale(2, RoundingMode.UNNECESSARY);
+    }
+
+    private BigDecimal dailyLowerLimit(AutoMarketConfig config) {
+        return dailyLowerLimit(config.currentPrice(), config.previousClose(), config.priceLimitRate());
+    }
+
+    private BigDecimal dailyLowerLimit(BigDecimal currentPrice, BigDecimal previousClose, BigDecimal priceLimitRate) {
+        BigDecimal normalizedPreviousClose = positiveOrDefault(previousClose, currentPrice);
+        BigDecimal normalizedPriceLimitRate = positiveOrDefault(priceLimitRate, BigDecimal.valueOf(30));
+        return normalizedPreviousClose
+                .multiply(BigDecimal.valueOf(100).subtract(normalizedPriceLimitRate))
+                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal dailyUpperLimit(BigDecimal currentPrice, BigDecimal previousClose, BigDecimal priceLimitRate) {
+        BigDecimal normalizedPreviousClose = positiveOrDefault(previousClose, currentPrice);
+        BigDecimal normalizedPriceLimitRate = positiveOrDefault(priceLimitRate, BigDecimal.valueOf(30));
+        return normalizedPreviousClose
+                .multiply(BigDecimal.valueOf(100).add(normalizedPriceLimitRate))
+                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal ceilToTick(BigDecimal value, BigDecimal tick) {
+        return value.divide(tick, 0, RoundingMode.CEILING)
+                .multiply(tick)
+                .setScale(2, RoundingMode.UNNECESSARY);
+    }
+
+    private BigDecimal floorToTick(BigDecimal value, BigDecimal tick) {
+        return value.divide(tick, 0, RoundingMode.FLOOR)
+                .multiply(tick)
+                .setScale(2, RoundingMode.UNNECESSARY);
     }
 
     private BigDecimal positiveOrDefault(BigDecimal value, BigDecimal defaultValue) {
@@ -472,45 +516,18 @@ public class AutoMarketService {
     }
 
     private ProfilePolicy profilePolicy(AutoParticipantProfileType profileType) {
-        return PROFILE_POLICIES.getOrDefault(profileType, PROFILE_POLICIES.get(AutoParticipantProfileType.defaultType()));
+        return PROFILE_BEHAVIORS.behavior(profileType).defaultPolicy();
     }
 
-    private static Map<AutoParticipantProfileType, ProfilePolicy> createProfilePolicies() {
-        Map<AutoParticipantProfileType, ProfilePolicy> policies = new EnumMap<>(AutoParticipantProfileType.class);
-        policies.put(AutoParticipantProfileType.NEWS_REACTIVE, new ProfilePolicy(0.65, 0.15, 0.00, 0.25, 0.20, 0.00, 0.10, 1.10, 1.15, 0.10, 1.00, 0.00, 0.05));
-        policies.put(AutoParticipantProfileType.MOMENTUM_FOLLOWER, new ProfilePolicy(0.25, 0.85, 0.00, 0.20, 0.35, 0.00, 0.15, 1.20, 1.25, 0.15, 1.00, 0.05, 0.00));
-        policies.put(AutoParticipantProfileType.CONTRARIAN, new ProfilePolicy(0.20, 0.00, 0.85, 0.25, 0.00, 0.10, 0.05, 1.00, 0.90, 0.12, 1.00, 0.00, 0.35));
-        policies.put(AutoParticipantProfileType.LOSS_AVERSE, new ProfilePolicy(0.25, 0.10, 0.00, 0.95, 0.10, 0.00, 0.05, 0.85, 0.80, 0.08, 0.80, 0.05, 0.00));
-        policies.put(AutoParticipantProfileType.OVERCONFIDENT, new ProfilePolicy(0.35, 0.45, 0.00, 0.20, 0.25, 0.00, 0.95, 1.60, 1.35, 0.20, 1.25, 0.05, 0.05));
-        policies.put(AutoParticipantProfileType.HERD_FOLLOWER, new ProfilePolicy(0.25, 0.25, 0.00, 0.15, 0.90, 0.00, 0.15, 1.25, 1.20, 0.15, 1.00, 0.15, 0.00));
-        policies.put(AutoParticipantProfileType.MARKET_MAKER, new ProfilePolicy(0.15, 0.05, 0.00, 0.10, 0.10, 0.95, 0.00, 1.25, 0.65, 0.08, 1.00, 0.00, 0.00));
-        policies.put(AutoParticipantProfileType.NOISE_TRADER, new ProfilePolicy(0.35, 0.20, 0.10, 0.20, 0.15, 0.00, 0.10, 1.00, 1.00, 0.45, 1.00, 0.05, 0.05));
-        policies.put(AutoParticipantProfileType.VALUE_ANCHOR, new ProfilePolicy(0.20, 0.00, 0.45, 0.55, 0.00, 0.10, 0.00, 0.80, 0.75, 0.08, 0.80, 0.00, 0.25));
-        policies.put(AutoParticipantProfileType.SCALPER, new ProfilePolicy(0.25, 0.60, 0.00, 0.10, 0.40, 0.00, 0.25, 2.00, 1.50, 0.35, 0.70, 0.10, 0.00));
-        policies.put(AutoParticipantProfileType.PANIC_SELLER, new ProfilePolicy(0.25, 0.25, 0.00, 0.20, 0.45, 0.00, 0.10, 1.40, 1.40, 0.25, 1.10, 0.90, 0.00));
-        policies.put(AutoParticipantProfileType.DIP_BUYER, new ProfilePolicy(0.25, 0.00, 0.65, 0.35, 0.10, 0.00, 0.05, 1.15, 1.05, 0.15, 1.00, 0.00, 0.90));
-        policies.put(AutoParticipantProfileType.LIQUIDITY_AVOIDANT, new ProfilePolicy(0.20, 0.10, 0.00, 0.35, 0.00, 0.00, 0.00, 0.55, 0.55, 0.05, 0.60, 0.10, 0.00));
-        policies.put(AutoParticipantProfileType.WHALE, new ProfilePolicy(0.30, 0.35, 0.00, 0.20, 0.25, 0.00, 0.20, 1.20, 0.85, 0.10, 1.80, 0.05, 0.00));
-        policies.put(AutoParticipantProfileType.SMALL_DIVERSIFIER, new ProfilePolicy(0.25, 0.20, 0.10, 0.30, 0.10, 0.00, 0.05, 1.45, 0.70, 0.12, 0.45, 0.00, 0.05));
-        policies.put(AutoParticipantProfileType.OBSERVER, new ProfilePolicy(0.15, 0.10, 0.00, 0.20, 0.00, 0.00, 0.00, 0.30, 0.40, 0.03, 0.40, 0.00, 0.00));
-        return Map.copyOf(policies);
-    }
-
-    private record ProfilePolicy(
-            double newsWeight,
-            double momentumWeight,
-            double contrarianWeight,
-            double lossAversionWeight,
-            double herdingWeight,
-            double marketMakingWeight,
-            double overconfidenceWeight,
-            double orderMultiplier,
-            double aggressionMultiplier,
-            double noiseWeight,
-            double quantityMultiplier,
-            double panicSellWeight,
-            double dipBuyWeight
+    private ProfilePolicy profilePolicy(
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            AutoParticipantProfileType profileType
     ) {
+        return profilePolicies.getOrDefault(profileType, profilePolicies.get(AutoParticipantProfileType.defaultType()));
+    }
+
+    private Map<AutoParticipantProfileType, ProfilePolicy> loadProfilePolicies() {
+        return PROFILE_BEHAVIORS.policiesWithOverrides(autoMarketReader.findParticipantProfileConfigs());
     }
 
     private String nextClientOrderId() {

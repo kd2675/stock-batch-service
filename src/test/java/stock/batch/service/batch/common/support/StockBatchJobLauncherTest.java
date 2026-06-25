@@ -1,7 +1,11 @@
 package stock.batch.service.batch.common.support;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
 import stock.batch.service.automarket.biz.AutoMarketService;
+import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -20,6 +24,7 @@ import stock.batch.service.settlement.biz.PortfolioSettlementService;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,6 +42,7 @@ class StockBatchJobLauncherTest {
     private final OrderExecutionService orderExecutionService = mock(OrderExecutionService.class);
     private final InternalOrderBookExecutionService internalOrderBookExecutionService = mock(InternalOrderBookExecutionService.class);
     private final PortfolioSettlementService portfolioSettlementService = mock(PortfolioSettlementService.class);
+    private final AutoParticipantCashFlowService autoParticipantCashFlowService = mock(AutoParticipantCashFlowService.class);
     private final AutoMarketService autoMarketService = mock(AutoMarketService.class);
     private final CorporateActionService corporateActionService = mock(CorporateActionService.class);
     private final MarketCloseRolloverService marketCloseRolloverService = mock(MarketCloseRolloverService.class);
@@ -44,10 +50,11 @@ class StockBatchJobLauncherTest {
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder = mock(StockBatchJobRepositoryRecorder.class);
 
     private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
-            new StockBatchJobRunner(new BatchJobLockRegistry(), stockBatchJobRepositoryRecorder),
+            new StockBatchJobRunner(createBatchJobLockRegistry("launcher-default"), stockBatchJobRepositoryRecorder),
             new MarketDataRefreshJob(marketDataRefreshService),
             new VirtualPriceExecutionJob(orderExecutionService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
+            new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
             new AutoMarketJob(autoMarketService, internalOrderBookExecutionService),
             new PortfolioSettlementJob(portfolioSettlementService),
             new MarketCloseRolloverJob(marketCloseRolloverService),
@@ -133,6 +140,20 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
+    void fundAutoParticipants_manualRun_invokesAutoParticipantCashFlow() {
+        when(autoParticipantCashFlowService.fundRecurringCash()).thenReturn(6);
+
+        var response = stockBatchJobLauncher.fundAutoParticipants();
+
+        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
+        assertThat(response.executionMode()).isEqualTo("recurring-cash");
+        assertThat(response.processedCount()).isEqualTo(6);
+        verify(autoParticipantCashFlowService).fundRecurringCash();
+        verify(autoMarketService, never()).runAutoMarketStep();
+        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
+    }
+
+    @Test
     void runAutoMarket_generatesOrdersAndRunsInternalOrderBook() {
         when(autoMarketService.runAutoMarketStep()).thenReturn(7);
         when(internalOrderBookExecutionService.executeEligibleOrders()).thenReturn(3);
@@ -176,6 +197,37 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
+    void executeVirtualPriceOrders_separateRunnersShareDatabaseLock_skipsSecondRun() throws Exception {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        StockBatchJobLauncher firstLauncher = createLauncher(createBatchJobLockRegistry(jdbcTemplate, "launcher-1"));
+        StockBatchJobLauncher secondLauncher = createLauncher(createBatchJobLockRegistry(jdbcTemplate, "launcher-2"));
+        CountDownLatch actionStarted = new CountDownLatch(1);
+        CountDownLatch releaseAction = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            actionStarted.countDown();
+            assertThat(releaseAction.await(3, TimeUnit.SECONDS)).isTrue();
+            return 3;
+        }).when(orderExecutionService).executeEligibleOrders();
+
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var firstRun = executor.submit(firstLauncher::executeVirtualPriceOrders);
+            assertThat(actionStarted.await(3, TimeUnit.SECONDS)).isTrue();
+
+            var secondResponse = secondLauncher.executeVirtualPriceOrders();
+
+            assertThat(secondResponse.status()).isEqualTo("SKIPPED");
+            assertThat(secondResponse.message()).isEqualTo("Job is already running");
+            releaseAction.countDown();
+            assertThat(firstRun.get(3, TimeUnit.SECONDS).status()).isEqualTo("COMPLETED");
+            verify(orderExecutionService, times(1)).executeEligibleOrders();
+        } finally {
+            releaseAction.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void refreshMarketData_actionThrows_returnsFailedResponse() {
         doThrow(new IllegalStateException("provider unavailable"))
                 .when(marketDataRefreshService)
@@ -187,5 +239,50 @@ class StockBatchJobLauncherTest {
         assertThat(response.status()).isEqualTo("FAILED");
         assertThat(response.processedCount()).isZero();
         assertThat(response.message()).contains("provider unavailable");
+    }
+
+    private StockBatchJobLauncher createLauncher(BatchJobLockRegistry batchJobLockRegistry) {
+        return new StockBatchJobLauncher(
+                new StockBatchJobRunner(batchJobLockRegistry, stockBatchJobRepositoryRecorder),
+                new MarketDataRefreshJob(marketDataRefreshService),
+                new VirtualPriceExecutionJob(orderExecutionService),
+                new OrderBookExecutionJob(internalOrderBookExecutionService),
+                new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
+                new AutoMarketJob(autoMarketService, internalOrderBookExecutionService),
+                new PortfolioSettlementJob(portfolioSettlementService),
+                new MarketCloseRolloverJob(marketCloseRolloverService),
+                new CorporateActionJob(corporateActionService)
+        );
+    }
+
+    private BatchJobLockRegistry createBatchJobLockRegistry(String lockOwner) {
+        return createBatchJobLockRegistry(createJdbcTemplate(), lockOwner);
+    }
+
+    private BatchJobLockRegistry createBatchJobLockRegistry(JdbcTemplate jdbcTemplate, String lockOwner) {
+        return new BatchJobLockRegistry(jdbcTemplate, 1800, lockOwner);
+    }
+
+    private JdbcTemplate createJdbcTemplate() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource();
+        dataSource.setDriverClassName("org.h2.Driver");
+        dataSource.setUrl("jdbc:h2:mem:stock_batch_job_launcher_test_%s;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false".formatted(UUID.randomUUID()));
+        dataSource.setUsername("sa");
+        dataSource.setPassword("");
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        jdbcTemplate.execute(
+                """
+                create table if not exists stock_batch_job_lock (
+                  job_name varchar(100) not null primary key,
+                  lock_owner varchar(128) not null,
+                  locked_until timestamp not null,
+                  created_at timestamp not null,
+                  updated_at timestamp not null,
+                  constraint chk_stock_batch_job_lock_name check (job_name <> ''),
+                  constraint chk_stock_batch_job_lock_owner check (lock_owner <> '')
+                )
+                """
+        );
+        return jdbcTemplate;
     }
 }

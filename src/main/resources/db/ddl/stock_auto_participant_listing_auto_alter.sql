@@ -1,3 +1,5 @@
+USE STOCK_SERVICE;
+
 -- Auto participant profile and listing auto account support.
 -- Apply once to an existing MySQL stock schema before deploying the listing-auto-account feature.
 
@@ -17,9 +19,20 @@ ALTER TABLE stock_auto_participant
       WHEN 'NOISE_TRADER' THEN 1
       WHEN 'VALUE_ANCHOR' THEN 1
       WHEN 'SCALPER' THEN 1
+      WHEN 'DAY_TRADER' THEN 1
+      WHEN 'SWING_TRADER' THEN 1
+      WHEN 'LONG_TERM_HOLDER' THEN 1
+      WHEN 'PAYDAY_ACCUMULATOR' THEN 1
+      WHEN 'DIVIDEND_REINVESTOR' THEN 1
+      WHEN 'LIMIT_DOWN_TRAPPED' THEN 1
+      WHEN 'AVERAGE_DOWN_BUYER' THEN 1
+      WHEN 'STOP_LOSS_TRADER' THEN 1
+      WHEN 'FOMO_BUYER' THEN 1
       WHEN 'PANIC_SELLER' THEN 1
       WHEN 'DIP_BUYER' THEN 1
+      WHEN 'PROFIT_LOCKER' THEN 1
       WHEN 'LIQUIDITY_AVOIDANT' THEN 1
+      WHEN 'CASH_DEFENSIVE' THEN 1
       WHEN 'WHALE' THEN 1
       WHEN 'SMALL_DIVERSIFIER' THEN 1
       WHEN 'OBSERVER' THEN 1

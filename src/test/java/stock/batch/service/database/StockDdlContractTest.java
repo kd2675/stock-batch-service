@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -89,6 +91,11 @@ class StockDdlContractTest {
             "db/schema/batch-metadata-h2.sql"
     );
 
+    private static final List<String> BATCH_OPERATION_TABLE_MARKERS = List.of(
+            "stock_batch_job_control",
+            "stock_batch_job_lock"
+    );
+
     @Test
     void corporateActionDdlResources_matchInitialProjectScope() throws IOException {
         for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
@@ -119,10 +126,161 @@ class StockDdlContractTest {
         }
     }
 
+    @Test
+    void batchMetadataMysqlDdl_selectsStockBatchMetadataSchema() throws IOException {
+        String ddl = readDdlResource("db/schema/batch-metadata-mysql.sql");
+
+        assertThat(firstExecutableSqlLine(ddl)).isEqualTo("CREATE SCHEMA IF NOT EXISTS STOCK_BATCH_METADATA;");
+        assertThat(ddl).contains("USE STOCK_BATCH_METADATA;");
+        assertThat(ddl).doesNotContain("USE STOCK_SERVICE;");
+    }
+
+    @Test
+    void businessDdlResources_doNotDefineSpringBatchMetadataTables() throws IOException {
+        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
+            String ddl = readDdlResource(resourcePath);
+
+            assertThat(ddl).as(resourcePath).doesNotContain(BATCH_METADATA_TABLE_MARKERS.toArray(String[]::new));
+        }
+    }
+
+    @Test
+    void batchMetadataDdlResources_doNotDefineStockBusinessOperationTables() throws IOException {
+        for (String resourcePath : BATCH_METADATA_DDL_RESOURCES) {
+            String ddl = readDdlResource(resourcePath);
+
+            assertThat(ddl).as(resourcePath).doesNotContain(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
+        }
+    }
+
+    @Test
+    void ddlResources_defineSharedBatchOperationTables() throws IOException {
+        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
+            String ddl = readDdlResource(resourcePath);
+
+            assertThat(ddl).as(resourcePath).contains(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
+        }
+    }
+
+    @Test
+    void stockH2Ddl_definesBatchOperationTablesWithRequiredColumnsAndConstraints() throws IOException {
+        String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
+
+        assertThat(extractCreateTableBlock(h2Ddl, "stock_batch_job_control"))
+                .contains(
+                        "job_name VARCHAR(100) NOT NULL PRIMARY KEY",
+                        "runtime_enabled BOOLEAN NOT NULL DEFAULT TRUE",
+                        "updated_by VARCHAR(64)",
+                        "created_at TIMESTAMP NOT NULL",
+                        "updated_at TIMESTAMP NOT NULL",
+                        "CONSTRAINT chk_stock_batch_job_control_name CHECK (job_name <> '')"
+                );
+        assertThat(extractCreateTableBlock(h2Ddl, "stock_batch_job_lock"))
+                .contains(
+                        "job_name VARCHAR(100) NOT NULL PRIMARY KEY",
+                        "lock_owner VARCHAR(128) NOT NULL",
+                        "locked_until TIMESTAMP NOT NULL",
+                        "created_at TIMESTAMP NOT NULL",
+                        "updated_at TIMESTAMP NOT NULL",
+                        "CONSTRAINT chk_stock_batch_job_lock_name CHECK (job_name <> '')",
+                        "CONSTRAINT chk_stock_batch_job_lock_owner CHECK (lock_owner <> '')"
+                );
+    }
+
+    @Test
+    void alterDdlFiles_selectStockServiceSchemaBeforeChanges() throws IOException {
+        List<Path> alterFiles = listAlterDdlFiles();
+
+        assertThat(alterFiles).isNotEmpty();
+        for (Path alterFile : alterFiles) {
+            String ddl = Files.readString(alterFile, StandardCharsets.UTF_8);
+
+            assertThat(firstExecutableSqlLine(ddl)).as(alterFile.toString()).isEqualTo("USE STOCK_SERVICE;");
+        }
+    }
+
+    @Test
+    void batchJobControlAlterDdl_matchesInitialMysqlTableDefinitions() throws IOException {
+        String stockAllDdl = readDdlResource("db/ddl/stock_all.sql");
+        String alterDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_batch_job_control_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        for (String tableName : BATCH_OPERATION_TABLE_MARKERS) {
+            assertThat(normalizeSqlBlock(extractCreateTableBlock(alterDdl, tableName)))
+                    .as(tableName)
+                    .isEqualTo(normalizeSqlBlock(extractCreateTableBlock(stockAllDdl, tableName)));
+        }
+    }
+
+    @Test
+    void batchOperationMysqlDdl_matchesStockBackServiceDefinitions() throws IOException {
+        String stockBatchAllDdl = readDdlResource("db/ddl/stock_all.sql");
+        String stockBatchAlterDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_batch_job_control_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String stockBackAllDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_all.sql"),
+                StandardCharsets.UTF_8
+        );
+        String stockBackAlterDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_batch_job_control_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        for (String tableName : BATCH_OPERATION_TABLE_MARKERS) {
+            assertThat(normalizeSqlBlock(extractCreateTableBlock(stockBatchAllDdl, tableName)))
+                    .as(tableName + " stock_all.sql")
+                    .isEqualTo(normalizeSqlBlock(extractCreateTableBlock(stockBackAllDdl, tableName)));
+            assertThat(normalizeSqlBlock(extractCreateTableBlock(stockBatchAlterDdl, tableName)))
+                    .as(tableName + " stock_batch_job_control_alter.sql")
+                    .isEqualTo(normalizeSqlBlock(extractCreateTableBlock(stockBackAlterDdl, tableName)));
+        }
+    }
+
     private String readDdlResource(String resourcePath) throws IOException {
         try (var inputStream = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
             assertThat(inputStream).as(resourcePath + " resource").isNotNull();
             return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
         }
+    }
+
+    private List<Path> listAlterDdlFiles() throws IOException {
+        try (var paths = Files.list(Path.of("src/main/resources/db/ddl"))) {
+            return paths
+                    .filter(path -> path.getFileName().toString().endsWith("_alter.sql"))
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    private String firstExecutableSqlLine(String ddl) {
+        return ddl.lines()
+                .map(String::trim)
+                .filter(line -> !line.isEmpty())
+                .filter(line -> !line.startsWith("--"))
+                .findFirst()
+                .orElse("");
+    }
+
+    private String extractCreateTableBlock(String ddl, String tableName) {
+        String marker = "CREATE TABLE IF NOT EXISTS " + tableName + " (";
+        int startIndex = ddl.indexOf(marker);
+        assertThat(startIndex).as(tableName + " create table marker").isGreaterThanOrEqualTo(0);
+
+        int endIndex = ddl.indexOf(";", startIndex);
+        assertThat(endIndex).as(tableName + " create table terminator").isGreaterThan(startIndex);
+
+        return ddl.substring(startIndex, endIndex + 1);
+    }
+
+    private String normalizeSqlBlock(String sql) {
+        return sql.lines()
+                .map(String::trim)
+                .filter(line -> !line.isEmpty())
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("");
     }
 }

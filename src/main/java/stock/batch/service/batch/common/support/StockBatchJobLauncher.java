@@ -3,6 +3,7 @@ package stock.batch.service.batch.common.support;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -20,6 +21,7 @@ public class StockBatchJobLauncher {
     private final MarketDataRefreshJob marketDataRefreshJob;
     private final VirtualPriceExecutionJob virtualPriceExecutionJob;
     private final OrderBookExecutionJob orderBookExecutionJob;
+    private final AutoParticipantCashFlowJob autoParticipantCashFlowJob;
     private final AutoMarketJob autoMarketJob;
     private final PortfolioSettlementJob portfolioSettlementJob;
     private final MarketCloseRolloverJob marketCloseRolloverJob;
@@ -35,6 +37,10 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse executeOrderBookOrders() {
         return stockBatchJobRunner.run(orderBookExecutionJob);
+    }
+
+    public StockBatchJobRunResponse fundAutoParticipants() {
+        return stockBatchJobRunner.run(autoParticipantCashFlowJob);
     }
 
     public StockBatchJobRunResponse runAutoMarket() {

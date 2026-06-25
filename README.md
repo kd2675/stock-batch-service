@@ -16,6 +16,11 @@
 - `POST /internal/stock-batch/v1/jobs/market-data/refresh`
 - `POST /internal/stock-batch/v1/jobs/virtual-price-execution/run`
 - `POST /internal/stock-batch/v1/jobs/order-book-execution/run`
+- `POST /internal/stock-batch/v1/jobs/auto-participant-cash-flow/run`
+- `GET /internal/stock-batch/v1/jobs/auto-participant-cash-flow/status`
+- `PATCH /internal/stock-batch/v1/jobs/auto-participant-cash-flow/status`
+- `GET /internal/stock-batch/v1/jobs/runtime-controls`
+- `PATCH /internal/stock-batch/v1/jobs/runtime-controls/{jobName}`
 - `POST /internal/stock-batch/v1/jobs/auto-market/run`
 - `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run`
 - `POST /internal/stock-batch/v1/jobs/market-close/rollover`
@@ -24,6 +29,7 @@
 ## 현재 잡
 
 - `MarketDataRefreshScheduler`: 관심/보유/미체결 종목 가격 갱신, Redis 최신가/채널 발행
+- `AutoParticipantCashFlowScheduler`: 자동 참여자 주기 입금을 `stock_account_cash_flow`와 `stock_account.cash_balance`에 반영
 - `AutoMarketScheduler`: DB에 등록된 자동 참여자가 실제 `stock_order` 원장에 지정가 주문을 넣고 내부 주문장 체결을 실행
 - `MarketPriceProvider`: 실제 시세 provider 교체 지점. 현재 기본값은 `stock.batch.market-data.provider=mock`
 - `KisMarketPriceProvider`: `stock.batch.market-data.provider=kis`일 때 KIS OpenAPI 국내주식 현재가 시세를 호출
@@ -88,6 +94,9 @@ scripts/stock-gateway-h2-smoke.sh
 - `local`/`dev` 접속값은 기존 백엔드 프로젝트처럼 `application-local.yml`, `application-dev.yml`에 직접 둡니다.
 - `prod`는 DB와 Redis 값을 환경 변수로 명시 주입합니다.
 - batch는 business DB용 `spring.datasource`와 Spring Batch metadata용 `stock.batch.repository.datasource`를 분리합니다. business 원장은 `STOCK_SERVICE`, `JobRepository` metadata는 `STOCK_BATCH_METADATA`를 사용합니다.
+- batch 운영 제어 상태는 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock` 테이블을 기준으로 합니다.
+- `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장하고, `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다.
+- 현재 custom scheduler job은 Spring Batch metadata를 고빈도 실행 이력 ledger로 사용합니다. `businessDate`, `jobMode`, `runId`를 identifying parameter로 기록해 같은 업무일/모드의 반복 실행도 서로 다른 `JobInstance`가 되게 합니다. 재시작 가능한 chunk job을 새로 만들 때는 `runId` 방식으로 우회하지 말고 해당 job의 restart contract를 별도로 설계합니다.
 - Hikari 풀은 local/dev 기본 8개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
 - Batch metadata Hikari 풀은 local/dev 기본 4개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
 - DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
@@ -117,15 +126,30 @@ KIS_MARKET_DIV_CODE=J
 현재 설정 키는 다음과 같습니다.
 
 - `stock.batch.market-data.provider`: `mock` 또는 `kis`
+- `stock.batch.market-data.enabled`: 시세 갱신 job 활성화 여부
 - `stock.batch.market-data.kis.base-url`
 - `stock.batch.market-data.kis.app-key`
 - `stock.batch.market-data.kis.app-secret`
 - `stock.batch.market-data.kis.market-div-code`
 - `stock.batch.virtual-price-execution.enabled`: 현재가 기준 체결 job 활성화 여부
 - `stock.batch.order-book-execution.enabled`: 주문장 체결 job 활성화 여부
+- `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
 - `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
-- 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리하고, 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
+- `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
+- `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기
+- `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
+- `stock.batch.settlement.enabled`: 포트폴리오 정산 job 활성화 여부
+- 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버가 최초 조회 시 `runtime_enabled=true`로 생성합니다. 운영 중에는 stock-back이 `/api/stock/v1/markets/batch-jobs/runtime-controls`를 통해 stock-batch 내부 API를 호출해 이 DB 값을 변경합니다.
+- runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
+- `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 1800초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 합니다.
+- `stock.batch.job-lock.heartbeat-interval-seconds`: 실행 중인 batch 서버가 자기 소유 DB 락의 `locked_until`을 연장하는 주기입니다. 기본값은 30초이며 `ttl-seconds`보다 충분히 짧게 둬야 정상 실행 중인 job을 다른 서버가 만료 락으로 가져가지 않습니다.
+- `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
+- `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 60초입니다.
+- `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 70초입니다.
+- `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 custom job 완료를 기다리는 시간. 기본값은 60초입니다.
+- 종료가 시작되면 새 수동/스케줄 job은 `SKIPPED`로 거절하고, 이미 실행 중인 job은 위 timeout까지 완료를 기다립니다. 아직 시간이 오지 않은 다음 스케줄 job을 종료 전에 강제로 실행하지는 않습니다.
+- 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
 - `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
 - `stock.batch.execution.sell-tax-rate`: 매도 거래세율. 기본값 `0.0000`
 - `stock.batch.settlement.cron`: 장 마감 정산 cron. 기본값 `0 40 15 * * MON-FRI`
@@ -137,7 +161,8 @@ KIS provider는 OAuth 접근토큰을 발급받은 뒤 `/uapi/domestic-stock/v1/
 
 `GET /internal/stock-batch/v1/system/status`는 상태 확인과 smoke check를 위해 열어둡니다.
 
-`POST /internal/stock-batch/v1/jobs/**` 실행 API는 `STOCK_BATCH_INTERNAL_TOKEN`을 설정하면 `X-Internal-Token` 헤더가 일치해야 실행됩니다. 토큰이 비어 있으면 기본적으로 차단하며, `local`/`test` profile에서만 `stock.batch.internal.allow-empty-token=true`로 smoke 편의를 허용합니다.
+`/internal/stock-batch/v1/jobs/**` 실행/제어 API는 `X-Internal-Token` 헤더가 `STOCK_BATCH_INTERNAL_TOKEN`과 일치해야 실행됩니다. 기본 `local-direct`는 `local-stock-batch-internal-token`을 사용하고 `20481` 포트로 뜹니다. `local`/`dev`도 `20481`, `test`는 `30481`, `prod`는 `10481`을 사용합니다. 빈 token 허용은 테스트/smoke 편의 profile에서만 켭니다.
+`dev`/`prod` profile은 `STOCK_BATCH_INTERNAL_TOKEN`을 반드시 명시해야 하며, 빈 token 허용을 켜지 않습니다.
 
 ```bash
 STOCK_BATCH_INTERNAL_TOKEN=change-me ./gradlew :stock-batch-service:bootRun
@@ -166,7 +191,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 
 - Spring Batch 6.x JDBC `JobRepository`를 별도 metadata schema로 사용합니다.
 - 스케줄러는 실행 시점만 결정하고, 수동 API와 스케줄러는 모두 `StockBatchJobLauncher`를 통해 같은 job 컴포넌트를 실행합니다.
-- job 실행 잠금, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환, `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록은 `StockBatchJobRunner`에서 공통 처리합니다.
+- job 실행 잠금은 `stock_batch_job_lock` DB 테이블을 통해 처리하며, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환과 `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록은 `StockBatchJobRunner`에서 공통 처리합니다.
 - `marketdata`, `settlement`, `marketclose`는 batch 문서 기준에 맞춰 reader/processor/writer 또는 writer 단위로 책임을 분리합니다.
 - 시세는 모든 종목을 무조건 갱신하지 않고 관심 종목, 보유 종목, 미체결 주문이 있는 종목을 우선 갱신합니다.
 - 시세 provider는 `MarketPriceProvider`로 분리하고, 실제 외부 API 연동은 provider 구현 교체로 처리합니다.

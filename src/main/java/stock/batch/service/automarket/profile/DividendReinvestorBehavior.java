@@ -1,0 +1,50 @@
+package stock.batch.service.automarket.profile;
+
+import java.math.BigDecimal;
+
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+
+public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
+
+    public DividendReinvestorBehavior() {
+        super(AutoParticipantProfileType.DIVIDEND_REINVESTOR, new ProfilePolicy(0.20, 0.08, 0.20, 0.70, 0.05, 0.00, 0.00, 0.08, 0.80, 0.75, 2.20, 0.05, 0.65, 0.00, 0.50, 0.90, 0.65, new BigDecimal("120000.00"), 30));
+    }
+
+    @Override
+    public int orderCount(ProfileSignalContext context) {
+        int baseCount = standardOrderCount(context, false);
+        if (context.hasRecentDividendPayment() && context.canBuyOne()) {
+            return clamp(baseCount + 1, 1, 8);
+        }
+        return baseCount;
+    }
+
+    @Override
+    public String chooseSide(ProfileSignalContext context) {
+        if (context.hasRecentDividendPayment() && context.canBuyOne()) {
+            return BUY;
+        }
+        if ((context.isLosing() || context.momentumPressure() < -0.30) && context.canBuyOne()) {
+            return BUY;
+        }
+        if (!context.hasHolding()) {
+            return context.canBuyOne() ? BUY : null;
+        }
+        if (!context.canBuyOne()) {
+            return shouldHoldInsteadOfSell(context) ? null : SELL;
+        }
+        if (shouldHoldInsteadOfSell(context)) {
+            return null;
+        }
+        return chooseByBuyBias(context);
+    }
+
+    @Override
+    public double buyBias(ProfileSignalContext context) {
+        double bias = weightedBuyBias(context);
+        if (context.hasRecentDividendPayment()) {
+            bias += 0.18;
+        }
+        return clampDouble(0.08, 0.95, bias);
+    }
+}

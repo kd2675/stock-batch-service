@@ -23,7 +23,8 @@ spring:
 stock:
   batch:
     internal:
-      allow-empty-token: true
+      token: ${STOCK_BATCH_INTERNAL_TOKEN:local-stock-batch-internal-token}
+      allow-empty-token: false
     repository:
       datasource:
         url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true

@@ -22,6 +22,9 @@ spring:
 
 stock:
   batch:
+    internal:
+      token: ${STOCK_BATCH_INTERNAL_TOKEN}
+      allow-empty-token: false
     repository:
       datasource:
         url: ${STOCK_BATCH_DB_URL}

@@ -40,6 +40,29 @@ public class AutoMarketWriter {
         );
     }
 
+    public void depositCashFlow(long accountId, BigDecimal amount, String reason, String createdBy, LocalDateTime createdAt) {
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        jdbcTemplate.update(
+                "update stock_account set cash_balance = cash_balance + ?, updated_at = ? where id = ?",
+                amount,
+                createdAt,
+                accountId
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                values (?, 'DEPOSIT', ?, ?, ?, ?)
+                """,
+                accountId,
+                amount,
+                reason,
+                createdBy,
+                createdAt
+        );
+    }
+
     public void releaseReservedSellQuantity(AutoOrder order, LocalDateTime updatedAt) {
         long remaining = order.quantity() - order.filledQuantity();
         if (remaining <= 0) {
@@ -81,6 +104,7 @@ public class AutoMarketWriter {
                 set cash_balance = cash_balance - ?,
                     updated_at = ?
                 where id = ?
+                  and status = 'ACTIVE'
                   and cash_balance >= ?
                 """,
                 reservedCash,
@@ -100,6 +124,12 @@ public class AutoMarketWriter {
                 where account_id = ?
                   and symbol = ?
                   and quantity - reserved_quantity >= ?
+                  and exists (
+                      select 1
+                      from stock_account a
+                      where a.id = stock_holding.account_id
+                        and a.status = 'ACTIVE'
+                  )
                 """,
                 quantity,
                 updatedAt,

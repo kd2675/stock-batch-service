@@ -11,6 +11,8 @@ public record ListingAutoAccountConfig(
         int orderTtlSeconds,
         int priceOffsetTicks,
         BigDecimal tickSize,
-        BigDecimal currentPrice
+        BigDecimal currentPrice,
+        BigDecimal previousClose,
+        BigDecimal priceLimitRate
 ) {
 }

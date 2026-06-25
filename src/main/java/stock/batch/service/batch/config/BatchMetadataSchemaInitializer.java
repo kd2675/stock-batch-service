@@ -22,8 +22,11 @@ public class BatchMetadataSchemaInitializer {
             @Value("${stock.batch.repository.schema.location:}") Resource schema
     ) {
         return args -> {
-            if (!initialize || !schema.exists()) {
+            if (!initialize) {
                 return;
+            }
+            if (!schema.exists()) {
+                throw new IllegalStateException("Batch metadata schema resource does not exist: " + schema);
             }
             ResourceDatabasePopulator populator = new ResourceDatabasePopulator(schema);
             populator.execute(dataSource);

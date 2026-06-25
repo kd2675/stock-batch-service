@@ -14,9 +14,12 @@ import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
+import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
 @Component
 @RequiredArgsConstructor
@@ -63,6 +66,7 @@ public class AutoMarketReader {
                        c.order_ttl_seconds,
                        i.tradable_shares,
                        i.tick_size,
+                       i.price_limit_rate,
                        p.current_price,
                        p.previous_close,
                        r.score as report_score
@@ -86,14 +90,73 @@ public class AutoMarketReader {
         );
     }
 
+    public List<AutoParticipantProfileConfig> findParticipantProfileConfigs() {
+        return jdbcTemplate.query(
+                """
+                select profile_type,
+                       news_weight,
+                       momentum_weight,
+                       contrarian_weight,
+                       loss_aversion_weight,
+                       herding_weight,
+                       market_making_weight,
+                       overconfidence_weight,
+                       noise_weight,
+                       panic_sell_weight,
+                       dip_buy_weight,
+                       order_multiplier,
+                       aggression_multiplier,
+                       order_ttl_multiplier,
+                       quantity_multiplier,
+                       holding_patience_weight,
+                       deep_loss_hold_weight,
+                       profit_taking_weight,
+                       recurring_deposit_amount,
+                       recurring_deposit_interval_value,
+                       recurring_deposit_interval_unit,
+                       recurring_deposit_interval_days
+                from stock_auto_participant_profile_config
+                order by profile_type asc
+                """,
+                (rs, rowNum) -> new AutoParticipantProfileConfig(
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        rs.getBigDecimal("news_weight"),
+                        rs.getBigDecimal("momentum_weight"),
+                        rs.getBigDecimal("contrarian_weight"),
+                        rs.getBigDecimal("loss_aversion_weight"),
+                        rs.getBigDecimal("herding_weight"),
+                        rs.getBigDecimal("market_making_weight"),
+                        rs.getBigDecimal("overconfidence_weight"),
+                        rs.getBigDecimal("noise_weight"),
+                        rs.getBigDecimal("panic_sell_weight"),
+                        rs.getBigDecimal("dip_buy_weight"),
+                        rs.getBigDecimal("order_multiplier"),
+                        rs.getBigDecimal("aggression_multiplier"),
+                        rs.getBigDecimal("order_ttl_multiplier"),
+                        rs.getBigDecimal("quantity_multiplier"),
+                        rs.getBigDecimal("holding_patience_weight"),
+                        rs.getBigDecimal("deep_loss_hold_weight"),
+                        rs.getBigDecimal("profit_taking_weight"),
+                        rs.getBigDecimal("recurring_deposit_amount"),
+                        rs.getBigDecimal("recurring_deposit_interval_value"),
+                        RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_deposit_interval_unit")),
+                        rs.getInt("recurring_deposit_interval_days")
+                )
+        );
+    }
+
     public List<AutoParticipantStrategy> findEnabledParticipantStrategies(AutoMarketConfig config) {
         return jdbcTemplate.query(
                 """
-                select a.id as account_id,
-                       coalesce(ps.intensity, ?) as intensity,
-                       p.profile_type
-                from stock_auto_participant p
-                join stock_account a on a.user_key = p.user_key
+	                select p.user_key,
+	                       a.id as account_id,
+	                       coalesce(ps.intensity, ?) as intensity,
+	                       p.profile_type,
+	                       p.recurring_cash_amount,
+	                       p.recurring_cash_interval_value,
+	                       p.recurring_cash_interval_unit
+	                from stock_auto_participant p
+                join stock_account a on a.user_key = p.user_key and a.status = 'ACTIVE'
                 left join stock_auto_participant_symbol_config ps
                   on ps.user_key = p.user_key
                  and ps.symbol = ?
@@ -103,13 +166,75 @@ public class AutoMarketReader {
                 order by p.user_key asc
                 """,
                 (rs, rowNum) -> new AutoParticipantStrategy(
-                        rs.getLong("account_id"),
-                        clamp(rs.getInt("intensity"), 1, 10),
-                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type"))
-                ),
+	                        rs.getString("user_key"),
+	                        rs.getLong("account_id"),
+	                        clamp(rs.getInt("intensity"), 1, 10),
+	                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+	                        rs.getBigDecimal("recurring_cash_amount"),
+	                        rs.getBigDecimal("recurring_cash_interval_value"),
+	                        RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit"))
+	                ),
                 config.intensity(),
                 config.symbol()
         );
+    }
+
+    public List<AutoParticipantRecurringCashTarget> findRecurringCashTargets() {
+        return jdbcTemplate.query(
+                """
+                select a.id as account_id,
+                       p.profile_type,
+                       p.recurring_cash_amount,
+                       p.recurring_cash_interval_value,
+                       p.recurring_cash_interval_unit
+                  from stock_auto_participant p
+                  join stock_account a on a.user_key = p.user_key and a.status = 'ACTIVE'
+                 where p.enabled = true
+                   and p.withdrawn_at is null
+                 order by p.user_key asc
+                """,
+                (rs, rowNum) -> new AutoParticipantRecurringCashTarget(
+                        rs.getLong("account_id"),
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        rs.getBigDecimal("recurring_cash_amount"),
+                        rs.getBigDecimal("recurring_cash_interval_value"),
+                        RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit"))
+                )
+        );
+    }
+
+    public boolean hasCashFlowSince(long accountId, String reason, LocalDateTime since) {
+        Integer exists = jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                from stock_account_cash_flow
+                where account_id = ?
+                  and reason = ?
+                  and created_at >= ?
+                """,
+                Integer.class,
+                accountId,
+                reason,
+                since
+        );
+        return exists != null && exists > 0;
+    }
+
+    public BigDecimal getRecentDividendCashAmount(long accountId, LocalDateTime since) {
+        BigDecimal amount = jdbcTemplate.queryForObject(
+                """
+                select coalesce(sum(amount), 0)
+                from stock_account_cash_flow
+                where account_id = ?
+                  and flow_type = 'DEPOSIT'
+                  and reason = 'DIVIDEND_PAYMENT'
+                  and created_at >= ?
+                """,
+                BigDecimal.class,
+                accountId,
+                since
+        );
+        return amount == null ? BigDecimal.ZERO : amount;
     }
 
     public List<ListingAutoAccountConfig> findEnabledListingAutoAccountConfigs(AutoMarketConfig config) {
@@ -123,7 +248,9 @@ public class AutoMarketReader {
                        c.order_ttl_seconds,
                        c.price_offset_ticks,
                        i.tick_size,
-                       p.current_price
+                       i.price_limit_rate,
+                       p.current_price,
+                       p.previous_close
                 from stock_listing_auto_account_config c
                 join stock_account a on a.user_key = c.user_key and a.status = 'ACTIVE'
                 join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
@@ -142,13 +269,15 @@ public class AutoMarketReader {
                         Math.max(1, rs.getInt("order_ttl_seconds")),
                         Math.max(0, rs.getInt("price_offset_ticks")),
                         positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
-                        rs.getBigDecimal("current_price")
+                        rs.getBigDecimal("current_price"),
+                        positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
+                        positiveOrDefault(rs.getBigDecimal("price_limit_rate"), BigDecimal.valueOf(30))
                 ),
                 config.symbol()
         );
     }
 
-    public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime threshold) {
+    public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, AutoParticipantProfileType profileType, LocalDateTime threshold) {
         return jdbcTemplate.query(
                 """
                 select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
@@ -158,6 +287,7 @@ public class AutoMarketReader {
                 where o.symbol = ?
                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
                   and o.market_type = 'ORDER_BOOK'
+                  and p.profile_type = ?
                   and o.created_at < ?
                 order by o.created_at asc
                 limit 200
@@ -173,6 +303,7 @@ public class AutoMarketReader {
                         rs.getBigDecimal("reserved_cash")
                 ),
                 config.symbol(),
+                profileType.name(),
                 threshold
         );
     }
@@ -320,6 +451,7 @@ public class AutoMarketReader {
                 positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
                 rs.getBigDecimal("current_price"),
                 positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
+                positiveOrDefault(rs.getBigDecimal("price_limit_rate"), BigDecimal.valueOf(30)),
                 nullableInt(rs, "report_score")
         );
     }
