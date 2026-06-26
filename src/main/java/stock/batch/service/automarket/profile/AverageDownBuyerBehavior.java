@@ -12,7 +12,7 @@ public class AverageDownBuyerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.isLosing() && context.canBuyOne()) {
+        if (context.isLosing() && context.canBuyOne() && context.orderIndex() == 0) {
             return BUY;
         }
         return super.chooseSide(context);

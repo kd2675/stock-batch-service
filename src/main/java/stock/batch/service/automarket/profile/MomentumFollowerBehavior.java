@@ -15,10 +15,10 @@ public class MomentumFollowerBehavior extends AbstractAutoProfileBehavior {
         if (!context.hasHolding()) {
             return BUY;
         }
-        if (context.momentumPressure() > 0.35 && context.canBuyOne()) {
+        if (context.momentumPressure() > 0.35 && context.canBuyOne() && context.orderIndex() == 0) {
             return BUY;
         }
-        if (context.momentumPressure() < -0.35) {
+        if (context.momentumPressure() < -0.35 && context.orderIndex() == 0) {
             return SELL;
         }
         return chooseByBuyBias(context);

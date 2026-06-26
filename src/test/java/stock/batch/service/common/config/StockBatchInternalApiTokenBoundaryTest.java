@@ -56,6 +56,7 @@ class StockBatchInternalApiTokenBoundaryTest {
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/auto-market/run", null),
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/portfolio-settlement/run", null),
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/market-close/rollover", null),
+            new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/market-close/rollover/005930", "/internal/stock-batch/v1/jobs/market-close/rollover/{symbol}", null),
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/corporate-actions/run", null)
     );
 

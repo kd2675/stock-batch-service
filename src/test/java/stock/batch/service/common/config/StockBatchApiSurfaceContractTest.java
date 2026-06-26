@@ -31,6 +31,7 @@ class StockBatchApiSurfaceContractTest {
             "POST /internal/stock-batch/v1/jobs/auto-market/run",
             "POST /internal/stock-batch/v1/jobs/portfolio-settlement/run",
             "POST /internal/stock-batch/v1/jobs/market-close/rollover",
+            "POST /internal/stock-batch/v1/jobs/market-close/rollover/{symbol}",
             "POST /internal/stock-batch/v1/jobs/corporate-actions/run"
     );
 
