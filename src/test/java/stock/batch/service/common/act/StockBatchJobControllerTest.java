@@ -76,12 +76,12 @@ class StockBatchJobControllerTest {
 
     @Test
     void fundAutoParticipants_postRequest_returnsExecutionMode() throws Exception {
-        when(stockBatchJobLauncher.fundAutoParticipants()).thenReturn(response("auto-participant-cash-flow", "recurring-cash"));
+        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response("auto-participant-cash-flow", "manual-recurring-cash"));
 
         mockMvc.perform(post("/internal/stock-batch/v1/jobs/auto-participant-cash-flow/run"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.job").value("auto-participant-cash-flow"))
-                .andExpect(jsonPath("$.data.executionMode").value("recurring-cash"))
+                .andExpect(jsonPath("$.data.executionMode").value("manual-recurring-cash"))
                 .andExpect(jsonPath("$.data.processedCount").value(7));
     }
 
@@ -250,6 +250,20 @@ class StockBatchJobControllerTest {
                 .andExpect(jsonPath("$.data.job").value("market-close-rollover"))
                 .andExpect(jsonPath("$.data.executionMode").value("price-limit-base"))
                 .andExpect(jsonPath("$.data.processedCount").value(7));
+    }
+
+    @Test
+    void rolloverClosingPrices_symbolPostRequest_returnsSymbolJobRunResponse() throws Exception {
+        when(stockBatchJobLauncher.rolloverClosingPrices("MC001"))
+                .thenReturn(response("market-close-rollover", "price-limit-base:MC001"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/market-close/rollover/MC001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("market-close-rollover"))
+                .andExpect(jsonPath("$.data.executionMode").value("price-limit-base:MC001"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+
+        verify(stockBatchJobLauncher).rolloverClosingPrices("MC001");
     }
 
     @Test

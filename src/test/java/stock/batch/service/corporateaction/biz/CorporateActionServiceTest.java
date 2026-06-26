@@ -31,6 +31,8 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_execution where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_holding where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_holding_snapshot where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%')");
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
@@ -84,11 +86,21 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_cashDividendOnPaymentDate_adjustsPriceAndPaysEntitlements() {
+    void applyDueCorporateActions_cashDividendOnPaymentDate_keepsPriceAndPaysEntitlements() {
         insertOrderBookInstrument("ZQ007", 100000L, 100000L);
         insertPrice("ZQ007", "70000.00");
         insertAccount("dividend-holder");
         insertHolding("dividend-holder", "ZQ007", 10L, 0L, "70000.00");
+        long closeRunId = insertHoldingSnapshot("ZQ007");
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = 99,
+                       updated_at = ?
+                 where symbol = 'ZQ007'
+                """,
+                LocalDateTime.now()
+        );
         insertCashDividend(
                 "ZQ007",
                 "1000.00",
@@ -104,11 +116,15 @@ class CorporateActionServiceTest {
         assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ007'"))
                 .isEqualTo("PAID");
         assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ007'"))
-                .isEqualByComparingTo(new BigDecimal("69000.00"));
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryString("select provider from stock_price where symbol = 'ZQ007'"))
-                .isEqualTo("corporate-action-dividend");
+                .isEqualTo("test");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'dividend-holder'"))
                 .isEqualByComparingTo(new BigDecimal("10010000.00"));
+        assertThat(queryLong("select quantity from stock_corporate_action_entitlement where symbol = 'ZQ007'"))
+                .isEqualTo(10L);
+        assertThat(queryLong("select holding_snapshot_run_id from stock_corporate_action_entitlement where symbol = 'ZQ007'"))
+                .isEqualTo(closeRunId);
         assertThat(queryDecimal("""
                 select amount
                 from stock_account_cash_flow f
@@ -147,6 +163,7 @@ class CorporateActionServiceTest {
         insertPrice("ZQ009", "70000.00");
         insertAccount("bonus-holder");
         insertHolding("bonus-holder", "ZQ009", 100L, 0L, "70000.00");
+        insertHoldingSnapshot("ZQ009");
         insertBonusIssue(
                 "ZQ009",
                 10000L,
@@ -183,6 +200,7 @@ class CorporateActionServiceTest {
         insertPrice("ZQ010", "70000.00");
         insertAccount("dividend-stock-holder");
         insertHolding("dividend-stock-holder", "ZQ010", 100L, 0L, "70000.00");
+        insertHoldingSnapshot("ZQ010");
         insertFreeShareDistribution(
                 "ZQ010",
                 "STOCK_DIVIDEND",
@@ -389,6 +407,107 @@ class CorporateActionServiceTest {
         assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ014'"))
                 .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ014'"))
+                .isZero();
+    }
+
+    @Test
+    void applyDueCorporateActions_cashDividendWithoutHoldingSnapshot_waitsWithoutCreatingEntitlements() {
+        insertOrderBookInstrument("ZQ016", 100000L, 100000L);
+        insertPrice("ZQ016", "70000.00");
+        insertAccount("dividend-no-snapshot-holder");
+        insertHolding("dividend-no-snapshot-holder", "ZQ016", 10L, 0L, "70000.00");
+        insertCashDividend(
+                "ZQ016",
+                "1000.00",
+                "70000.00",
+                "69000.00",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().plusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isZero();
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ016'"))
+                .isEqualTo("ANNOUNCED");
+        assertThat(queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ016'"))
+                .isZero();
+    }
+
+    @Test
+    void applyDueCorporateActions_cashDividendUsesLatestCloseSnapshotWhenMultipleClosesExist() {
+        insertOrderBookInstrument("ZQ017", 100000L, 100000L);
+        insertPrice("ZQ017", "70000.00");
+        insertAccount("dividend-multi-close-holder");
+        insertHolding("dividend-multi-close-holder", "ZQ017", 10L, 0L, "70000.00");
+        insertHoldingSnapshot("ZQ017", LocalDateTime.now().minusHours(3));
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = 25,
+                       updated_at = ?
+                 where symbol = 'ZQ017'
+                """,
+                LocalDateTime.now().minusHours(2)
+        );
+        long latestCloseRunId = insertHoldingSnapshot("ZQ017", LocalDateTime.now().minusHours(1));
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = 99,
+                       updated_at = ?
+                 where symbol = 'ZQ017'
+                """,
+                LocalDateTime.now()
+        );
+        insertCashDividend(
+                "ZQ017",
+                "1000.00",
+                "70000.00",
+                "69000.00",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().plusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ017'"))
+                .isEqualTo("EX_RIGHTS_APPLIED");
+        assertThat(queryLong("select quantity from stock_corporate_action_entitlement where symbol = 'ZQ017'"))
+                .isEqualTo(25L);
+        assertThat(queryLong("select holding_snapshot_run_id from stock_corporate_action_entitlement where symbol = 'ZQ017'"))
+                .isEqualTo(latestCloseRunId);
+        assertThat(queryLong("select quantity from stock_holding where symbol = 'ZQ017'"))
+                .isEqualTo(99L);
+    }
+
+    @Test
+    void applyDueCorporateActions_cashDividendDoesNotReuseStaleSnapshotWhenLatestCloseHasNoHolder() {
+        insertOrderBookInstrument("ZQ018", 100000L, 100000L);
+        insertPrice("ZQ018", "70000.00");
+        insertAccount("dividend-stale-snapshot-holder");
+        insertHolding("dividend-stale-snapshot-holder", "ZQ018", 10L, 0L, "70000.00");
+        insertHoldingSnapshot("ZQ018", LocalDateTime.now().minusHours(3));
+        jdbcTemplate.update("delete from stock_holding where symbol = 'ZQ018'");
+        long latestCloseRunId = insertMarketCloseRun(LocalDateTime.now().minusHours(1));
+        insertCashDividend(
+                "ZQ018",
+                "1000.00",
+                "70000.00",
+                "69000.00",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().plusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ018'"))
+                .isEqualTo("EX_RIGHTS_APPLIED");
+        assertThat(queryLong("select count(*) from stock_holding_snapshot where close_run_id = " + latestCloseRunId + " and symbol = 'ZQ018'"))
+                .isZero();
+        assertThat(queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ018'"))
                 .isZero();
     }
 
@@ -617,6 +736,62 @@ class CorporateActionServiceTest {
                 "insert into stock_auto_participant_symbol_config(user_key, symbol, enabled, intensity, updated_at) values ('stock-auto-test', ?, true, 5, ?)",
                 symbol,
                 LocalDateTime.now()
+        );
+    }
+
+    private long insertHoldingSnapshot(String symbol) {
+        return insertHoldingSnapshot(symbol, LocalDateTime.now());
+    }
+
+    private long insertHoldingSnapshot(String symbol, LocalDateTime snapshotAt) {
+        Long closeRunId = insertMarketCloseRun(snapshotAt);
+        jdbcTemplate.update(
+                """
+                insert into stock_holding_snapshot(
+                    close_run_id, account_id, symbol, quantity, reserved_quantity, average_price, snapshot_at
+                )
+                select ?, account_id, symbol, quantity, reserved_quantity, average_price, ?
+                  from stock_holding
+                 where symbol = ?
+                """,
+                closeRunId,
+                snapshotAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_market_close_run
+                   set holding_snapshot_count = (
+                       select count(*)
+                         from stock_holding_snapshot
+                        where close_run_id = ?
+                   )
+                 where id = ?
+                """,
+                closeRunId,
+                closeRunId
+        );
+        return closeRunId;
+    }
+
+    private long insertMarketCloseRun(LocalDateTime snapshotAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_market_close_run(
+                    business_date, closed_at, status,
+                    cancelled_order_count, holding_snapshot_count, price_rollover_count,
+                    created_at, completed_at
+                )
+                values (?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
+                """,
+                snapshotAt.toLocalDate(),
+                snapshotAt,
+                snapshotAt,
+                snapshotAt
+        );
+        return jdbcTemplate.queryForObject(
+                "select max(id) from stock_market_close_run",
+                Long.class
         );
     }
 

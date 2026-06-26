@@ -203,7 +203,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 유상증자 기업 이벤트는 corporate action job이 처리합니다. 권리락일에는 이론권리락가격을 `stock_price`, `stock_price_tick`에 반영하고, 납입일에는 상태를 `PAID`로 바꾸며, 신주상장일에는 `stock_order_book_instrument.issued_shares`, `tradable_shares`를 증가시킵니다.
 - 추가발행 기업 이벤트는 신주상장일에 `issued_shares`, `tradable_shares`만 증가시키고 가격은 직접 조정하지 않습니다.
 - 액면분할 기업 이벤트는 효력일에 `issued_shares`, `tradable_shares`, 보유수량, 예약수량을 배율만큼 늘리고 현재가, 전일종가, 평균단가를 같은 배율로 나눕니다. 효력일에 미체결 주문이 있으면 가격/수량 기준이 꼬이지 않도록 적용을 대기합니다.
-- 현금배당 기업 이벤트는 배당락일에 배당락 가격을 `stock_price`, `stock_price_tick`에 반영하고 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다.
+- 현금배당 기업 이벤트는 배당락일에 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다. 현금배당 자체는 `stock_price`, `stock_price_tick`을 강제로 조정하지 않습니다.
 - 무상증자와 주식배당 기업 이벤트는 배당락일에 이론권리락가격을 반영하고 현재 보유수량 기준으로 신주 entitlement를 만듭니다. 신주상장일에는 `issued_shares`, `tradable_shares`, 보유수량을 늘리고 평균단가를 낮춘 뒤 entitlement를 `PAID`로 전이합니다.
 - 체결 수수료와 매도 거래세는 체결 단위로 계산해 `stock_execution`에 `fee_amount`, `tax_amount`, `net_amount`, `realized_profit`으로 기록합니다. 매수 평균단가는 수수료 포함 원가 기준입니다.
 - 자동장 job은 자동 참여자 주문 생성 후 같은 내부 주문장 체결 엔진을 실행하므로, 브라우저 localStorage나 프론트 전용 가짜 주문 상태에 의존하지 않습니다.

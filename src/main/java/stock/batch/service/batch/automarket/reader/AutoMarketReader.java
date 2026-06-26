@@ -203,18 +203,20 @@ public class AutoMarketReader {
         );
     }
 
-    public boolean hasCashFlowSince(long accountId, String reason, LocalDateTime since) {
+    public boolean hasCashFlowSince(long accountId, String reason, String createdBy, LocalDateTime since) {
         Integer exists = jdbcTemplate.queryForObject(
                 """
                 select count(*)
                 from stock_account_cash_flow
                 where account_id = ?
                   and reason = ?
+                  and created_by = ?
                   and created_at >= ?
                 """,
                 Integer.class,
                 accountId,
                 reason,
+                createdBy,
                 since
         );
         return exists != null && exists > 0;

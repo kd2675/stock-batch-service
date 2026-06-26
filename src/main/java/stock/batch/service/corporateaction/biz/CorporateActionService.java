@@ -39,7 +39,6 @@ public class CorporateActionService {
     private static final String BUY = "BUY";
     private static final String SELL = "SELL";
     private static final String RIGHTS_PROVIDER = "corporate-action-rights";
-    private static final String DIVIDEND_PROVIDER = "corporate-action-dividend";
     private static final String FREE_SHARE_PROVIDER = "corporate-action-free-share";
     private static final String DELISTING_PROVIDER = "corporate-action-delisting-zero";
 
@@ -76,29 +75,51 @@ public class CorporateActionService {
             if (corporateActionReader.hasOpenOrderBookOrders(row.symbol())) {
                 continue;
             }
+            Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
+            if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row.actionType())) {
+                continue;
+            }
             LocalDateTime now = LocalDateTime.now();
             int updatedAction = corporateActionWriter.markActionExRightsApplied(row.id(), EX_RIGHTS_APPLIED, ANNOUNCED, now);
             if (updatedAction == 0) {
                 continue;
             }
-            String provider = resolveExRightsProvider(row.actionType());
-            corporateActionPriceWriter.upsertPrice(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
-            corporateActionPriceWriter.insertPriceTick(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
+            if (adjustsExRightsPrice(row.actionType())) {
+                String provider = resolveExRightsProvider(row.actionType());
+                corporateActionPriceWriter.upsertPrice(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
+                corporateActionPriceWriter.insertPriceTick(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
+            }
             if (CASH_DIVIDEND.equals(row.actionType())) {
-                createDividendEntitlements(row, now);
+                createDividendEntitlements(row, holdingSnapshotRunId, now);
             }
             if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
-                createShareEntitlements(row, now);
+                createShareEntitlements(row, holdingSnapshotRunId, now);
             }
             processed += updatedAction;
         }
         return processed;
     }
 
-    private String resolveExRightsProvider(String actionType) {
-        if (CASH_DIVIDEND.equals(actionType)) {
-            return DIVIDEND_PROVIDER;
+    private Long resolveRequiredHoldingSnapshotRunId(ExRightsActionRow row) {
+        if (!requiresHoldingSnapshot(row.actionType())) {
+            return null;
         }
+        return corporateActionReader.findLatestCompletedMarketCloseRunId(row.symbol()).orElse(null);
+    }
+
+    private boolean requiresHoldingSnapshot(String actionType) {
+        return CASH_DIVIDEND.equals(actionType)
+                || BONUS_ISSUE.equals(actionType)
+                || STOCK_DIVIDEND.equals(actionType);
+    }
+
+    private boolean adjustsExRightsPrice(String actionType) {
+        return PAID_IN_CAPITAL_INCREASE.equals(actionType)
+                || BONUS_ISSUE.equals(actionType)
+                || STOCK_DIVIDEND.equals(actionType);
+    }
+
+    private String resolveExRightsProvider(String actionType) {
         if (BONUS_ISSUE.equals(actionType) || STOCK_DIVIDEND.equals(actionType)) {
             return FREE_SHARE_PROVIDER;
         }
@@ -256,12 +277,12 @@ public class CorporateActionService {
         }
     }
 
-    private void createDividendEntitlements(ExRightsActionRow row, LocalDateTime now) {
-        corporateActionWriter.createDividendEntitlements(row, ANNOUNCED, now);
+    private void createDividendEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
+        corporateActionWriter.createDividendEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
     }
 
-    private void createShareEntitlements(ExRightsActionRow row, LocalDateTime now) {
-        corporateActionWriter.createShareEntitlements(row, ANNOUNCED, now);
+    private void createShareEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
+        corporateActionWriter.createShareEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
     }
 
     private void creditShareEntitlements(long actionId, LocalDateTime now) {

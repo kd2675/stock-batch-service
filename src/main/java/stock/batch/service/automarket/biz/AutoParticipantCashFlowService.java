@@ -27,6 +27,7 @@ public class AutoParticipantCashFlowService {
     private static final String AUTO_PROFILE_RECURRING_DEPOSIT_REASON = "AUTO_PROFILE_RECURRING_DEPOSIT";
     private static final String AUTO_PARTICIPANT_RECURRING_DEPOSIT_REASON = "AUTO_PARTICIPANT_RECURRING_DEPOSIT";
     private static final String AUTO_MARKET_CREATED_BY = "AUTO_MARKET";
+    private static final String MANUAL_CREATED_BY = "AUTO_MARKET_MANUAL";
     private static final AutoProfileBehaviorRegistry PROFILE_BEHAVIORS = AutoProfileBehaviorRegistry.createDefault();
 
     private final AutoMarketReader autoMarketReader;
@@ -34,6 +35,15 @@ public class AutoParticipantCashFlowService {
 
     @Transactional
     public int fundRecurringCash() {
+        return fundRecurringCash(false);
+    }
+
+    @Transactional
+    public int fundRecurringCashManually() {
+        return fundRecurringCash(true);
+    }
+
+    private int fundRecurringCash(boolean manualRun) {
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         LocalDateTime now = LocalDateTime.now();
         Set<Long> fundedAccountIds = new HashSet<>();
@@ -48,10 +58,11 @@ public class AutoParticipantCashFlowService {
             if (recurringPolicy == null) {
                 continue;
             }
-            if (autoMarketReader.hasCashFlowSince(target.accountId(), recurringPolicy.reason(), recurringPolicy.windowStart())) {
+            if (!manualRun && autoMarketReader.hasCashFlowSince(target.accountId(), recurringPolicy.reason(), AUTO_MARKET_CREATED_BY, recurringPolicy.windowStart())) {
                 continue;
             }
-            autoMarketWriter.depositCashFlow(target.accountId(), recurringPolicy.amount(), recurringPolicy.reason(), AUTO_MARKET_CREATED_BY, now);
+            String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
+            autoMarketWriter.depositCashFlow(target.accountId(), recurringPolicy.amount(), recurringPolicy.reason(), createdBy, now);
             funded++;
         }
 
@@ -63,6 +74,9 @@ public class AutoParticipantCashFlowService {
             ProfilePolicy profilePolicy,
             LocalDateTime now
     ) {
+        if (AutoParticipantProfileType.DIVIDEND_REINVESTOR.equals(target.profileType())) {
+            return null;
+        }
         if (target.recurringCashAmount() != null) {
             if (target.recurringCashAmount().compareTo(BigDecimal.ZERO) <= 0
                     || target.recurringCashIntervalValue() == null

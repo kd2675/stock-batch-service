@@ -29,4 +29,8 @@ public class AutoParticipantCashFlowJob implements StockBatchJob {
     public int run() {
         return autoParticipantCashFlowService.fundRecurringCash();
     }
+
+    public int runManually() {
+        return autoParticipantCashFlowService.fundRecurringCashManually();
+    }
 }

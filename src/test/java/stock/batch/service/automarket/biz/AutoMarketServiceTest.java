@@ -479,25 +479,10 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void buyBias_dividendReinvestorKeepsBuyingBiasFromRecurringCashAndLongHolding() {
-        double dividendReinvestorBias = autoMarketService.buyBiasForProfile(
-                AutoParticipantProfileType.DIVIDEND_REINVESTOR,
-                5,
-                0,
-                0,
-                -0.05,
-                5
-        );
-        double longTermHolderBias = autoMarketService.buyBiasForProfile(
-                AutoParticipantProfileType.LONG_TERM_HOLDER,
-                5,
-                0,
-                0,
-                -0.05,
-                5
-        );
+    void buyBias_dividendReinvestorHasNoRecurringCashByDefault() {
+        DividendReinvestorBehavior behavior = new DividendReinvestorBehavior();
 
-        assertThat(dividendReinvestorBias).isGreaterThan(longTermHolderBias + 0.08);
+        assertThat(behavior.defaultPolicy().recurringDepositAmount()).isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
@@ -1931,24 +1916,30 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_dividendReinvestorDepositsSmallCashAndBuys() {
+    void runAutoMarketStep_dividendReinvestorBuysAfterDividendPaymentWithoutRecurringCash() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'DIVIDEND_REINVESTOR' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
-        insertAutoAccount("stock-auto-001", "0.00");
+        insertAutoAccount("stock-auto-001", "100000.00");
+        jdbcTemplate.update("""
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                select id, 'DEPOSIT', 100000.00, 'DIVIDEND_PAYMENT', 'CORPORATE_ACTION', current_timestamp
+                from stock_account
+                where user_key = 'stock-auto-001'
+                """);
 
         autoParticipantCashFlowService.fundRecurringCash();
         autoMarketService.runAutoMarketStep();
 
-        assertThat(queryDecimal("""
-                select amount
+        assertThat(queryLong("""
+                select count(*)
                 from stock_account_cash_flow f
                 join stock_account a on a.id = f.account_id
                 where a.user_key = 'stock-auto-001'
                   and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
-                """)).isEqualByComparingTo(new BigDecimal("120000.00"));
+                """)).isZero();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))

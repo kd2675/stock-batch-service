@@ -51,7 +51,7 @@ public class StockBatchJobController {
 
     @PostMapping("/auto-participant-cash-flow/run")
     public ResponseDataDTO<StockBatchJobRunResponse> fundAutoParticipants() {
-        return ResponseDataDTO.of(stockBatchJobLauncher.fundAutoParticipants());
+        return ResponseDataDTO.of(stockBatchJobLauncher.fundAutoParticipantsManually());
     }
 
     @GetMapping("/auto-participant-cash-flow/status")
@@ -110,6 +110,15 @@ public class StockBatchJobController {
     @PostMapping("/market-close/rollover")
     public ResponseDataDTO<StockBatchJobRunResponse> rolloverClosingPrices() {
         return ResponseDataDTO.of(stockBatchJobLauncher.rolloverClosingPrices());
+    }
+
+    @PostMapping("/market-close/rollover/{symbol}")
+    public ResponseDataDTO<StockBatchJobRunResponse> rolloverClosingPrices(@PathVariable String symbol) {
+        String decodedSymbol = URLDecoder.decode(symbol, StandardCharsets.UTF_8);
+        if (!StringUtils.hasText(decodedSymbol)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "symbol is required");
+        }
+        return ResponseDataDTO.of(stockBatchJobLauncher.rolloverClosingPrices(decodedSymbol));
     }
 
     @PostMapping("/corporate-actions/run")

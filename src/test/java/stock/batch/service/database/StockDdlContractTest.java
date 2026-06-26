@@ -96,6 +96,12 @@ class StockDdlContractTest {
             "stock_batch_job_lock"
     );
 
+    private static final List<String> MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS = List.of(
+            "stock_market_close_run",
+            "stock_holding_snapshot",
+            "holding_snapshot_run_id"
+    );
+
     @Test
     void corporateActionDdlResources_matchInitialProjectScope() throws IOException {
         for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
@@ -159,6 +165,15 @@ class StockDdlContractTest {
             String ddl = readDdlResource(resourcePath);
 
             assertThat(ddl).as(resourcePath).contains(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
+        }
+    }
+
+    @Test
+    void ddlResources_defineMarketCloseHoldingSnapshotTables() throws IOException {
+        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
+            String ddl = readDdlResource(resourcePath);
+
+            assertThat(ddl).as(resourcePath).contains(MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS.toArray(String[]::new));
         }
     }
 

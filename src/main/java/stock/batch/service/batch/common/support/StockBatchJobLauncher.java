@@ -43,6 +43,25 @@ public class StockBatchJobLauncher {
         return stockBatchJobRunner.run(autoParticipantCashFlowJob);
     }
 
+    public StockBatchJobRunResponse fundAutoParticipantsManually() {
+        return stockBatchJobRunner.run(new StockBatchJob() {
+            @Override
+            public String jobName() {
+                return AutoParticipantCashFlowJob.JOB_NAME;
+            }
+
+            @Override
+            public String executionMode() {
+                return "manual-recurring-cash";
+            }
+
+            @Override
+            public int run() {
+                return autoParticipantCashFlowJob.runManually();
+            }
+        });
+    }
+
     public StockBatchJobRunResponse runAutoMarket() {
         return stockBatchJobRunner.run(autoMarketJob);
     }
@@ -53,6 +72,25 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse rolloverClosingPrices() {
         return stockBatchJobRunner.run(marketCloseRolloverJob);
+    }
+
+    public StockBatchJobRunResponse rolloverClosingPrices(String symbol) {
+        return stockBatchJobRunner.run(new StockBatchJob() {
+            @Override
+            public String jobName() {
+                return MarketCloseRolloverJob.JOB_NAME;
+            }
+
+            @Override
+            public String executionMode() {
+                return "price-limit-base:" + symbol;
+            }
+
+            @Override
+            public int run() {
+                return marketCloseRolloverJob.run(symbol);
+            }
+        });
     }
 
     public StockBatchJobRunResponse applyCorporateActions() {

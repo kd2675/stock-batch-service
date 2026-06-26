@@ -29,4 +29,8 @@ public class MarketCloseRolloverJob implements StockBatchJob {
     public int run() {
         return marketCloseRolloverService.rolloverClosingPrices();
     }
+
+    public int run(String symbol) {
+        return marketCloseRolloverService.rolloverClosingPrices(symbol);
+    }
 }

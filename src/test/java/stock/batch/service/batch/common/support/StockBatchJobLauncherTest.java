@@ -128,6 +128,18 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
+    void rolloverClosingPrices_symbolManualRun_invokesMarketCloseRolloverForSymbol() {
+        when(marketCloseRolloverService.rolloverClosingPrices("MC001")).thenReturn(4);
+
+        var response = stockBatchJobLauncher.rolloverClosingPrices("MC001");
+
+        assertThat(response.job()).isEqualTo("market-close-rollover");
+        assertThat(response.executionMode()).isEqualTo("price-limit-base:MC001");
+        assertThat(response.processedCount()).isEqualTo(4);
+        verify(marketCloseRolloverService).rolloverClosingPrices("MC001");
+    }
+
+    @Test
     void applyCorporateActions_manualRun_invokesCorporateActionService() {
         when(corporateActionService.applyDueCorporateActions()).thenReturn(3);
 
@@ -149,6 +161,21 @@ class StockBatchJobLauncherTest {
         assertThat(response.executionMode()).isEqualTo("recurring-cash");
         assertThat(response.processedCount()).isEqualTo(6);
         verify(autoParticipantCashFlowService).fundRecurringCash();
+        verify(autoMarketService, never()).runAutoMarketStep();
+        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
+    }
+
+    @Test
+    void fundAutoParticipantsManually_manualRun_ignoresRecurringIntervalGuard() {
+        when(autoParticipantCashFlowService.fundRecurringCashManually()).thenReturn(6);
+
+        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
+
+        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
+        assertThat(response.executionMode()).isEqualTo("manual-recurring-cash");
+        assertThat(response.processedCount()).isEqualTo(6);
+        verify(autoParticipantCashFlowService).fundRecurringCashManually();
+        verify(autoParticipantCashFlowService, never()).fundRecurringCash();
         verify(autoMarketService, never()).runAutoMarketStep();
         verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
     }

@@ -2,6 +2,7 @@ package stock.batch.service.batch.corporateaction.reader;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -196,6 +197,22 @@ public class CorporateActionReader {
                 symbol
         );
         return openOrderCount != null && openOrderCount > 0;
+    }
+
+    public Optional<Long> findLatestCompletedMarketCloseRunId(String symbol) {
+        List<Long> runIds = jdbcTemplate.query(
+                """
+                select id
+                  from stock_market_close_run
+                 where status = 'COMPLETED'
+                   and (symbol = ? or symbol is null)
+                 order by closed_at desc, id desc
+                 limit 1
+                """,
+                (rs, rowNum) -> rs.getLong("id"),
+                symbol
+        );
+        return runIds.stream().findFirst();
     }
 
     public List<ShareEntitlementRow> findAnnouncedShareEntitlements(long actionId, String status) {
