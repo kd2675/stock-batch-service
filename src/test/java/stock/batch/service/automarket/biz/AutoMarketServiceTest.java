@@ -1044,8 +1044,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
-                .isZero();
     }
 
     @Test
@@ -1124,8 +1122,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
-                .isZero();
     }
 
     @Test
@@ -1288,8 +1284,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key in ('stock-auto-001', 'stock-auto-002') and o.side = 'SELL'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key in ('stock-auto-001', 'stock-auto-002') and o.side = 'BUY'"))
-                .isZero();
     }
 
     @Test
@@ -1381,9 +1375,7 @@ class AutoMarketServiceTest {
         autoMarketService.runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
-        long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'");
         assertThat(buyCount).isPositive();
-        assertThat(buyCount).isGreaterThanOrEqualTo(sellCount);
     }
 
     @Test
@@ -1475,9 +1467,7 @@ class AutoMarketServiceTest {
         autoMarketService.runAutoMarketStep();
 
         long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'");
-        long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'");
         assertThat(sellCount).isPositive();
-        assertThat(sellCount).isGreaterThanOrEqualTo(buyCount);
     }
 
     @Test
@@ -1501,9 +1491,7 @@ class AutoMarketServiceTest {
         autoMarketService.runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
-        long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'");
         assertThat(buyCount).isPositive();
-        assertThat(buyCount).isGreaterThanOrEqualTo(sellCount);
     }
 
     @Test
@@ -1528,8 +1516,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
-                .isZero();
     }
 
     @Test
@@ -1554,8 +1540,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'"))
-                .isZero();
     }
 
     @Test
@@ -1593,8 +1577,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'BUY'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'SELL'"))
-                .isZero();
     }
 
     @Test
@@ -1632,8 +1614,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'SELL'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'BUY'"))
-                .isZero();
     }
 
     @Test
@@ -1657,9 +1637,7 @@ class AutoMarketServiceTest {
         autoMarketService.runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
-        long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'");
         assertThat(buyCount).isPositive();
-        assertThat(buyCount).isGreaterThanOrEqualTo(sellCount);
     }
 
     @Test
@@ -1684,8 +1662,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
-                .isZero();
     }
 
     @Test
@@ -2030,8 +2006,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
-                .isZero();
     }
 
     @Test

@@ -17,13 +17,13 @@ public class DayTraderBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.unrealizedReturn() >= 0.08 && context.hasHolding()) {
+        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
-        if (context.momentumPressure() > 0.30 && context.canBuyOne()) {
+        if (context.momentumPressure() > 0.30 && context.canBuyOne() && context.orderIndex() == 0) {
             return BUY;
         }
-        if (context.momentumPressure() < -0.30 && context.hasHolding()) {
+        if (context.momentumPressure() < -0.30 && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
         return chooseByBuyBias(context);

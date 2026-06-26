@@ -12,10 +12,10 @@ public class HerdFollowerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.herdPressure() > 0.50 && context.canBuyOne()) {
+        if (context.herdPressure() > 0.50 && context.canBuyOne() && context.orderIndex() == 0) {
             return BUY;
         }
-        if (context.herdPressure() < -0.50 && context.hasHolding()) {
+        if (context.herdPressure() < -0.50 && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
         return chooseByBuyBias(context);

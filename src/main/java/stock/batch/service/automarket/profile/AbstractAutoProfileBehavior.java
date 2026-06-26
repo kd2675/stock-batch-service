@@ -118,6 +118,9 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
     }
 
     protected String chooseDominantConfiguredSide(ProfileSignalContext context) {
+        if (context.orderIndex() > 0) {
+            return null;
+        }
         ProfilePolicy policy = context.policy();
         if (context.isWinning() && context.hasHolding() && policy.profitTakingWeight() >= 0.90) {
             return SELL;

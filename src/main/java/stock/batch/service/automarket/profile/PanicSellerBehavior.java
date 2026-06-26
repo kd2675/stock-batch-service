@@ -12,7 +12,7 @@ public class PanicSellerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if ((context.momentumPressure() < -0.35 || context.herdPressure() < -0.35) && context.hasHolding()) {
+        if ((context.momentumPressure() < -0.35 || context.herdPressure() < -0.35) && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
         return super.chooseSide(context);
