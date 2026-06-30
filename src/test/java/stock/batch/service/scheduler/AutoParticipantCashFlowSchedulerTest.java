@@ -143,6 +143,19 @@ class AutoParticipantCashFlowSchedulerTest {
     }
 
     @Test
+    void portfolioSettlementScheduler_marketCloseScheduleRunsRolloverOnly() {
+        PortfolioSettlementScheduler portfolioSettlementScheduler =
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, batchJobRuntimeControl);
+        ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
+
+        portfolioSettlementScheduler.rolloverClosingPrices();
+
+        verify(stockBatchJobLauncher).rolloverClosingPrices();
+        verify(stockBatchJobLauncher, never()).settlePortfolios();
+    }
+
+    @Test
     void portfolioSettlementScheduler_marketCloseConfiguredOff_stillRunsSettlementOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
                 new PortfolioSettlementScheduler(stockBatchJobLauncher, batchJobRuntimeControl);

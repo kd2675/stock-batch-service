@@ -36,23 +36,17 @@ class AutoParticipantCashFlowServiceTest {
     }
 
     @Test
-    void fundRecurringCash_withoutEnabledMarketConfig_paysActiveParticipant() {
+    void fundRecurringCash_withoutDirectRecurringCashSetting_doesNotPayProfileDefaultCash() {
         insertAutoParticipant("stock-auto-payday", "PAYDAY_ACCUMULATOR", true, null, null, null);
         insertActiveAccount("stock-auto-payday", "0.00");
         insertDisabledMarketConfigAndSymbolStrategy("stock-auto-payday");
 
         int funded = autoParticipantCashFlowService.fundRecurringCash();
 
-        assertThat(funded).isEqualTo(1);
-        assertThat(queryDecimal("""
-                select amount
-                from stock_account_cash_flow f
-                join stock_account a on a.id = f.account_id
-                where a.user_key = 'stock-auto-payday'
-                  and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
-                """)).isEqualByComparingTo(new BigDecimal("300000.00"));
+        assertThat(funded).isZero();
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-payday'"))
-                .isEqualByComparingTo(new BigDecimal("300000.00"));
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test

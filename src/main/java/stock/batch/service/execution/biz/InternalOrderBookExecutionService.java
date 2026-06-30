@@ -201,7 +201,6 @@ public class InternalOrderBookExecutionService {
 
     private void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount, LocalDateTime executedAt) {
         orderBookExecutionWriter.upsertHolding(
-                orderBookExecutionReader.findHoldings(accountId, symbol),
                 accountId,
                 symbol,
                 quantity,

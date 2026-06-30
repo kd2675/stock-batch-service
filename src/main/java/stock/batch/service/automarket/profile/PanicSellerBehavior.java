@@ -7,12 +7,12 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class PanicSellerBehavior extends AbstractAutoProfileBehavior {
 
     public PanicSellerBehavior() {
-        super(AutoParticipantProfileType.PANIC_SELLER, new ProfilePolicy(0.25, 0.25, 0.00, 0.20, 0.45, 0.00, 0.10, 0.70, 1.40, 1.40, 0.45, 0.25, 1.10, 0.90, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.PANIC_SELLER, new ProfilePolicy(0.25, 0.22, 0.00, 0.22, 0.38, 0.00, 0.08, 0.62, 0.95, 1.05, 0.90, 0.16, 0.95, 0.82, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
     }
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if ((context.momentumPressure() < -0.35 || context.herdPressure() < -0.35) && context.hasHolding() && context.orderIndex() == 0) {
+        if ((context.momentumPressure() < -0.50 || context.herdPressure() < -0.50) && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
         return super.chooseSide(context);

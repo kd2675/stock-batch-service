@@ -148,17 +148,4 @@ public class OrderBookExecutionReader {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public List<OrderBookHoldingRow> findHoldings(long accountId, String symbol) {
-        return jdbcTemplate.query(
-                "select id, quantity, reserved_quantity, average_price from stock_holding where account_id = ? and symbol = ?",
-                (rs, rowNum) -> new OrderBookHoldingRow(
-                        rs.getLong("id"),
-                        rs.getLong("quantity"),
-                        rs.getLong("reserved_quantity"),
-                        rs.getBigDecimal("average_price")
-                ),
-                accountId,
-                symbol
-        );
-    }
 }

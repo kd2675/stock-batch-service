@@ -23,21 +23,33 @@ public class PortfolioSettlementScheduler {
     private boolean settlementSchedulerConfigured;
 
     @Scheduled(
+            cron = "${stock.batch.market-close.cron:0 0 * * * *}",
+            zone = "${stock.batch.market-close.zone:Asia/Seoul}"
+    )
+    public void rolloverClosingPrices() {
+        runMarketCloseRollover();
+    }
+
+    @Scheduled(
             cron = "${stock.batch.settlement.cron:0 40 15 * * MON-FRI}",
             zone = "${stock.batch.settlement.zone:Asia/Seoul}"
     )
     public void settlePortfolios() {
-        if (batchJobRuntimeControl.shouldRunScheduledJob(
-                MarketCloseRolloverJob.JOB_NAME,
-                marketCloseSchedulerConfigured
-        )) {
-            stockBatchJobLauncher.rolloverClosingPrices();
-        }
+        runMarketCloseRollover();
         if (batchJobRuntimeControl.shouldRunScheduledJob(
                 PortfolioSettlementJob.JOB_NAME,
                 settlementSchedulerConfigured
         )) {
             stockBatchJobLauncher.settlePortfolios();
+        }
+    }
+
+    private void runMarketCloseRollover() {
+        if (batchJobRuntimeControl.shouldRunScheduledJob(
+                MarketCloseRolloverJob.JOB_NAME,
+                marketCloseSchedulerConfigured
+        )) {
+            stockBatchJobLauncher.rolloverClosingPrices();
         }
     }
 }

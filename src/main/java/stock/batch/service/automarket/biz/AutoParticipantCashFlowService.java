@@ -4,9 +4,12 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -15,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import stock.batch.service.automarket.profile.AutoProfileBehaviorRegistry;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
@@ -46,11 +50,12 @@ public class AutoParticipantCashFlowService {
     private int fundRecurringCash(boolean manualRun) {
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         LocalDateTime now = LocalDateTime.now();
-        Set<Long> fundedAccountIds = new HashSet<>();
+        Set<Long> candidateAccountIds = new HashSet<>();
+        List<RecurringCashCandidate> candidates = new ArrayList<>();
         int funded = 0;
 
         for (AutoParticipantRecurringCashTarget target : autoMarketReader.findRecurringCashTargets()) {
-            if (!fundedAccountIds.add(target.accountId())) {
+            if (!candidateAccountIds.add(target.accountId())) {
                 continue;
             }
             ProfilePolicy policy = profilePolicy(profilePolicies, target.profileType());
@@ -58,15 +63,52 @@ public class AutoParticipantCashFlowService {
             if (recurringPolicy == null) {
                 continue;
             }
-            if (!manualRun && autoMarketReader.hasCashFlowSince(target.accountId(), recurringPolicy.reason(), AUTO_MARKET_CREATED_BY, recurringPolicy.windowStart())) {
+            candidates.add(new RecurringCashCandidate(target.accountId(), recurringPolicy));
+        }
+
+        Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId = manualRun
+                ? Map.of()
+                : loadRecentAutomaticCashFlows(candidates);
+        for (RecurringCashCandidate candidate : candidates) {
+            if (!manualRun && hasRecentAutomaticCashFlow(candidate, recentCashFlowsByAccountId)) {
                 continue;
             }
             String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
-            autoMarketWriter.depositCashFlow(target.accountId(), recurringPolicy.amount(), recurringPolicy.reason(), createdBy, now);
+            autoMarketWriter.depositCashFlow(candidate.accountId(), candidate.policy().amount(), candidate.policy().reason(), createdBy, now);
             funded++;
         }
 
         return funded;
+    }
+
+    private Map<Long, List<AutoParticipantRecentCashFlow>> loadRecentAutomaticCashFlows(List<RecurringCashCandidate> candidates) {
+        if (candidates.isEmpty()) {
+            return Map.of();
+        }
+        LocalDateTime earliestWindowStart = candidates.stream()
+                .map(candidate -> candidate.policy().windowStart())
+                .min(LocalDateTime::compareTo)
+                .orElseThrow();
+        Set<String> reasons = candidates.stream()
+                .map(candidate -> candidate.policy().reason())
+                .collect(Collectors.toSet());
+        List<Long> accountIds = candidates.stream()
+                .map(RecurringCashCandidate::accountId)
+                .toList();
+        return autoMarketReader.findRecentCashFlows(accountIds, reasons, AUTO_MARKET_CREATED_BY, earliestWindowStart)
+                .stream()
+                .collect(Collectors.groupingBy(AutoParticipantRecentCashFlow::accountId));
+    }
+
+    private boolean hasRecentAutomaticCashFlow(
+            RecurringCashCandidate candidate,
+            Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId
+    ) {
+        List<AutoParticipantRecentCashFlow> recentCashFlows = recentCashFlowsByAccountId.getOrDefault(candidate.accountId(), List.of());
+        return recentCashFlows.stream().anyMatch(cashFlow ->
+                candidate.policy().reason().equals(cashFlow.reason())
+                        && !cashFlow.createdAt().isBefore(candidate.policy().windowStart())
+        );
     }
 
     private RecurringCashPolicy recurringCashPolicy(
@@ -131,6 +173,12 @@ public class AutoParticipantCashFlowService {
             BigDecimal amount,
             String reason,
             LocalDateTime windowStart
+    ) {
+    }
+
+    private record RecurringCashCandidate(
+            long accountId,
+            RecurringCashPolicy policy
     ) {
     }
 }

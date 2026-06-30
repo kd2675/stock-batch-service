@@ -17,27 +17,22 @@ public class PortfolioSnapshotWriter {
 
     public void write(PortfolioSnapshotCommand command) {
         LocalDate today = LocalDate.now();
-        Integer count = jdbcTemplate.queryForObject(
-                "select count(*) from portfolio_snapshot where account_id = ? and snapshot_date = ?",
-                Integer.class,
+        LocalDateTime now = LocalDateTime.now();
+        int updatedRows = jdbcTemplate.update(
+                """
+                update portfolio_snapshot
+                set total_asset = ?, cash_balance = ?, market_value = ?, return_rate = ?, created_at = ?
+                where account_id = ? and snapshot_date = ?
+                """,
+                command.totalAsset(),
+                command.cashBalance(),
+                command.marketValue(),
+                command.returnRate(),
+                now,
                 command.accountId(),
                 today
         );
-        if (count != null && count > 0) {
-            jdbcTemplate.update(
-                    """
-                    update portfolio_snapshot
-                    set total_asset = ?, cash_balance = ?, market_value = ?, return_rate = ?, created_at = ?
-                    where account_id = ? and snapshot_date = ?
-                    """,
-                    command.totalAsset(),
-                    command.cashBalance(),
-                    command.marketValue(),
-                    command.returnRate(),
-                    LocalDateTime.now(),
-                    command.accountId(),
-                    today
-            );
+        if (updatedRows > 0) {
             return;
         }
 
@@ -52,7 +47,7 @@ public class PortfolioSnapshotWriter {
                 command.cashBalance(),
                 command.marketValue(),
                 command.returnRate(),
-                LocalDateTime.now()
+                now
         );
     }
 }

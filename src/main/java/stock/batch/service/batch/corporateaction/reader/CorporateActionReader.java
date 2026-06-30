@@ -3,6 +3,8 @@ package stock.batch.service.batch.corporateaction.reader;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -184,19 +186,29 @@ public class CorporateActionReader {
         );
     }
 
-    public boolean hasOpenOrderBookOrders(String symbol) {
-        Long openOrderCount = jdbcTemplate.queryForObject(
+    public Set<String> findSymbolsWithOpenOrderBookOrders(List<String> symbols) {
+        List<String> normalizedSymbols = symbols.stream()
+                .filter(symbol -> symbol != null && !symbol.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+        if (normalizedSymbols.isEmpty()) {
+            return Set.of();
+        }
+        String placeholders = normalizedSymbols.stream()
+                .map(symbol -> "?")
+                .collect(Collectors.joining(", "));
+        return Set.copyOf(jdbcTemplate.queryForList(
                 """
-                select count(*)
+                select distinct symbol
                   from stock_order
-                 where symbol = ?
+                 where symbol in (%s)
                    and market_type = 'ORDER_BOOK'
                    and status in ('PENDING', 'PARTIALLY_FILLED')
-                """,
-                Long.class,
-                symbol
-        );
-        return openOrderCount != null && openOrderCount > 0;
+                """.formatted(placeholders),
+                String.class,
+                normalizedSymbols.toArray()
+        ));
     }
 
     public Optional<Long> findLatestCompletedMarketCloseRunId(String symbol) {

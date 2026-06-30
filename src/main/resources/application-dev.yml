@@ -6,7 +6,7 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_SERVICE?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_SERVICE?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
     username: root
     password: 1234
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -27,7 +27,7 @@ stock:
       allow-empty-token: false
     repository:
       datasource:
-        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true
+        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
         username: root
         password: 1234
         driver-class-name: com.mysql.cj.jdbc.Driver

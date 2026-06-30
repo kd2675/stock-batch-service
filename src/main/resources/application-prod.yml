@@ -6,7 +6,7 @@ spring:
     activate:
       on-profile: prod
   datasource:
-    url: ${STOCK_DB_URL}
+    url: "${STOCK_DB_URL}?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true"
     username: ${STOCK_DB_USERNAME}
     password: ${STOCK_DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -27,7 +27,7 @@ stock:
       allow-empty-token: false
     repository:
       datasource:
-        url: ${STOCK_BATCH_DB_URL}
+        url: "${STOCK_BATCH_DB_URL}?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true"
         username: ${STOCK_BATCH_DB_USERNAME:${STOCK_DB_USERNAME}}
         password: ${STOCK_BATCH_DB_PASSWORD:${STOCK_DB_PASSWORD}}
         driver-class-name: ${STOCK_BATCH_DB_DRIVER_CLASS_NAME:com.mysql.cj.jdbc.Driver}

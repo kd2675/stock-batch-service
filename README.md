@@ -93,6 +93,7 @@ scripts/stock-gateway-h2-smoke.sh
 - `local`/`dev` 기본값은 다른 백엔드 서비스와 맞춰 원격 개발 MySQL `kimd0.iptime.org:23306`과 Redis `kimd0.iptime.org:26379`입니다.
 - `local`/`dev` 접속값은 기존 백엔드 프로젝트처럼 `application-local.yml`, `application-dev.yml`에 직접 둡니다.
 - `prod`는 DB와 Redis 값을 환경 변수로 명시 주입합니다.
+- `prod`의 `STOCK_DB_URL`, `STOCK_BATCH_DB_URL`은 query string 없는 기본 JDBC URL로 넣습니다. 공통 JDBC 옵션은 설정 파일에서 `connectTimeout=5000`, `socketTimeout=30000`, `tcpKeepAlive=true`를 기본으로 붙입니다.
 - batch는 business DB용 `spring.datasource`와 Spring Batch metadata용 `stock.batch.repository.datasource`를 분리합니다. business 원장은 `STOCK_SERVICE`, `JobRepository` metadata는 `STOCK_BATCH_METADATA`를 사용합니다.
 - batch 운영 제어 상태는 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock` 테이블을 기준으로 합니다.
 - `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장하고, `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다.
@@ -139,6 +140,8 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
 - `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기
 - `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
+- `stock.batch.market-close.cron`: 시뮬레이션 장마감 기준가 롤오버 cron. 기본값 `0 0 * * * *`
+- `stock.batch.market-close.zone`: 시뮬레이션 장마감 기준가 롤오버 timezone. 기본값 `Asia/Seoul`
 - `stock.batch.settlement.enabled`: 포트폴리오 정산 job 활성화 여부
 - 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버가 최초 조회 시 `runtime_enabled=true`로 생성합니다. 운영 중에는 stock-back이 `/api/stock/v1/markets/batch-jobs/runtime-controls`를 통해 stock-batch 내부 API를 호출해 이 DB 값을 변경합니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
@@ -210,4 +213,4 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.
 - 주문장 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
 - 내부 주문장 모드는 자전거래 방지를 위해 같은 사용자끼리의 매수/매도 주문은 매칭하지 않습니다.
-- 장 마감 정산 스케줄은 기본적으로 평일 15:40 `Asia/Seoul` 기준으로 실행하며, 기준가 롤오버 후 포트폴리오 snapshot을 만듭니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.
+- 시뮬레이션 장마감 기준가 롤오버는 기본적으로 매시 정각 `Asia/Seoul` 기준으로 실행합니다. 프로젝트 하루를 현실 1시간으로 보는 자동장에서는 `previous_close`가 이 기준으로 갱신됩니다. 포트폴리오 정산 스케줄은 기본적으로 평일 15:40 `Asia/Seoul` 기준으로 실행하며, 정산 직전에도 기준가 롤오버를 한 번 더 시도한 뒤 포트폴리오 snapshot을 만듭니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.

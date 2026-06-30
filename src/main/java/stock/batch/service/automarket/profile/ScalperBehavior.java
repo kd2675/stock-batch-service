@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class ScalperBehavior extends AbstractAutoProfileBehavior {
 
     public ScalperBehavior() {
-        super(AutoParticipantProfileType.SCALPER, new ProfilePolicy(0.25, 0.60, 0.00, 0.10, 0.40, 0.00, 0.25, 0.90, 2.00, 1.50, 0.25, 0.35, 0.70, 0.10, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.SCALPER, new ProfilePolicy(0.25, 0.55, 0.00, 0.10, 0.35, 0.00, 0.20, 0.85, 1.15, 1.15, 0.65, 0.22, 0.65, 0.10, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
     }
 
     @Override
@@ -15,7 +15,7 @@ public class ScalperBehavior extends AbstractAutoProfileBehavior {
         if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.orderIndex() == 0) {
             return SELL;
         }
-        if (context.momentumPressure() > 0.35 && context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.momentumPressure() > 0.45 && context.canBuyOne() && context.orderIndex() == 0) {
             return BUY;
         }
         return super.chooseSide(context);

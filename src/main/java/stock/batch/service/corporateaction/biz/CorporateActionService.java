@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
@@ -69,10 +70,13 @@ public class CorporateActionService {
                 ANNOUNCED,
                 List.of(PAID_IN_CAPITAL_INCREASE, CASH_DIVIDEND, BONUS_ISSUE, STOCK_DIVIDEND)
         );
+        Set<String> symbolsWithOpenOrders = corporateActionReader.findSymbolsWithOpenOrderBookOrders(
+                rows.stream().map(ExRightsActionRow::symbol).toList()
+        );
 
         int processed = 0;
         for (ExRightsActionRow row : rows) {
-            if (corporateActionReader.hasOpenOrderBookOrders(row.symbol())) {
+            if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
             Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
@@ -167,10 +171,13 @@ public class CorporateActionService {
 
     private int listDueFreeShareDistributions(LocalDate today, String actionType) {
         List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, EX_RIGHTS_APPLIED);
+        Set<String> symbolsWithOpenOrders = corporateActionReader.findSymbolsWithOpenOrderBookOrders(
+                rows.stream().map(ListingActionRow::symbol).toList()
+        );
 
         int processed = 0;
         for (ListingActionRow row : rows) {
-            if (corporateActionReader.hasOpenOrderBookOrders(row.symbol())) {
+            if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
             LocalDateTime now = LocalDateTime.now();
@@ -190,10 +197,13 @@ public class CorporateActionService {
 
     private int listDueShareIssues(LocalDate today, String actionType, String sourceStatus) {
         List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, sourceStatus);
+        Set<String> symbolsWithOpenOrders = corporateActionReader.findSymbolsWithOpenOrderBookOrders(
+                rows.stream().map(ListingActionRow::symbol).toList()
+        );
 
         int processed = 0;
         for (ListingActionRow row : rows) {
-            if (corporateActionReader.hasOpenOrderBookOrders(row.symbol())) {
+            if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
             LocalDateTime now = LocalDateTime.now();
@@ -212,10 +222,13 @@ public class CorporateActionService {
 
     private int applyDueStockSplits(LocalDate today) {
         List<StockSplitActionRow> rows = corporateActionReader.findDueStockSplits(today, STOCK_SPLIT, ANNOUNCED);
+        Set<String> symbolsWithOpenOrders = corporateActionReader.findSymbolsWithOpenOrderBookOrders(
+                rows.stream().map(StockSplitActionRow::symbol).toList()
+        );
 
         int processed = 0;
         for (StockSplitActionRow row : rows) {
-            if (row.splitTo() % row.splitFrom() != 0 || corporateActionReader.hasOpenOrderBookOrders(row.symbol())) {
+            if (row.splitTo() % row.splitFrom() != 0 || symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
             LocalDateTime now = LocalDateTime.now();

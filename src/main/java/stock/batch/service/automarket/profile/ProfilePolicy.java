@@ -67,7 +67,9 @@ public record ProfilePolicy(
                 holdingPatienceWeight,
                 deepLossHoldWeight,
                 recurringDepositAmount,
-                BigDecimal.valueOf(recurringDepositIntervalDays),
+                recurringDepositAmount == null || recurringDepositAmount.compareTo(BigDecimal.ZERO) <= 0
+                        ? BigDecimal.ZERO
+                        : BigDecimal.valueOf(recurringDepositIntervalDays),
                 RecurringCashIntervalUnit.DAY
         );
     }

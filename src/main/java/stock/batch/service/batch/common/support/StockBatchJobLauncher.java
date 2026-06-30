@@ -1,5 +1,7 @@
 package stock.batch.service.batch.common.support;
 
+import java.util.function.IntSupplier;
+
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -44,22 +46,11 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse fundAutoParticipantsManually() {
-        return stockBatchJobRunner.run(new StockBatchJob() {
-            @Override
-            public String jobName() {
-                return AutoParticipantCashFlowJob.JOB_NAME;
-            }
-
-            @Override
-            public String executionMode() {
-                return "manual-recurring-cash";
-            }
-
-            @Override
-            public int run() {
-                return autoParticipantCashFlowJob.runManually();
-            }
-        });
+        return stockBatchJobRunner.run(new DelegatingStockBatchJob(
+                AutoParticipantCashFlowJob.JOB_NAME,
+                "manual-recurring-cash",
+                autoParticipantCashFlowJob::runManually
+        ));
     }
 
     public StockBatchJobRunResponse runAutoMarket() {
@@ -75,25 +66,26 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse rolloverClosingPrices(String symbol) {
-        return stockBatchJobRunner.run(new StockBatchJob() {
-            @Override
-            public String jobName() {
-                return MarketCloseRolloverJob.JOB_NAME;
-            }
-
-            @Override
-            public String executionMode() {
-                return "price-limit-base:" + symbol;
-            }
-
-            @Override
-            public int run() {
-                return marketCloseRolloverJob.run(symbol);
-            }
-        });
+        return stockBatchJobRunner.run(new DelegatingStockBatchJob(
+                MarketCloseRolloverJob.JOB_NAME,
+                "price-limit-base:" + symbol,
+                () -> marketCloseRolloverJob.run(symbol)
+        ));
     }
 
     public StockBatchJobRunResponse applyCorporateActions() {
         return stockBatchJobRunner.run(corporateActionJob);
+    }
+
+    private record DelegatingStockBatchJob(
+            String jobName,
+            String executionMode,
+            IntSupplier runner
+    ) implements StockBatchJob {
+
+        @Override
+        public int run() {
+            return runner.getAsInt();
+        }
     }
 }

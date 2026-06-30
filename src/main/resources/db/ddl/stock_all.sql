@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS stock_account (
   UNIQUE KEY uk_stock_account_user_key (user_key),
   UNIQUE KEY uk_stock_account_account_code (account_code),
   KEY idx_stock_account_status_purge (status, purge_after),
+  KEY idx_stock_account_status_id (status, id),
   CONSTRAINT chk_stock_account_cash_non_negative CHECK (cash_balance >= 0),
   CONSTRAINT chk_stock_account_status_valid CHECK (CASE `status` WHEN 'ACTIVE' THEN 1 WHEN 'DETACHED' THEN 1 WHEN 'CLOSED' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_account_detached_user_scope CHECK (status <> 'DETACHED' OR user_key IS NULL),
@@ -62,6 +63,8 @@ CREATE TABLE IF NOT EXISTS stock_account_cash_flow (
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_stock_account_cash_flow_account_time (account_id, created_at, id),
+  KEY idx_stock_account_cash_flow_account_reason_creator_time (account_id, reason, created_by, created_at, id),
+  KEY idx_stock_account_cash_flow_time (created_at, id),
   CONSTRAINT chk_stock_account_cash_flow_type CHECK (CASE `flow_type` WHEN 'DEPOSIT' THEN 1 WHEN 'WITHDRAW' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_account_cash_flow_amount CHECK (amount > 0),
   CONSTRAINT chk_stock_account_cash_flow_reason CHECK (
@@ -132,6 +135,7 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   PRIMARY KEY (id),
   KEY idx_stock_corporate_action_symbol_created (symbol, created_at),
   KEY idx_stock_corporate_action_status_dates (status, ex_rights_date, payment_date, listing_date, delisting_date),
+  KEY idx_stock_corporate_action_status_symbol (status, symbol),
   CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'ADDITIONAL_ISSUE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 WHEN 'DELISTING' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_status_valid CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'EX_RIGHTS_APPLIED' THEN 1 WHEN 'PAID' THEN 1 WHEN 'LISTED' THEN 1 WHEN 'DELISTED' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_delisting_treatment CHECK (delisting_treatment IS NULL OR delisting_treatment = 'ZERO_VALUE'),
@@ -290,6 +294,10 @@ CREATE TABLE IF NOT EXISTS stock_order (
   KEY idx_stock_order_account_status_created (account_id, status, created_at),
   KEY idx_stock_order_status_symbol (status, symbol),
   KEY idx_stock_order_market_status_symbol (market_type, status, symbol),
+  KEY idx_stock_order_market_status_side (market_type, status, side),
+  KEY idx_stock_order_market_account_time (market_type, account_id, created_at),
+  KEY idx_stock_order_market_created_status (market_type, created_at, status),
+  KEY idx_stock_order_side_status_account (side, status, account_id),
   KEY idx_stock_order_execution_scan (status, order_type, created_at, symbol),
   KEY idx_stock_order_order_book_match (symbol, side, order_type, status, limit_price, created_at),
   CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
@@ -321,6 +329,10 @@ CREATE TABLE IF NOT EXISTS stock_execution (
   executed_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_stock_execution_account_time (account_id, executed_at),
+  KEY idx_stock_execution_time_account (executed_at, account_id),
+  KEY idx_stock_execution_source_account_time (source, account_id, executed_at),
+  KEY idx_stock_execution_source_symbol_time (source, symbol, executed_at),
+  KEY idx_stock_execution_source_time (source, executed_at),
   KEY idx_stock_execution_order (order_id),
   CONSTRAINT chk_stock_execution_side_valid CHECK (CASE `side` WHEN 'BUY' THEN 1 WHEN 'SELL' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_execution_source_valid CHECK (CASE `source` WHEN 'VIRTUAL_MARKET_PRICE' THEN 1 WHEN 'INTERNAL_ORDER_BOOK' THEN 1 ELSE 0 END = 1),
@@ -342,6 +354,7 @@ CREATE TABLE IF NOT EXISTS stock_holding (
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uk_stock_holding_account_symbol (account_id, symbol),
+  KEY idx_stock_holding_symbol_account (symbol, account_id),
   CONSTRAINT chk_stock_holding_quantity_non_negative CHECK (quantity >= 0),
   CONSTRAINT chk_stock_holding_reserved_quantity_valid CHECK (reserved_quantity >= 0 AND reserved_quantity <= quantity),
   CONSTRAINT chk_stock_holding_average_price_positive CHECK (average_price > 0)
@@ -397,6 +410,8 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
   updated_at DATETIME NOT NULL,
   withdrawn_at DATETIME NULL,
   PRIMARY KEY (user_key),
+  KEY idx_stock_auto_participant_active (withdrawn_at, enabled, user_key),
+  KEY idx_stock_auto_participant_profile_active (withdrawn_at, profile_type, enabled, user_key),
   CONSTRAINT chk_stock_auto_participant_profile_type CHECK (
     CASE `profile_type`
       WHEN 'NEWS_REACTIVE' THEN 1
@@ -606,6 +621,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (user_key, symbol),
   KEY idx_stock_auto_participant_symbol_enabled (enabled, symbol, user_key),
+  KEY idx_stock_auto_participant_symbol_lookup (symbol, user_key),
   CONSTRAINT chk_stock_auto_participant_symbol_intensity CHECK (intensity between 1 and 10)
 );
 

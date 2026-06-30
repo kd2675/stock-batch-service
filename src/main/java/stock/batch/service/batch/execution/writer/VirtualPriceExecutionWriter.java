@@ -3,7 +3,6 @@ package stock.batch.service.batch.execution.writer;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.List;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -173,14 +172,29 @@ public class VirtualPriceExecutionWriter {
     }
 
     public void upsertHolding(
-            List<VirtualPriceHoldingRow> rows,
             long accountId,
             String symbol,
             long quantity,
             BigDecimal costAmount,
             LocalDateTime updatedAt
     ) {
-        if (rows.isEmpty()) {
+        int updatedRows = jdbcTemplate.update(
+                """
+                update stock_holding
+                set average_price = ((average_price * quantity) + ?) / (quantity + ?),
+                    quantity = quantity + ?,
+                    updated_at = ?
+                where account_id = ?
+                  and symbol = ?
+                """,
+                costAmount,
+                quantity,
+                quantity,
+                updatedAt,
+                accountId,
+                symbol
+        );
+        if (updatedRows == 0) {
             jdbcTemplate.update(
                     """
                     insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
@@ -192,20 +206,6 @@ public class VirtualPriceExecutionWriter {
                     costAmount.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP),
                     updatedAt
             );
-            return;
         }
-        VirtualPriceHoldingRow holding = rows.get(0);
-        long nextQuantity = holding.quantity() + quantity;
-        BigDecimal totalCost = holding.averagePrice()
-                .multiply(BigDecimal.valueOf(holding.quantity()))
-                .add(costAmount);
-        BigDecimal nextAveragePrice = totalCost.divide(BigDecimal.valueOf(nextQuantity), 2, RoundingMode.HALF_UP);
-        jdbcTemplate.update(
-                "update stock_holding set quantity = ?, average_price = ?, updated_at = ? where id = ?",
-                nextQuantity,
-                nextAveragePrice,
-                updatedAt,
-                holding.id()
-        );
     }
 }

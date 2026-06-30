@@ -66,16 +66,4 @@ public class VirtualPriceExecutionReader {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public List<VirtualPriceHoldingRow> findHoldings(long accountId, String symbol) {
-        return jdbcTemplate.query(
-                "select id, quantity, average_price from stock_holding where account_id = ? and symbol = ?",
-                (rs, rowNum) -> new VirtualPriceHoldingRow(
-                        rs.getLong("id"),
-                        rs.getLong("quantity"),
-                        rs.getBigDecimal("average_price")
-                ),
-                accountId,
-                symbol
-        );
-    }
 }

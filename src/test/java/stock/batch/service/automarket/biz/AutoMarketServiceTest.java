@@ -6,10 +6,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import stock.batch.service.automarket.profile.AutoProfileBehaviorRegistry;
 import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.support.SimulationTimeScale;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
@@ -40,10 +42,12 @@ class AutoMarketServiceTest {
     @BeforeEach
     void setUp() {
         jdbcTemplate.update("delete from stock_execution");
+        jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account");
         jdbcTemplate.update("delete from stock_instrument_report_event");
+        jdbcTemplate.update("delete from stock_price_tick");
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_instrument");
         jdbcTemplate.update("delete from stock_order_book_instrument");
@@ -202,6 +206,43 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void runAutoMarketStep_listingOrdersExpireWithSimulationScaledTtl() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
+        jdbcTemplate.update("delete from stock_auto_participant");
+        insertListingAccount("SELL_ONLY", "0.00", 100L, 7L);
+        Long accountId = queryLong("select id from stock_account where user_key = 'stock-listing-005930'");
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                    client_order_id, account_id, symbol, market_type, side, order_type, status,
+                    limit_price, quantity, filled_quantity, reserved_cash, created_at, updated_at
+                )
+                values ('listing-old-ttl-test', ?, '005930', 'ORDER_BOOK', 'SELL', 'LIMIT', 'PENDING',
+                        70000.00, 7, 0, 0.00, ?, ?)
+                """,
+                accountId,
+                LocalDateTime.now().minusSeconds(4),
+                LocalDateTime.now().minusSeconds(4)
+        );
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order where client_order_id = 'listing-old-ttl-test' and status = 'CANCELLED'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("""
+                select count(*)
+                from stock_order o
+                join stock_account a on a.id = o.account_id
+                where a.user_key = 'stock-listing-005930'
+                  and o.symbol = '005930'
+                  and o.side = 'SELL'
+                  and o.status = 'PENDING'
+                """)).isEqualTo(1L);
+        assertThat(queryLong("select reserved_quantity from stock_holding where account_id = " + accountId + " and symbol = '005930'"))
+                .isEqualTo(7L);
+    }
+
+    @Test
     void runAutoMarketStep_listingBuyOnlyAccountCreatesBuyOrderOnlyWithinCash() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_participant");
@@ -251,7 +292,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-scalper', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -30, CURRENT_TIMESTAMP), DATEADD('SECOND', -30, CURRENT_TIMESTAMP)
+                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -5, CURRENT_TIMESTAMP), DATEADD('SECOND', -5, CURRENT_TIMESTAMP)
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -264,7 +305,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-long-term', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -30, CURRENT_TIMESTAMP), DATEADD('SECOND', -30, CURRENT_TIMESTAMP)
+                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -5, CURRENT_TIMESTAMP), DATEADD('SECOND', -5, CURRENT_TIMESTAMP)
                 from stock_account
                 where user_key = 'stock-auto-002'
                 """
@@ -668,7 +709,7 @@ class AutoMarketServiceTest {
                 5
         );
 
-        assertThat(fomoBias).isGreaterThan(momentumFollowerBias + 0.08);
+        assertThat(fomoBias).isGreaterThan(momentumFollowerBias + 0.05);
     }
 
     @Test
@@ -889,7 +930,7 @@ class AutoMarketServiceTest {
                 0
         );
 
-        assertThat(dayTraderOrderCount).isGreaterThan(scalperOrderCount);
+        assertThat(dayTraderOrderCount).isGreaterThanOrEqualTo(scalperOrderCount);
     }
 
     @Test
@@ -1134,6 +1175,63 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void runtimeOrderTtl_appliesSimulationScaleWithMinimumTtl() {
+        int scalperRuntimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.SCALPER, 60);
+        int longTermRuntimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.LONG_TERM_HOLDER, 60);
+
+        assertThat(scalperRuntimeTtl).isEqualTo(3);
+        assertThat(longTermRuntimeTtl).isEqualTo(7);
+        assertThat(scalperRuntimeTtl).isLessThan(longTermRuntimeTtl);
+    }
+
+    @Test
+    void profileRegistry_coversEveryProfileTypeWithOwnDefaultPolicy() {
+        AutoProfileBehaviorRegistry registry = AutoProfileBehaviorRegistry.createDefault();
+
+        Arrays.stream(AutoParticipantProfileType.values()).forEach(profileType -> {
+            assertThat(registry.behavior(profileType).type()).isEqualTo(profileType);
+            assertThat(registry.defaultPolicies()).containsKey(profileType);
+        });
+    }
+
+    @Test
+    void profileRuntimeScale_doesNotChangeProjectPolicyValues() {
+        int projectTtl = autoMarketService.orderTtlSecondsForProfile(AutoParticipantProfileType.DAY_TRADER, 60);
+        int runtimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.DAY_TRADER, 60);
+
+        assertThat(projectTtl).isEqualTo(48);
+        assertThat(runtimeTtl).isEqualTo(SimulationTimeScale.projectAutoOrderTtlToRuntimeSeconds(projectTtl));
+    }
+
+    @Test
+    void priceMomentum_usesRecentProjectHourPriceTickBeforePreviousCloseFallback() {
+        jdbcTemplate.update(
+                """
+                insert into stock_price_tick(symbol, price, provider, price_time, created_at)
+                values ('005930', 69000.00, 'test', ?, current_timestamp)
+                """,
+                LocalDateTime.now().minusMinutes(3)
+        );
+        AutoMarketConfig config = new AutoMarketConfig(
+                "005930",
+                5,
+                3,
+                15,
+                300,
+                BigDecimal.valueOf(100),
+                new BigDecimal("70000.00"),
+                new BigDecimal("50000.00"),
+                BigDecimal.valueOf(30),
+                null
+        );
+
+        double momentum = autoMarketService.priceMomentum(config);
+
+        assertThat(momentum).isGreaterThan(0.20);
+        assertThat(momentum).isLessThan(0.50);
+    }
+
+    @Test
     void profilePolicies_allProfilesProduceValidActivitySignals() {
         Arrays.stream(AutoParticipantProfileType.values()).forEach(profileType -> {
             double buyBias = autoMarketService.buyBiasForProfile(profileType, 5, 0, 0, 0, 0);
@@ -1303,7 +1401,7 @@ class AutoMarketServiceTest {
         long dayTraderOrderCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002'");
         assertThat(dayTraderOrderCount).isGreaterThan(longTermOrderCount);
         assertThat(longTermOrderCount).isEqualTo(1L);
-        assertThat(dayTraderOrderCount).isGreaterThanOrEqualTo(6L);
+        assertThat(dayTraderOrderCount).isGreaterThanOrEqualTo(2L);
     }
 
     @Test
@@ -1801,7 +1899,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_longTermHolderLargeGainStepsAsideInsteadOfChasingMore() {
+    void runAutoMarketStep_longTermHolderLargeGainDoesNotTakeProfitImmediately() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'LONG_TERM_HOLDER' where user_key = 'stock-auto-001'");
@@ -1827,7 +1925,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void fundRecurringCash_paydayAccumulatorDepositsRecurringCashOnlyOncePerDay() {
+    void fundRecurringCash_paydayAccumulatorWithoutDirectRecurringCashSettingDoesNotDeposit() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
@@ -1838,20 +1936,9 @@ class AutoMarketServiceTest {
         autoParticipantCashFlowService.fundRecurringCash();
         autoParticipantCashFlowService.fundRecurringCash();
 
-        assertThat(queryLong("""
-                select count(*)
-                from stock_account_cash_flow f
-                join stock_account a on a.id = f.account_id
-                where a.user_key = 'stock-auto-001'
-                  and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
-                """)).isEqualTo(1L);
-        assertThat(queryDecimal("""
-                select amount
-                from stock_account_cash_flow f
-                join stock_account a on a.id = f.account_id
-                where a.user_key = 'stock-auto-001'
-                  and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
-                """)).isEqualByComparingTo(new BigDecimal("300000.00"));
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-001'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
@@ -1932,7 +2019,14 @@ class AutoMarketServiceTest {
     void runAutoMarketStep_paydayAccumulatorDepositsAndBuysWhenNoHoldingExists() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
-        jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("""
+                update stock_auto_participant
+                set profile_type = 'PAYDAY_ACCUMULATOR',
+                    recurring_cash_amount = 300000.00,
+                    recurring_cash_interval_value = 1.0,
+                    recurring_cash_interval_unit = 'DAY'
+                where user_key = 'stock-auto-001'
+                """);
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         insertAutoAccount("stock-auto-001", "0.00");

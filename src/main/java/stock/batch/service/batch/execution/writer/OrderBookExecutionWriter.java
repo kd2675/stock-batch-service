@@ -3,13 +3,11 @@ package stock.batch.service.batch.execution.writer;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.List;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.execution.biz.ExecutionCostCalculator;
 
@@ -180,15 +178,24 @@ public class OrderBookExecutionWriter {
         );
     }
 
-    public void upsertHolding(
-            List<OrderBookHoldingRow> rows,
-            long accountId,
-            String symbol,
-            long quantity,
-            BigDecimal costAmount,
-            LocalDateTime executedAt
-    ) {
-        if (rows.isEmpty()) {
+    public void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount, LocalDateTime executedAt) {
+        int updatedRows = jdbcTemplate.update(
+                """
+                update stock_holding
+                set average_price = ((average_price * quantity) + ?) / (quantity + ?),
+                    quantity = quantity + ?,
+                    updated_at = ?
+                where account_id = ?
+                  and symbol = ?
+                """,
+                costAmount,
+                quantity,
+                quantity,
+                executedAt,
+                accountId,
+                symbol
+        );
+        if (updatedRows == 0) {
             jdbcTemplate.update(
                     """
                     insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
@@ -200,20 +207,6 @@ public class OrderBookExecutionWriter {
                     costAmount.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP),
                     executedAt
             );
-            return;
         }
-        OrderBookHoldingRow holding = rows.get(0);
-        long nextQuantity = holding.quantity() + quantity;
-        BigDecimal totalCost = holding.averagePrice()
-                .multiply(BigDecimal.valueOf(holding.quantity()))
-                .add(costAmount);
-        BigDecimal nextAveragePrice = totalCost.divide(BigDecimal.valueOf(nextQuantity), 2, RoundingMode.HALF_UP);
-        jdbcTemplate.update(
-                "update stock_holding set quantity = ?, average_price = ?, updated_at = ? where id = ?",
-                nextQuantity,
-                nextAveragePrice,
-                executedAt,
-                holding.id()
-        );
     }
 }

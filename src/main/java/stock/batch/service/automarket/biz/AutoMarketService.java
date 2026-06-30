@@ -4,10 +4,15 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -17,11 +22,13 @@ import stock.batch.service.automarket.profile.AutoProfileBehavior;
 import stock.batch.service.automarket.profile.AutoProfileBehaviorRegistry;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.support.SimulationTimeScale;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
@@ -35,7 +42,13 @@ public class AutoMarketService {
     private static final String SELL_ONLY = "SELL_ONLY";
     private static final String BUY_ONLY = "BUY_ONLY";
     private static final BigDecimal DEFAULT_TICK_SIZE = BigDecimal.valueOf(100);
-    private static final Duration DIVIDEND_REINVESTMENT_SIGNAL_WINDOW = Duration.ofDays(7);
+    private static final Duration PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW = Duration.ofDays(7);
+    private static final Duration PROJECT_SHORT_MOMENTUM_WINDOW = Duration.ofHours(1);
+    private static final Duration DIVIDEND_REINVESTMENT_SIGNAL_WINDOW =
+            SimulationTimeScale.projectDurationToRuntime(PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW);
+    private static final Duration SHORT_MOMENTUM_WINDOW =
+            SimulationTimeScale.projectDurationToRuntime(PROJECT_SHORT_MOMENTUM_WINDOW);
+    private static final int EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE = 200;
     private static final AutoProfileBehaviorRegistry PROFILE_BEHAVIORS = AutoProfileBehaviorRegistry.createDefault();
 
     private final AutoMarketReader autoMarketReader;
@@ -54,8 +67,11 @@ public class AutoMarketService {
         if (!participants.isEmpty()) {
             ensureAccounts(participants);
         }
+        Map<String, List<AutoParticipantStrategy>> strategiesBySymbol = participants.isEmpty()
+                ? Map.of()
+                : autoMarketReader.findEnabledParticipantStrategiesBySymbol(configs);
         for (AutoMarketConfig config : configs) {
-            List<AutoParticipantStrategy> strategies = autoMarketReader.findEnabledParticipantStrategies(config);
+            List<AutoParticipantStrategy> strategies = strategiesBySymbol.getOrDefault(config.symbol(), List.of());
             if (strategies.isEmpty()) {
                 processed += runListingAutoAccounts(config);
                 continue;
@@ -69,8 +85,13 @@ public class AutoMarketService {
 
     private void ensureAccounts(List<AutoParticipant> participants) {
         LocalDateTime now = LocalDateTime.now();
+        Set<String> existingAccountUserKeys = new HashSet<>(autoMarketReader.findExistingAccountUserKeys(
+                participants.stream()
+                        .map(AutoParticipant::userKey)
+                        .toList()
+        ));
         for (AutoParticipant participant : participants) {
-            if (autoMarketReader.accountExists(participant.userKey())) {
+            if (existingAccountUserKeys.contains(participant.userKey())) {
                 continue;
             }
             autoMarketWriter.insertAccount(participant, now);
@@ -83,30 +104,67 @@ public class AutoMarketService {
     ) {
         int expired = 0;
         LocalDateTime now = LocalDateTime.now();
-        for (AutoParticipantProfileType profileType : AutoParticipantProfileType.values()) {
-            ProfilePolicy policy = profilePolicy(profilePolicies, profileType);
-            AutoProfileBehavior behavior = PROFILE_BEHAVIORS.behavior(profileType);
-            LocalDateTime threshold = now.minusSeconds(behavior.orderTtlSeconds(config.orderTtlSeconds(), policy));
-            List<AutoOrder> orders = autoMarketReader.findExpiredAutoOrders(config, profileType, threshold);
-            for (AutoOrder order : orders) {
-                if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
-                    autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
-                }
-                if (SELL.equals(order.side())) {
-                    autoMarketWriter.releaseReservedSellQuantity(order, now);
-                }
-                autoMarketWriter.cancelOrder(order, now);
-                expired++;
+        Map<AutoParticipantProfileType, LocalDateTime> thresholdsByProfile = expiryThresholdsByProfile(config, profilePolicies, now);
+        LocalDateTime candidateThreshold = thresholdsByProfile.values().stream()
+                .max(LocalDateTime::compareTo)
+                .orElse(now);
+        int candidateLimit = Math.max(
+                EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE,
+                thresholdsByProfile.size() * EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE
+        );
+        List<AutoOrder> orders = autoMarketReader.findExpiredAutoOrders(config, candidateThreshold, candidateLimit);
+        for (AutoOrder order : orders) {
+            LocalDateTime threshold = thresholdsByProfile.getOrDefault(order.profileType(), candidateThreshold);
+            if (order.createdAt() != null && !order.createdAt().isBefore(threshold)) {
+                continue;
             }
+            expireOrder(order, now);
+            expired++;
         }
         return expired;
     }
 
+    private Map<AutoParticipantProfileType, LocalDateTime> expiryThresholdsByProfile(
+            AutoMarketConfig config,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
+    ) {
+        return Arrays.stream(AutoParticipantProfileType.values())
+                .collect(Collectors.toMap(
+                        Function.identity(),
+                        profileType -> {
+                            ProfilePolicy policy = profilePolicy(profilePolicies, profileType);
+                            AutoProfileBehavior behavior = PROFILE_BEHAVIORS.behavior(profileType);
+                            int projectTtlSeconds = behavior.orderTtlSeconds(config.orderTtlSeconds(), policy);
+                            return now.minusSeconds(runtimeAutoOrderTtlSeconds(projectTtlSeconds));
+                        }
+                ));
+    }
+
+    private void expireOrder(AutoOrder order, LocalDateTime now) {
+        if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
+            autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
+        }
+        if (SELL.equals(order.side())) {
+            autoMarketWriter.releaseReservedSellQuantity(order, now);
+        }
+        autoMarketWriter.cancelOrder(order, now);
+    }
+
     private int runListingAutoAccounts(AutoMarketConfig config) {
         int processed = 0;
-        for (ListingAutoAccountConfig listingConfig : autoMarketReader.findEnabledListingAutoAccountConfigs(config)) {
+        List<ListingAutoAccountConfig> listingConfigs = autoMarketReader.findEnabledListingAutoAccountConfigs(config);
+        if (listingConfigs.isEmpty()) {
+            return 0;
+        }
+        for (ListingAutoAccountConfig listingConfig : listingConfigs) {
             processed += expireOldListingAutoOrders(listingConfig);
-            if (placeListingAutoOrder(listingConfig)) {
+        }
+        BestPrices bestPrices = loadBestPrices(config.symbol());
+        for (ListingAutoAccountConfig listingConfig : listingConfigs) {
+            PlacedAutoOrder placedOrder = placeListingAutoOrder(listingConfig, bestPrices);
+            if (placedOrder != null) {
+                bestPrices = bestPrices.withPlacedOrder(placedOrder.side(), placedOrder.price());
                 processed++;
             }
         }
@@ -114,35 +172,31 @@ public class AutoMarketService {
     }
 
     private int expireOldListingAutoOrders(ListingAutoAccountConfig config) {
-        LocalDateTime threshold = LocalDateTime.now().minusSeconds(config.orderTtlSeconds());
+        LocalDateTime threshold = LocalDateTime.now().minusSeconds(runtimeAutoOrderTtlSeconds(config.orderTtlSeconds()));
         List<AutoOrder> orders = autoMarketReader.findExpiredListingAutoOrders(config, threshold);
 
         int expired = 0;
         LocalDateTime now = LocalDateTime.now();
         for (AutoOrder order : orders) {
-            if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
-                autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
-            }
-            if (SELL.equals(order.side())) {
-                autoMarketWriter.releaseReservedSellQuantity(order, now);
-            }
-            autoMarketWriter.cancelOrder(order, now);
+            expireOrder(order, now);
             expired++;
         }
         return expired;
     }
 
-    private boolean placeListingAutoOrder(ListingAutoAccountConfig config) {
+    private PlacedAutoOrder placeListingAutoOrder(ListingAutoAccountConfig config, BestPrices bestPrices) {
         String side = listingOrderSide(config);
         if (side == null || autoMarketReader.getOpenOrderQuantity(config.accountId(), config.symbol(), side) > 0) {
-            return false;
+            return null;
         }
-        long quantity = listingOrderQuantity(config, side);
+        BigDecimal price = listingOrderPrice(config, side, bestPrices);
+        long quantity = listingOrderQuantity(config, side, price);
         if (quantity <= 0) {
-            return false;
+            return null;
         }
-        BigDecimal price = listingOrderPrice(config, side);
-        return placeOrder(config.accountId(), config.symbol(), side, price, quantity);
+        return placeOrder(config.accountId(), config.symbol(), side, price, quantity)
+                ? new PlacedAutoOrder(side, price)
+                : null;
     }
 
     private String listingOrderSide(ListingAutoAccountConfig config) {
@@ -155,14 +209,13 @@ public class AutoMarketService {
         return null;
     }
 
-    private long listingOrderQuantity(ListingAutoAccountConfig config, String side) {
+    private long listingOrderQuantity(ListingAutoAccountConfig config, String side, BigDecimal price) {
         long maxQuantity = Math.max(1, config.maxOrderQuantity());
         if (SELL.equals(side)) {
             long availableQuantity = autoMarketReader.getAvailableQuantity(config.accountId(), config.symbol());
             return Math.min(maxQuantity, availableQuantity);
         }
         BigDecimal cashBalance = autoMarketReader.getCashBalance(config.accountId());
-        BigDecimal price = listingOrderPrice(config, side);
         if (price.compareTo(BigDecimal.ZERO) <= 0) {
             return 0;
         }
@@ -170,12 +223,12 @@ public class AutoMarketService {
         return Math.min(maxQuantity, affordableQuantity);
     }
 
-    private BigDecimal listingOrderPrice(ListingAutoAccountConfig config, String side) {
+    private BigDecimal listingOrderPrice(ListingAutoAccountConfig config, String side, BestPrices bestPrices) {
         BigDecimal tick = positiveOrDefault(config.tickSize(), DEFAULT_TICK_SIZE);
         int offsetTicks = randomInt(0, Math.max(0, config.priceOffsetTicks()));
         BigDecimal offset = tick.multiply(BigDecimal.valueOf(offsetTicks));
-        BigDecimal bestBid = autoMarketReader.findBestPrice(config.symbol(), BUY);
-        BigDecimal bestAsk = autoMarketReader.findBestPrice(config.symbol(), SELL);
+        BigDecimal bestBid = bestPrices.bestBid();
+        BigDecimal bestAsk = bestPrices.bestAsk();
         BigDecimal rawPrice;
         if (SELL.equals(side)) {
             rawPrice = bestAsk == null ? config.currentPrice().add(offset) : bestAsk.add(offset);
@@ -197,12 +250,17 @@ public class AutoMarketService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
     ) {
         int placed = 0;
+        Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config);
+        BestPrices bestPrices = loadBestPrices(config.symbol());
+        OpenOrderQuantities openOrderQuantities = loadOpenOrderQuantities(config.symbol());
+        double momentumPressure = priceMomentum(config);
         for (AutoParticipantStrategy strategy : strategies) {
+            AutoParticipantTradingState tradingState = tradingStates.getOrDefault(strategy.accountId(), AutoParticipantTradingState.empty(strategy.accountId()));
             AutoProfileBehavior behavior = PROFILE_BEHAVIORS.behavior(strategy.profileType());
             ProfilePolicy policy = profilePolicy(profilePolicies, strategy.profileType());
             int effectiveIntensity = behavior.effectiveIntensity(strategy, config, policy);
-            double unrealizedReturn = unrealizedReturn(strategy.accountId(), config);
-            ProfileSignalContext baseContext = profileContext(strategy, config, policy, effectiveIntensity, unrealizedReturn, 0);
+            double unrealizedReturn = unrealizedReturn(tradingState, config);
+            ProfileSignalContext baseContext = profileContext(strategy, config, policy, effectiveIntensity, momentumPressure, unrealizedReturn, 0, tradingState, openOrderQuantities);
             int orderCount = behavior.orderCount(baseContext);
             for (int index = 0; index < orderCount; index++) {
                 ProfileSignalContext context = baseContext.withOrderIndex(index);
@@ -210,12 +268,15 @@ public class AutoMarketService {
                 if (side == null) {
                     continue;
                 }
-                BigDecimal price = createAutoPrice(config, effectiveIntensity, side, policy);
-                long quantity = createQuantity(strategy.accountId(), config, side, price, policy, behavior);
+                BigDecimal price = createAutoPrice(config, effectiveIntensity, side, policy, bestPrices);
+                long quantity = createQuantity(tradingState, side, price, policy, behavior, config.maxOrderQuantity());
                 if (quantity <= 0) {
                     continue;
                 }
                 if (placeOrder(strategy.accountId(), config.symbol(), side, price, quantity)) {
+                    bestPrices = bestPrices.withPlacedOrder(side, price);
+                    openOrderQuantities = openOrderQuantities.withPlacedOrder(side, quantity);
+                    tradingState.reserve(side, price, quantity);
                     placed++;
                 }
             }
@@ -223,28 +284,52 @@ public class AutoMarketService {
         return placed;
     }
 
+    private Map<Long, AutoParticipantTradingState> loadTradingStates(
+            List<AutoParticipantStrategy> strategies,
+            AutoMarketConfig config
+    ) {
+        if (strategies.isEmpty()) {
+            return Map.of();
+        }
+        LocalDateTime recentDividendSince = LocalDateTime.now().minus(DIVIDEND_REINVESTMENT_SIGNAL_WINDOW);
+        return autoMarketReader.findTradingSnapshots(
+                        strategies.stream()
+                                .map(AutoParticipantStrategy::accountId)
+                                .distinct()
+                                .toList(),
+                        config.symbol(),
+                        recentDividendSince
+                ).stream()
+                .map(AutoParticipantTradingState::from)
+                .collect(Collectors.toMap(
+                        AutoParticipantTradingState::accountId,
+                        Function.identity(),
+                        (left, right) -> left
+                ));
+    }
+
     private ProfileSignalContext profileContext(
             AutoParticipantStrategy strategy,
             AutoMarketConfig config,
             ProfilePolicy policy,
             int effectiveIntensity,
+            double momentumPressure,
             double unrealizedReturn,
-            int orderIndex
+            int orderIndex,
+            AutoParticipantTradingState tradingState,
+            OpenOrderQuantities openOrderQuantities
     ) {
         return new ProfileSignalContext(
                 strategy,
                 config,
                 policy,
                 effectiveIntensity,
-                priceMomentum(config),
-                herdPressure(config.symbol()),
+                momentumPressure,
+                herdPressure(openOrderQuantities),
                 unrealizedReturn,
-                autoMarketReader.getAvailableQuantity(strategy.accountId(), config.symbol()),
-                autoMarketReader.getCashBalance(strategy.accountId()),
-                autoMarketReader.getRecentDividendCashAmount(
-                        strategy.accountId(),
-                        LocalDateTime.now().minus(DIVIDEND_REINVESTMENT_SIGNAL_WINDOW)
-                ),
+                tradingState.availableQuantity(),
+                tradingState.cashBalance(),
+                tradingState.recentDividendCashAmount(),
                 isAtLowerPriceLimit(config),
                 orderIndex,
                 randomNoise(policy.noiseWeight(), 0.18)
@@ -282,9 +367,19 @@ public class AutoMarketService {
         return PROFILE_BEHAVIORS.behavior(profileType).orderTtlSeconds(Math.max(1, baseTtlSeconds), profilePolicy(profileType));
     }
 
-    private BigDecimal createAutoPrice(AutoMarketConfig config, int intensity, String side, ProfilePolicy policy) {
-        BigDecimal bestBid = autoMarketReader.findBestPrice(config.symbol(), BUY);
-        BigDecimal bestAsk = autoMarketReader.findBestPrice(config.symbol(), SELL);
+    int runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType profileType, int baseTtlSeconds) {
+        return runtimeAutoOrderTtlSeconds(orderTtlSecondsForProfile(profileType, baseTtlSeconds));
+    }
+
+    private BigDecimal createAutoPrice(
+            AutoMarketConfig config,
+            int intensity,
+            String side,
+            ProfilePolicy policy,
+            BestPrices bestPrices
+    ) {
+        BigDecimal bestBid = bestPrices.bestBid();
+        BigDecimal bestAsk = bestPrices.bestAsk();
         BigDecimal tick = config.tickSize();
         if (policy.marketMakingWeight() >= 0.8) {
             return createMarketMakingPrice(config, side, bestBid, bestAsk, tick);
@@ -314,6 +409,20 @@ public class AutoMarketService {
         return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
+    private BestPrices loadBestPrices(String symbol) {
+        return new BestPrices(
+                autoMarketReader.findBestPrice(symbol, BUY),
+                autoMarketReader.findBestPrice(symbol, SELL)
+        );
+    }
+
+    private OpenOrderQuantities loadOpenOrderQuantities(String symbol) {
+        return new OpenOrderQuantities(
+                autoMarketReader.getOpenOrderQuantity(symbol, BUY),
+                autoMarketReader.getOpenOrderQuantity(symbol, SELL)
+        );
+    }
+
     private BigDecimal createMarketMakingPrice(
             AutoMarketConfig config,
             String side,
@@ -337,14 +446,14 @@ public class AutoMarketService {
     }
 
     private long createQuantity(
-            long accountId,
-            AutoMarketConfig config,
+            AutoParticipantTradingState tradingState,
             String side,
             BigDecimal price,
             ProfilePolicy policy,
-            AutoProfileBehavior behavior
+            AutoProfileBehavior behavior,
+            int maxOrderQuantity
     ) {
-        int maxQuantity = Math.max(1, config.maxOrderQuantity());
+        int maxQuantity = Math.max(1, maxOrderQuantity);
         long profileQuantity;
         if (policy.quantityMultiplier() >= 1.5 && maxQuantity > 1) {
             profileQuantity = randomInt(Math.max(1, maxQuantity / 2), behavior.quantityUpperBound(maxQuantity, policy));
@@ -356,13 +465,12 @@ public class AutoMarketService {
             if (price.compareTo(BigDecimal.ZERO) <= 0) {
                 return 0;
             }
-            long affordableQuantity = autoMarketReader.getCashBalance(accountId)
+            long affordableQuantity = tradingState.cashBalance()
                     .divide(price, 0, RoundingMode.DOWN)
                     .longValue();
             return Math.min(profileQuantity, affordableQuantity);
         }
-        long availableQuantity = autoMarketReader.getAvailableQuantity(accountId, config.symbol());
-        return Math.min(profileQuantity, availableQuantity);
+        return Math.min(profileQuantity, tradingState.availableQuantity());
     }
 
     private boolean isAtLowerPriceLimit(AutoMarketConfig config) {
@@ -467,30 +575,32 @@ public class AutoMarketService {
         return value == null || value.compareTo(BigDecimal.ZERO) <= 0 ? defaultValue : value;
     }
 
-    private double priceMomentum(AutoMarketConfig config) {
-        BigDecimal previousClose = positiveOrDefault(config.previousClose(), config.currentPrice());
-        if (previousClose.compareTo(BigDecimal.ZERO) <= 0) {
+    double priceMomentum(AutoMarketConfig config) {
+        BigDecimal referencePrice = autoMarketReader.findLatestPriceAtOrBefore(
+                        config.symbol(),
+                        LocalDateTime.now().minus(SHORT_MOMENTUM_WINDOW)
+                )
+                .orElseGet(() -> positiveOrDefault(config.previousClose(), config.currentPrice()));
+        if (referencePrice.compareTo(BigDecimal.ZERO) <= 0) {
             return 0;
         }
         double rate = config.currentPrice()
-                .subtract(previousClose)
-                .divide(previousClose, 6, RoundingMode.HALF_UP)
+                .subtract(referencePrice)
+                .divide(referencePrice, 6, RoundingMode.HALF_UP)
                 .doubleValue();
         return clampDouble(-1, 1, rate / 0.05);
     }
 
-    private double herdPressure(String symbol) {
-        long buyQuantity = autoMarketReader.getOpenOrderQuantity(symbol, BUY);
-        long sellQuantity = autoMarketReader.getOpenOrderQuantity(symbol, SELL);
-        long totalQuantity = buyQuantity + sellQuantity;
-        if (totalQuantity <= 0) {
-            return 0;
-        }
-        return clampDouble(-1, 1, (double) (buyQuantity - sellQuantity) / totalQuantity);
+    private int runtimeAutoOrderTtlSeconds(int projectTtlSeconds) {
+        return SimulationTimeScale.projectAutoOrderTtlToRuntimeSeconds(projectTtlSeconds);
     }
 
-    private double unrealizedReturn(long accountId, AutoMarketConfig config) {
-        BigDecimal averagePrice = autoMarketReader.getAveragePrice(accountId, config.symbol());
+    private double herdPressure(OpenOrderQuantities openOrderQuantities) {
+        return openOrderQuantities.pressure();
+    }
+
+    private double unrealizedReturn(AutoParticipantTradingState tradingState, AutoMarketConfig config) {
+        BigDecimal averagePrice = tradingState.averagePrice();
         if (averagePrice.compareTo(BigDecimal.ZERO) <= 0) {
             return 0;
         }
@@ -540,5 +650,111 @@ public class AutoMarketService {
 
     private int randomInt(int minInclusive, int maxInclusive) {
         return ThreadLocalRandom.current().nextInt(minInclusive, maxInclusive + 1);
+    }
+
+    private record PlacedAutoOrder(String side, BigDecimal price) {
+    }
+
+    private record BestPrices(BigDecimal bestBid, BigDecimal bestAsk) {
+        private BestPrices withPlacedOrder(String side, BigDecimal price) {
+            if (BUY.equals(side)) {
+                return new BestPrices(bestBid == null || price.compareTo(bestBid) > 0 ? price : bestBid, bestAsk);
+            }
+            if (SELL.equals(side)) {
+                return new BestPrices(bestBid, bestAsk == null || price.compareTo(bestAsk) < 0 ? price : bestAsk);
+            }
+            return this;
+        }
+    }
+
+    private record OpenOrderQuantities(long buyQuantity, long sellQuantity) {
+        private OpenOrderQuantities withPlacedOrder(String side, long quantity) {
+            long normalizedQuantity = Math.max(0L, quantity);
+            if (BUY.equals(side)) {
+                return new OpenOrderQuantities(buyQuantity + normalizedQuantity, sellQuantity);
+            }
+            if (SELL.equals(side)) {
+                return new OpenOrderQuantities(buyQuantity, sellQuantity + normalizedQuantity);
+            }
+            return this;
+        }
+
+        private double pressure() {
+            long totalQuantity = buyQuantity + sellQuantity;
+            if (totalQuantity <= 0) {
+                return 0;
+            }
+            return Math.max(-1, Math.min(1, (double) (buyQuantity - sellQuantity) / totalQuantity));
+        }
+    }
+
+    private static final class AutoParticipantTradingState {
+        private final long accountId;
+        private BigDecimal cashBalance;
+        private long availableQuantity;
+        private final BigDecimal averagePrice;
+        private final BigDecimal recentDividendCashAmount;
+
+        private AutoParticipantTradingState(
+                long accountId,
+                BigDecimal cashBalance,
+                long availableQuantity,
+                BigDecimal averagePrice,
+                BigDecimal recentDividendCashAmount
+        ) {
+            this.accountId = accountId;
+            this.cashBalance = zeroIfNull(cashBalance);
+            this.availableQuantity = Math.max(0L, availableQuantity);
+            this.averagePrice = zeroIfNull(averagePrice);
+            this.recentDividendCashAmount = zeroIfNull(recentDividendCashAmount);
+        }
+
+        static AutoParticipantTradingState from(AutoParticipantTradingSnapshot snapshot) {
+            return new AutoParticipantTradingState(
+                    snapshot.accountId(),
+                    snapshot.cashBalance(),
+                    snapshot.availableQuantity(),
+                    snapshot.averagePrice(),
+                    snapshot.recentDividendCashAmount()
+            );
+        }
+
+        static AutoParticipantTradingState empty(long accountId) {
+            return new AutoParticipantTradingState(accountId, BigDecimal.ZERO, 0L, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+
+        long accountId() {
+            return accountId;
+        }
+
+        BigDecimal cashBalance() {
+            return cashBalance;
+        }
+
+        long availableQuantity() {
+            return availableQuantity;
+        }
+
+        BigDecimal averagePrice() {
+            return averagePrice;
+        }
+
+        BigDecimal recentDividendCashAmount() {
+            return recentDividendCashAmount;
+        }
+
+        void reserve(String side, BigDecimal price, long quantity) {
+            if (BUY.equals(side)) {
+                cashBalance = cashBalance.subtract(price.multiply(BigDecimal.valueOf(quantity))).max(BigDecimal.ZERO);
+                return;
+            }
+            if (SELL.equals(side)) {
+                availableQuantity = Math.max(0L, availableQuantity - quantity);
+            }
+        }
+
+        private static BigDecimal zeroIfNull(BigDecimal value) {
+            return value == null ? BigDecimal.ZERO : value;
+        }
     }
 }

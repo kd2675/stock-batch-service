@@ -23,6 +23,11 @@ class StockBatchSchedulerConfigurationContractTest {
             "@Value\\(\"\\$\\{([^:}]+\\.enabled):true}\"\\)"
     );
     private static final Pattern DEFAULT_NUMBER_PLACEHOLDER = Pattern.compile("\\$\\{[^:}]+:(\\d+)}");
+    private static final List<String> REQUIRED_MYSQL_JDBC_OPTIONS = List.of(
+            "connectTimeout=5000",
+            "socketTimeout=30000",
+            "tcpKeepAlive=true"
+    );
 
     @Test
     void schedulerEnabledProperties_areExternallyConfigurable() throws IOException {
@@ -119,11 +124,40 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(localConfig).doesNotContain("allow-empty-token: true");
     }
 
+    @Test
+    void mysqlJdbcUrls_defineTimeoutAndKeepAliveOptions() throws IOException {
+        for (Path configPath : List.of(
+                Path.of("src/main/resources/application.yml"),
+                Path.of("src/main/resources/application-local.yml"),
+                Path.of("src/main/resources/application-dev.yml"),
+                Path.of("src/main/resources/application-prod.yml")
+        )) {
+            assertMysqlJdbcUrlOptions(configPath);
+        }
+    }
+
     private void assertRequiresExplicitInternalBatchTokenAndDisallowsEmptyToken(String config) {
         assertThat(config).contains("token: ${STOCK_BATCH_INTERNAL_TOKEN}");
         assertThat(config).contains("allow-empty-token: false");
         assertThat(config).doesNotContain("token: ${STOCK_BATCH_INTERNAL_TOKEN:");
         assertThat(config).doesNotContain("allow-empty-token: true");
+    }
+
+    private void assertMysqlJdbcUrlOptions(Path configPath) throws IOException {
+        List<String> mysqlUrlLines = Files.readAllLines(configPath, StandardCharsets.UTF_8).stream()
+                .map(String::trim)
+                .filter(line -> line.startsWith("url:"))
+                .filter(line -> line.contains("jdbc:mysql")
+                        || line.contains("STOCK_DB_URL")
+                        || line.contains("STOCK_BATCH_DB_URL"))
+                .toList();
+
+        assertThat(mysqlUrlLines).as(configPath.toString()).isNotEmpty();
+        for (String mysqlUrlLine : mysqlUrlLines) {
+            assertThat(mysqlUrlLine)
+                    .as(configPath + " " + mysqlUrlLine)
+                    .contains(REQUIRED_MYSQL_JDBC_OPTIONS.toArray(String[]::new));
+        }
     }
 
     private List<String> findSchedulerEnabledProperties() throws IOException {

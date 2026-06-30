@@ -58,7 +58,7 @@ stock:
         initialize: ${STOCK_BATCH_SCHEMA_INITIALIZE:false}
         location: classpath:db/schema/batch-metadata-mysql.sql
       datasource:
-        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true
+        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
         username: root
         password: 1234
         driver-class-name: com.mysql.cj.jdbc.Driver
@@ -102,6 +102,8 @@ stock:
       fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:1000}
     market-close:
       enabled: ${STOCK_BATCH_MARKET_CLOSE_ENABLED:true}
+      cron: ${STOCK_BATCH_MARKET_CLOSE_CRON:0 0 * * * *}
+      zone: ${STOCK_BATCH_MARKET_CLOSE_ZONE:Asia/Seoul}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
       cron: ${STOCK_BATCH_SETTLEMENT_CRON:0 40 15 * * MON-FRI}

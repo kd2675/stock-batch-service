@@ -96,6 +96,24 @@ class StockDdlContractTest {
             "stock_batch_job_lock"
     );
 
+    private static final List<String> ADMIN_QUERY_INDEX_MARKERS = List.of(
+            "idx_stock_account_status_id",
+            "idx_stock_account_cash_flow_account_reason_creator_time",
+            "idx_stock_account_cash_flow_time",
+            "idx_stock_order_market_status_side",
+            "idx_stock_order_market_account_time",
+            "idx_stock_order_market_created_status",
+            "idx_stock_execution_time_account",
+            "idx_stock_execution_source_account_time",
+            "idx_stock_execution_source_symbol_time",
+            "idx_stock_execution_source_time",
+            "idx_stock_holding_symbol_account",
+            "idx_stock_auto_participant_active",
+            "idx_stock_auto_participant_profile_active",
+            "idx_stock_auto_participant_symbol_lookup",
+            "idx_stock_corporate_action_status_symbol"
+    );
+
     private static final List<String> MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS = List.of(
             "stock_market_close_run",
             "stock_holding_snapshot",
@@ -174,6 +192,15 @@ class StockDdlContractTest {
             String ddl = readDdlResource(resourcePath);
 
             assertThat(ddl).as(resourcePath).contains(MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS.toArray(String[]::new));
+        }
+    }
+
+    @Test
+    void ddlResources_defineAdminQueryPerformanceIndexes() throws IOException {
+        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
+            String ddl = readDdlResource(resourcePath);
+
+            assertThat(ddl).as(resourcePath).contains(ADMIN_QUERY_INDEX_MARKERS.toArray(String[]::new));
         }
     }
 

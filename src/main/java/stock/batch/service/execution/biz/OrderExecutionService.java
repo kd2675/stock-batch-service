@@ -151,8 +151,7 @@ public class OrderExecutionService {
     }
 
     private void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount) {
-        List<VirtualPriceHoldingRow> rows = virtualPriceExecutionReader.findHoldings(accountId, symbol);
-        virtualPriceExecutionWriter.upsertHolding(rows, accountId, symbol, quantity, costAmount, LocalDateTime.now());
+        virtualPriceExecutionWriter.upsertHolding(accountId, symbol, quantity, costAmount, LocalDateTime.now());
     }
 
 }
