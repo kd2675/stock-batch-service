@@ -4,6 +4,7 @@ import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
@@ -31,7 +32,7 @@ public class BatchRepositoryDataSourceConfig {
     @Bean(name = BUSINESS_DATA_SOURCE)
     @Primary
     @ConfigurationProperties("spring.datasource.hikari")
-    public DataSource stockBusinessDataSource(
+    public HikariDataSource stockBusinessDataSource(
             @Qualifier("stockBusinessDataSourceProperties") DataSourceProperties properties
     ) {
         return properties.initializeDataSourceBuilder()
@@ -55,7 +56,7 @@ public class BatchRepositoryDataSourceConfig {
 
     @Bean(name = BATCH_METADATA_DATA_SOURCE)
     @ConfigurationProperties("stock.batch.repository.datasource.hikari")
-    public DataSource batchMetadataDataSource(
+    public HikariDataSource batchMetadataDataSource(
             @Qualifier("batchMetadataDataSourceProperties") DataSourceProperties properties
     ) {
         return properties.initializeDataSourceBuilder()
@@ -71,7 +72,15 @@ public class BatchRepositoryDataSourceConfig {
     }
 
     @Bean
-    public JdbcTemplate jdbcTemplate(@Qualifier(BUSINESS_DATA_SOURCE) DataSource dataSource) {
-        return new JdbcTemplate(dataSource);
+    public JdbcTemplate jdbcTemplate(
+            @Qualifier(BUSINESS_DATA_SOURCE) DataSource dataSource,
+            @Value("${stock.batch.jdbc.query-timeout-seconds:30}") int queryTimeoutSeconds
+    ) {
+        if (queryTimeoutSeconds <= 0) {
+            throw new IllegalArgumentException("stock.batch.jdbc.query-timeout-seconds must be positive");
+        }
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        jdbcTemplate.setQueryTimeout(queryTimeoutSeconds);
+        return jdbcTemplate;
     }
 }

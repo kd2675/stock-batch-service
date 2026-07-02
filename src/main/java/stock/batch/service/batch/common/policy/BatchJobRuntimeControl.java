@@ -1,8 +1,8 @@
 package stock.batch.service.batch.common.policy;
 
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -11,6 +11,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.util.Optional;
 
 @Component
 public class BatchJobRuntimeControl {
@@ -19,9 +20,11 @@ public class BatchJobRuntimeControl {
     private static final boolean DEFAULT_CONTROL_ROW_ENABLED = true;
 
     private final JdbcTemplate jdbcTemplate;
+    private final JdbcClient jdbcClient;
 
     public BatchJobRuntimeControl(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
+        this.jdbcClient = JdbcClient.create(jdbcTemplate);
     }
 
     @Transactional
@@ -55,30 +58,37 @@ public class BatchJobRuntimeControl {
                 nextRuntimeEnabled,
                 normalizeUpdatedBy(updatedBy),
                 now,
-                normalizeJobName(jobName)
+                BatchJobNames.normalize(jobName)
         );
         return toStatus(requireControlRow(jobName), schedulerConfigured);
     }
 
     private ControlRow findOrCreateControlRow(String jobName) {
-        try {
-            return requireControlRow(jobName);
-        } catch (EmptyResultDataAccessException ex) {
-            insertInitialControlRow(jobName);
-            return requireControlRow(jobName);
-        }
+        return findControlRow(jobName)
+                .orElseGet(() -> {
+                    insertInitialControlRow(jobName);
+                    return requireControlRow(jobName);
+                });
     }
 
     private ControlRow requireControlRow(String jobName) {
-        return jdbcTemplate.queryForObject(
+        return findControlRow(jobName)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Batch job runtime control row not found: " + BatchJobNames.normalize(jobName)
+                ));
+    }
+
+    private Optional<ControlRow> findControlRow(String jobName) {
+        return jdbcClient.sql(
                 """
                 select job_name, runtime_enabled, updated_by, updated_at
                   from stock_batch_job_control
                  where job_name = ?
-                """,
-                (rs, rowNum) -> mapControlRow(rs),
-                normalizeJobName(jobName)
-        );
+                """
+        )
+                .params(BatchJobNames.normalize(jobName))
+                .query((rs, rowNum) -> mapControlRow(rs))
+                .optional();
     }
 
     private void insertInitialControlRow(String jobName) {
@@ -89,7 +99,7 @@ public class BatchJobRuntimeControl {
                     insert into stock_batch_job_control(job_name, runtime_enabled, updated_by, created_at, updated_at)
                     values (?, ?, ?, ?, ?)
                     """,
-                    normalizeJobName(jobName),
+                    BatchJobNames.normalize(jobName),
                     DEFAULT_CONTROL_ROW_ENABLED,
                     SYSTEM_UPDATED_BY,
                     now,
@@ -119,13 +129,6 @@ public class BatchJobRuntimeControl {
                 rs.getString("updated_by"),
                 updatedAt == null ? null : updatedAt.toLocalDateTime()
         );
-    }
-
-    private String normalizeJobName(String jobName) {
-        if (!StringUtils.hasText(jobName)) {
-            throw new IllegalArgumentException("jobName is required");
-        }
-        return jobName.trim();
     }
 
     private String normalizeUpdatedBy(String updatedBy) {

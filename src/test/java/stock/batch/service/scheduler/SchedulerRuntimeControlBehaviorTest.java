@@ -13,6 +13,10 @@ import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
+import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.simulation.SimulationClockService;
+
+import java.time.LocalDateTime;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
@@ -24,16 +28,20 @@ class SchedulerRuntimeControlBehaviorTest {
 
     private StockBatchJobLauncher stockBatchJobLauncher;
     private BatchJobRuntimeControl batchJobRuntimeControl;
+    private StockBatchScheduledJobGuard scheduledJobGuard;
+    private SimulationClockService simulationClockService;
 
     @BeforeEach
     void setUp() {
         stockBatchJobLauncher = mock(StockBatchJobLauncher.class);
         batchJobRuntimeControl = mock(BatchJobRuntimeControl.class);
+        scheduledJobGuard = new StockBatchScheduledJobGuard(batchJobRuntimeControl);
+        simulationClockService = mock(SimulationClockService.class);
     }
 
     @Test
     void autoMarketScheduler_checksRuntimeControlBeforeLaunching() {
-        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, batchJobRuntimeControl);
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard);
 
         assertSimpleSchedulerGate(
                 AutoMarketJob.JOB_NAME,
@@ -46,7 +54,7 @@ class SchedulerRuntimeControlBehaviorTest {
     void autoParticipantCashFlowScheduler_checksRuntimeControlBeforeLaunching() {
         AutoParticipantCashFlowScheduler scheduler = new AutoParticipantCashFlowScheduler(
                 stockBatchJobLauncher,
-                batchJobRuntimeControl
+                scheduledJobGuard
         );
 
         assertSimpleSchedulerGate(
@@ -58,7 +66,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void corporateActionScheduler_checksRuntimeControlBeforeLaunching() {
-        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, batchJobRuntimeControl);
+        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard);
 
         assertSimpleSchedulerGate(
                 CorporateActionJob.JOB_NAME,
@@ -69,7 +77,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void marketDataRefreshScheduler_checksRuntimeControlBeforeLaunching() {
-        MarketDataRefreshScheduler scheduler = new MarketDataRefreshScheduler(stockBatchJobLauncher, batchJobRuntimeControl);
+        MarketDataRefreshScheduler scheduler = new MarketDataRefreshScheduler(stockBatchJobLauncher, scheduledJobGuard);
 
         assertSimpleSchedulerGate(
                 MarketDataRefreshJob.JOB_NAME,
@@ -80,7 +88,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void orderBookExecutionScheduler_checksRuntimeControlBeforeLaunching() {
-        OrderBookExecutionScheduler scheduler = new OrderBookExecutionScheduler(stockBatchJobLauncher, batchJobRuntimeControl);
+        OrderBookExecutionScheduler scheduler = new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard);
 
         assertSimpleSchedulerGate(
                 OrderBookExecutionJob.JOB_NAME,
@@ -93,7 +101,7 @@ class SchedulerRuntimeControlBehaviorTest {
     void virtualPriceExecutionScheduler_checksRuntimeControlBeforeLaunching() {
         VirtualPriceExecutionScheduler scheduler = new VirtualPriceExecutionScheduler(
                 stockBatchJobLauncher,
-                batchJobRuntimeControl
+                scheduledJobGuard
         );
 
         assertSimpleSchedulerGate(
@@ -107,7 +115,8 @@ class SchedulerRuntimeControlBehaviorTest {
     void portfolioSettlementScheduler_checksRuntimeControlForEachJobBeforeLaunching() {
         PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
                 stockBatchJobLauncher,
-                batchJobRuntimeControl
+                scheduledJobGuard,
+                simulationClockService
         );
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
@@ -128,6 +137,10 @@ class SchedulerRuntimeControlBehaviorTest {
                 .thenReturn(true);
         when(batchJobRuntimeControl.shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true))
                 .thenReturn(true);
+        when(stockBatchJobLauncher.rolloverClosingPrices())
+                .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
+        when(stockBatchJobLauncher.settlePortfolios())
+                .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
 
         scheduler.settlePortfolios();
 
@@ -135,6 +148,28 @@ class SchedulerRuntimeControlBehaviorTest {
         verify(batchJobRuntimeControl).shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true);
         verify(stockBatchJobLauncher).rolloverClosingPrices();
         verify(stockBatchJobLauncher).settlePortfolios();
+    }
+
+    @Test
+    void scheduledJobGuard_runtimeControlThrows_skipsJobWithoutPropagatingException() {
+        when(batchJobRuntimeControl.shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true))
+                .thenThrow(new IllegalStateException("runtime control db timeout"));
+
+        scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, true, stockBatchJobLauncher::runAutoMarket);
+
+        verify(batchJobRuntimeControl).shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true);
+        verifyNoInteractions(stockBatchJobLauncher);
+    }
+
+    @Test
+    void scheduledJobGuard_launcherThrows_doesNotPropagateExceptionToSchedulerThread() {
+        when(batchJobRuntimeControl.shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true)).thenReturn(true);
+        when(stockBatchJobLauncher.runAutoMarket()).thenThrow(new IllegalStateException("runner escaped failure"));
+
+        scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, true, stockBatchJobLauncher::runAutoMarket);
+
+        verify(batchJobRuntimeControl).shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true);
+        verify(stockBatchJobLauncher).runAutoMarket();
     }
 
     private void assertSimpleSchedulerGate(String jobName, Runnable scheduledAction, Runnable verifyLaunch) {
@@ -152,5 +187,10 @@ class SchedulerRuntimeControlBehaviorTest {
 
         verify(batchJobRuntimeControl).shouldRunScheduledJob(jobName, true);
         verifyLaunch.run();
+    }
+
+    private StockBatchJobRunResponse completedResponse(String jobName) {
+        LocalDateTime now = LocalDateTime.now();
+        return new StockBatchJobRunResponse(jobName, "COMPLETED", "test", 1, "completed", now, now);
     }
 }

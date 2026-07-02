@@ -1,0 +1,168 @@
+package stock.batch.service.batch.automarket.reader;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Component;
+
+import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoOrder;
+import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
+
+@Component
+public class AutoMarketOrderReader {
+
+    private final JdbcClient jdbcClient;
+
+    public AutoMarketOrderReader(JdbcTemplate jdbcTemplate) {
+        this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
+    }
+
+    public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime candidateThreshold, int limit) {
+        return jdbcClient.sql(
+                """
+                select o.id,
+                       o.account_id,
+                       o.symbol,
+                       o.side,
+                       o.quantity,
+                       o.filled_quantity,
+                       o.reserved_cash,
+                       p.profile_type,
+                       o.created_at
+                from stock_order o
+                join stock_account a on a.id = o.account_id
+                join stock_auto_participant p on p.user_key = a.user_key
+                where o.symbol = :symbol
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.created_at < :candidateThreshold
+                order by o.created_at asc
+                limit :limit
+                for update
+                """
+        )
+                .param("symbol", config.symbol())
+                .param("candidateThreshold", candidateThreshold)
+                .param("limit", Math.max(1, limit))
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
+                .list();
+    }
+
+    public List<AutoOrder> findExpiredListingAutoOrders(ListingAutoAccountConfig config, LocalDateTime threshold) {
+        return jdbcClient.sql(
+                """
+                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
+                from stock_order o
+                where o.symbol = :symbol
+                  and o.account_id = :accountId
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.created_at < :threshold
+                order by o.created_at asc
+                limit 200
+                for update
+                """
+        )
+                .param("symbol", config.symbol())
+                .param("accountId", config.accountId())
+                .param("threshold", threshold)
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
+                .list();
+    }
+
+    public BigDecimal findBestPrice(String symbol, String side) {
+        if ("BUY".equals(side)) {
+            return findBestBuyPrice(symbol);
+        }
+        return findBestSellPrice(symbol);
+    }
+
+    private BigDecimal findBestBuyPrice(String symbol) {
+        return jdbcClient.sql(
+                """
+                select limit_price
+                from stock_order
+                where symbol = :symbol
+                  and side = 'BUY'
+                  and market_type = 'ORDER_BOOK'
+                  and order_type = 'LIMIT'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and limit_price is not null
+                  and quantity > filled_quantity
+                order by limit_price desc, created_at asc
+                limit 1
+                """
+        )
+                .param("symbol", symbol)
+                .query(BigDecimal.class)
+                .optional()
+                .orElse(null);
+    }
+
+    private BigDecimal findBestSellPrice(String symbol) {
+        return jdbcClient.sql(
+                """
+                select limit_price
+                from stock_order
+                where symbol = :symbol
+                  and side = 'SELL'
+                  and market_type = 'ORDER_BOOK'
+                  and order_type = 'LIMIT'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and limit_price is not null
+                  and quantity > filled_quantity
+                order by limit_price asc, created_at asc
+                limit 1
+                """
+        )
+                .param("symbol", symbol)
+                .query(BigDecimal.class)
+                .optional()
+                .orElse(null);
+    }
+
+    public long getOpenOrderQuantity(String symbol, String side) {
+        Long quantity = jdbcClient.sql(
+                """
+                select coalesce(sum(quantity - filled_quantity), 0)
+                from stock_order
+                where symbol = :symbol
+                  and side = :side
+                  and market_type = 'ORDER_BOOK'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and quantity > filled_quantity
+                """
+        )
+                .param("symbol", symbol)
+                .param("side", side)
+                .query(Long.class)
+                .single();
+        return quantity == null ? 0L : Math.max(0L, quantity);
+    }
+
+    public long getOpenOrderQuantity(long accountId, String symbol, String side) {
+        Long quantity = jdbcClient.sql(
+                """
+                select coalesce(sum(quantity - filled_quantity), 0)
+                from stock_order
+                where account_id = :accountId
+                  and symbol = :symbol
+                  and side = :side
+                  and market_type = 'ORDER_BOOK'
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
+                  and quantity > filled_quantity
+                """
+        )
+                .param("accountId", accountId)
+                .param("symbol", symbol)
+                .param("side", side)
+                .query(Long.class)
+                .single();
+        return quantity == null ? 0L : Math.max(0L, quantity);
+    }
+}

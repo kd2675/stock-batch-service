@@ -1,5 +1,7 @@
 package stock.batch.service.common.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -8,7 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class StockBatchInternalApiInterceptorTest {
 
-    private final StockBatchInternalApiInterceptor interceptor = new StockBatchInternalApiInterceptor();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final StockBatchInternalApiInterceptor interceptor = new StockBatchInternalApiInterceptor(objectMapper);
 
     @Test
     void preHandle_emptyConfiguredTokenAndEmptyTokenAllowed_allowsRequestWithoutHeader() throws Exception {
@@ -35,7 +38,10 @@ class StockBatchInternalApiInterceptorTest {
 
         assertThat(allowed).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
-        assertThat(response.getContentAsString()).contains("Internal batch token is not configured");
+        JsonNode responseBody = objectMapper.readTree(response.getContentAsString());
+        assertThat(responseBody.get("success").asBoolean()).isFalse();
+        assertThat(responseBody.get("code").asInt()).isEqualTo(4010200);
+        assertThat(responseBody.get("message").asText()).isEqualTo("Internal batch token is not configured");
     }
 
     @Test
@@ -50,7 +56,10 @@ class StockBatchInternalApiInterceptorTest {
 
         assertThat(allowed).isFalse();
         assertThat(response.getStatus()).isEqualTo(401);
-        assertThat(response.getContentAsString()).contains("Unauthorized internal batch request");
+        JsonNode responseBody = objectMapper.readTree(response.getContentAsString());
+        assertThat(responseBody.get("success").asBoolean()).isFalse();
+        assertThat(responseBody.get("code").asInt()).isEqualTo(4010200);
+        assertThat(responseBody.get("message").asText()).isEqualTo("Unauthorized internal batch request");
     }
 
     @Test

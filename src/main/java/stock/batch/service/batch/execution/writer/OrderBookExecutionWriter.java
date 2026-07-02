@@ -1,13 +1,13 @@
 package stock.batch.service.batch.execution.writer;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDateTime;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.execution.biz.ExecutionCostCalculator;
 
@@ -16,6 +16,8 @@ import stock.batch.service.execution.biz.ExecutionCostCalculator;
 public class OrderBookExecutionWriter {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ExecutionHoldingJdbcSupport holdingJdbcSupport;
+    private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
     public void debitCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -64,11 +66,7 @@ public class OrderBookExecutionWriter {
     }
 
     public void deleteEmptyHolding(long accountId, String symbol) {
-        jdbcTemplate.update(
-                "delete from stock_holding where account_id = ? and symbol = ? and quantity <= 0 and reserved_quantity <= 0",
-                accountId,
-                symbol
-        );
+        holdingJdbcSupport.deleteEmptyHolding(accountId, symbol);
     }
 
     public void insertExecution(
@@ -162,51 +160,10 @@ public class OrderBookExecutionWriter {
         if (quantity <= 0) {
             return;
         }
-        jdbcTemplate.update(
-                """
-                update stock_holding
-                set reserved_quantity = case when reserved_quantity >= ? then reserved_quantity - ? else 0 end,
-                    updated_at = ?
-                where account_id = ?
-                  and symbol = ?
-                """,
-                quantity,
-                quantity,
-                updatedAt,
-                order.accountId(),
-                order.symbol()
-        );
+        holdingReservationJdbcSupport.releaseReservedSellQuantity(order.accountId(), order.symbol(), quantity, updatedAt);
     }
 
     public void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount, LocalDateTime executedAt) {
-        int updatedRows = jdbcTemplate.update(
-                """
-                update stock_holding
-                set average_price = ((average_price * quantity) + ?) / (quantity + ?),
-                    quantity = quantity + ?,
-                    updated_at = ?
-                where account_id = ?
-                  and symbol = ?
-                """,
-                costAmount,
-                quantity,
-                quantity,
-                executedAt,
-                accountId,
-                symbol
-        );
-        if (updatedRows == 0) {
-            jdbcTemplate.update(
-                    """
-                    insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
-                    values (?, ?, ?, 0, ?, ?)
-                    """,
-                    accountId,
-                    symbol,
-                    quantity,
-                    costAmount.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP),
-                    executedAt
-            );
-        }
+        holdingJdbcSupport.upsertHolding(accountId, symbol, quantity, costAmount, executedAt);
     }
 }

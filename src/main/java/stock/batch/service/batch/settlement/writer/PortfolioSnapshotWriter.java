@@ -8,16 +8,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.settlement.model.PortfolioSnapshotCommand;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Component
 @RequiredArgsConstructor
 public class PortfolioSnapshotWriter {
 
     private final JdbcTemplate jdbcTemplate;
+    private final SimulationClockService simulationClockService;
 
     public void write(PortfolioSnapshotCommand command) {
-        LocalDate today = LocalDate.now();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = simulationClockService.currentDate();
+        LocalDateTime now = simulationClockService.currentMarketDateTime();
         int updatedRows = jdbcTemplate.update(
                 """
                 update portfolio_snapshot

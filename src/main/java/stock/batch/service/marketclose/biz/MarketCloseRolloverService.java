@@ -10,6 +10,7 @@ import java.util.List;
 
 import stock.batch.service.batch.marketclose.model.MarketCloseOrderRow;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Service
 @RequiredArgsConstructor
@@ -19,6 +20,7 @@ public class MarketCloseRolloverService {
     private static final String SELL = "SELL";
 
     private final MarketCloseRolloverWriter writer;
+    private final SimulationClockService simulationClockService;
 
     @Transactional
     public int rolloverClosingPrices() {
@@ -28,8 +30,8 @@ public class MarketCloseRolloverService {
     @Transactional
     public int rolloverClosingPrices(String symbol) {
         String normalizedSymbol = normalizeSymbol(symbol);
-        LocalDateTime closedAt = LocalDateTime.now();
-        long closeRunId = writer.createCloseRun(normalizedSymbol, closedAt.toLocalDate(), closedAt);
+        LocalDateTime closedAt = simulationClockService.currentMarketDateTime();
+        long closeRunId = writer.createCloseRun(normalizedSymbol, simulationClockService.currentDate(), closedAt);
         int cancelledOrderCount = cancelOpenOrderBookOrders(normalizedSymbol, closedAt);
         int holdingSnapshotCount = writer.snapshotHoldings(closeRunId, normalizedSymbol, closedAt);
         int priceRolloverCount = writer.rolloverClosingPrices(normalizedSymbol);
@@ -38,7 +40,7 @@ public class MarketCloseRolloverService {
                 cancelledOrderCount,
                 holdingSnapshotCount,
                 priceRolloverCount,
-                LocalDateTime.now()
+                simulationClockService.currentMarketDateTime()
         );
         return cancelledOrderCount + priceRolloverCount + holdingSnapshotCount;
     }

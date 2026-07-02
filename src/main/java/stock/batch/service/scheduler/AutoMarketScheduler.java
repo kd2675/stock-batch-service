@@ -5,7 +5,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
-import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 
 @Component
@@ -14,16 +13,13 @@ import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 public class AutoMarketScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
-    private final BatchJobRuntimeControl batchJobRuntimeControl;
+    private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
             initialDelayString = "${stock.batch.auto-market.initial-delay-ms:5000}",
             fixedDelayString = "${stock.batch.auto-market.fixed-delay-ms:1000}"
     )
     public void runAutoMarket() {
-        if (!batchJobRuntimeControl.shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true)) {
-            return;
-        }
-        stockBatchJobLauncher.runAutoMarket();
+        scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, true, stockBatchJobLauncher::runAutoMarket);
     }
 }

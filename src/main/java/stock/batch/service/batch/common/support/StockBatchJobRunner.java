@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -11,29 +12,23 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
 
 @Component
+@DependsOn("simulationClockScheduler")
 @Slf4j
 public class StockBatchJobRunner {
 
-    private static final String COMPLETED = "COMPLETED";
-    private static final String SKIPPED = "SKIPPED";
-    private static final String FAILED = "FAILED";
-    private static final String SHUTTING_DOWN_MESSAGE = "Batch service is shutting down";
-
     private final BatchJobLockRegistry batchJobLockRegistry;
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder;
-    private final long lockHeartbeatIntervalSeconds;
     private final long shutdownAwaitRunningJobsSeconds;
     private final ScheduledExecutorService lockHeartbeatExecutor;
-    private final Object activeJobsMonitor = new Object();
-
-    private boolean shuttingDown;
-    private int activeJobCount;
+    private final StockBatchJobLockHeartbeat lockHeartbeat;
+    private final StockBatchActiveJobTracker activeJobTracker = new StockBatchActiveJobTracker();
 
     @Autowired
     public StockBatchJobRunner(
@@ -47,11 +42,7 @@ public class StockBatchJobRunner {
                 stockBatchJobRepositoryRecorder,
                 lockHeartbeatIntervalSeconds,
                 shutdownAwaitRunningJobsSeconds,
-                Executors.newSingleThreadScheduledExecutor(runnable -> {
-                    Thread thread = new Thread(runnable, "stock-batch-lock-heartbeat");
-                    thread.setDaemon(true);
-                    return thread;
-                })
+                newLockHeartbeatExecutor("stock-batch-lock-heartbeat")
         );
     }
 
@@ -64,11 +55,7 @@ public class StockBatchJobRunner {
                 stockBatchJobRepositoryRecorder,
                 30,
                 60,
-                Executors.newSingleThreadScheduledExecutor(runnable -> {
-                    Thread thread = new Thread(runnable, "stock-batch-lock-heartbeat-test");
-                    thread.setDaemon(true);
-                    return thread;
-                })
+                newLockHeartbeatExecutor("stock-batch-lock-heartbeat-test")
         );
     }
 
@@ -105,40 +92,49 @@ public class StockBatchJobRunner {
         }
         this.batchJobLockRegistry = batchJobLockRegistry;
         this.stockBatchJobRepositoryRecorder = stockBatchJobRepositoryRecorder;
-        this.lockHeartbeatIntervalSeconds = lockHeartbeatIntervalSeconds;
         this.shutdownAwaitRunningJobsSeconds = shutdownAwaitRunningJobsSeconds;
         this.lockHeartbeatExecutor = lockHeartbeatExecutor;
+        this.lockHeartbeat = new StockBatchJobLockHeartbeat(
+                batchJobLockRegistry,
+                lockHeartbeatExecutor,
+                lockHeartbeatIntervalSeconds
+        );
     }
 
     public StockBatchJobRunResponse run(StockBatchJob job) {
-        if (!tryEnterActiveJob()) {
+        if (!activeJobTracker.tryEnter()) {
             LocalDateTime now = LocalDateTime.now();
-            return new StockBatchJobRunResponse(
-                    job.jobName(),
-                    SKIPPED,
-                    job.executionMode(),
-                    0,
-                    SHUTTING_DOWN_MESSAGE,
-                    now,
-                    now
-            );
+            return StockBatchJobRunResponses.shuttingDown(job, now);
         }
         try {
             return runEnteredJob(job);
         } finally {
-            leaveActiveJob();
+            activeJobTracker.leave();
         }
     }
 
     private StockBatchJobRunResponse runEnteredJob(StockBatchJob job) {
         LocalDateTime startedAt = LocalDateTime.now();
-        StockBatchJobExecutionRecord executionRecord = stockBatchJobRepositoryRecorder.start(job, startedAt);
+        StockBatchJobExecutionRecord executionRecord;
+        try {
+            executionRecord = stockBatchJobRepositoryRecorder.start(job, startedAt);
+        } catch (RuntimeException ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            log.warn(
+                    "Stock batch job repository start failed: job={}, mode={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
+        }
         boolean lockAcquired;
         try {
             lockAcquired = batchJobLockRegistry.tryAcquire(job.jobName(), startedAt);
         } catch (RuntimeException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
-            stockBatchJobRepositoryRecorder.fail(executionRecord, ex, endedAt);
+            recordFailure(job, executionRecord, ex, endedAt, "lock acquisition failure");
             log.warn(
                     "Stock batch job lock acquisition failed: job={}, mode={}, reason={}",
                     job.jobName(),
@@ -146,61 +142,32 @@ public class StockBatchJobRunner {
                     ex.getMessage(),
                     ex
             );
-            return new StockBatchJobRunResponse(
-                    job.jobName(),
-                    FAILED,
-                    job.executionMode(),
-                    0,
-                    ex.getMessage(),
-                    startedAt,
-                    endedAt
-            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
         }
         if (!lockAcquired) {
             LocalDateTime endedAt = LocalDateTime.now();
-            stockBatchJobRepositoryRecorder.skip(executionRecord, endedAt);
-            return new StockBatchJobRunResponse(
-                    job.jobName(),
-                    SKIPPED,
-                    job.executionMode(),
-                    0,
-                    "Job is already running",
-                    startedAt,
-                    endedAt
-            );
+            recordSkip(job, executionRecord, endedAt);
+            return StockBatchJobRunResponses.alreadyRunning(job, startedAt, endedAt);
         }
         AtomicReference<RuntimeException> lockHeartbeatFailure = new AtomicReference<>();
-        ScheduledFuture<?> lockHeartbeat = startLockHeartbeat(job, lockHeartbeatFailure);
+        ScheduledFuture<?> lockHeartbeatFuture = lockHeartbeat.start(job, lockHeartbeatFailure);
         try {
             int processedCount = job.run();
             requireNonNegativeProcessedCount(job, processedCount);
             LocalDateTime endedAt = LocalDateTime.now();
             RuntimeException heartbeatFailure = lockHeartbeatFailure.get();
             if (heartbeatFailure != null) {
-                stockBatchJobRepositoryRecorder.fail(executionRecord, heartbeatFailure, endedAt);
-                return new StockBatchJobRunResponse(
-                        job.jobName(),
-                        FAILED,
-                        job.executionMode(),
-                        0,
-                        heartbeatFailure.getMessage(),
-                        startedAt,
-                        endedAt
-                );
+                recordFailure(job, executionRecord, heartbeatFailure, endedAt, "heartbeat failure");
+                return StockBatchJobRunResponses.failed(job, heartbeatFailure, startedAt, endedAt);
             }
-            stockBatchJobRepositoryRecorder.complete(executionRecord, processedCount, endedAt);
-            return new StockBatchJobRunResponse(
-                    job.jobName(),
-                    COMPLETED,
-                    job.executionMode(),
-                    processedCount,
-                    "Job completed",
-                    startedAt,
-                    endedAt
-            );
+            RuntimeException completeFailure = recordComplete(job, executionRecord, processedCount, endedAt);
+            if (completeFailure != null) {
+                return StockBatchJobRunResponses.failed(job, completeFailure, startedAt, endedAt);
+            }
+            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
         } catch (RuntimeException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
-            stockBatchJobRepositoryRecorder.fail(executionRecord, ex, endedAt);
+            recordFailure(job, executionRecord, ex, endedAt, "job failure");
             log.warn(
                     "Stock batch job failed: job={}, mode={}, reason={}",
                     job.jobName(),
@@ -208,70 +175,92 @@ public class StockBatchJobRunner {
                     ex.getMessage(),
                     ex
             );
-            return new StockBatchJobRunResponse(
-                    job.jobName(),
-                    FAILED,
-                    job.executionMode(),
-                    0,
-                    ex.getMessage(),
-                    startedAt,
-                    endedAt
-            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
         } finally {
-            lockHeartbeat.cancel(false);
-            releaseLock(job);
+            lockHeartbeatFuture.cancel(false);
+            lockHeartbeat.release(job);
+        }
+    }
+
+    private RuntimeException recordComplete(
+            StockBatchJob job,
+            StockBatchJobExecutionRecord executionRecord,
+            int processedCount,
+            LocalDateTime endedAt
+    ) {
+        try {
+            stockBatchJobRepositoryRecorder.complete(executionRecord, processedCount, endedAt);
+            return null;
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Stock batch job repository complete failed: job={}, mode={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
+            return ex;
+        }
+    }
+
+    private void recordSkip(
+            StockBatchJob job,
+            StockBatchJobExecutionRecord executionRecord,
+            LocalDateTime endedAt
+    ) {
+        try {
+            stockBatchJobRepositoryRecorder.skip(executionRecord, endedAt);
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Stock batch job repository skip failed: job={}, mode={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
+        }
+    }
+
+    private void recordFailure(
+            StockBatchJob job,
+            StockBatchJobExecutionRecord executionRecord,
+            RuntimeException failure,
+            LocalDateTime endedAt,
+            String failureContext
+    ) {
+        try {
+            stockBatchJobRepositoryRecorder.fail(executionRecord, failure, endedAt);
+        } catch (RuntimeException recordFailure) {
+            log.warn(
+                    "Stock batch job repository fail recording failed: job={}, mode={}, context={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    failureContext,
+                    recordFailure.getMessage(),
+                    recordFailure
+            );
         }
     }
 
     @PreDestroy
     public void shutdown() {
-        markShuttingDown();
+        activeJobTracker.markShuttingDown();
         waitForActiveJobsToComplete();
         shutdownLockHeartbeatExecutor();
     }
 
-    private boolean tryEnterActiveJob() {
-        synchronized (activeJobsMonitor) {
-            if (shuttingDown) {
-                return false;
-            }
-            activeJobCount++;
-            return true;
-        }
-    }
-
-    private void leaveActiveJob() {
-        synchronized (activeJobsMonitor) {
-            activeJobCount--;
-            if (activeJobCount == 0) {
-                activeJobsMonitor.notifyAll();
-            }
-        }
-    }
-
-    private void markShuttingDown() {
-        synchronized (activeJobsMonitor) {
-            shuttingDown = true;
-        }
-    }
-
     private void waitForActiveJobsToComplete() {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(shutdownAwaitRunningJobsSeconds);
-        synchronized (activeJobsMonitor) {
-            while (activeJobCount > 0) {
-                long remainingNanos = deadline - System.nanoTime();
-                if (remainingNanos <= 0) {
-                    log.warn("Stock batch shutdown timed out while waiting for running jobs: activeJobCount={}", activeJobCount);
-                    return;
-                }
-                try {
-                    TimeUnit.NANOSECONDS.timedWait(activeJobsMonitor, remainingNanos);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    log.warn("Stock batch shutdown interrupted while waiting for running jobs");
-                    return;
-                }
-            }
+        StockBatchActiveJobTracker.WaitResult waitResult = activeJobTracker.waitForActiveJobsToComplete(
+                shutdownAwaitRunningJobsSeconds
+        );
+        if (waitResult.status() == StockBatchActiveJobTracker.WaitResult.Status.TIMED_OUT) {
+            log.warn(
+                    "Stock batch shutdown timed out while waiting for running jobs: activeJobCount={}",
+                    waitResult.activeJobCount()
+            );
+        }
+        if (waitResult.status() == StockBatchActiveJobTracker.WaitResult.Status.INTERRUPTED) {
+            log.warn("Stock batch shutdown interrupted while waiting for running jobs");
         }
     }
 
@@ -290,58 +279,6 @@ public class StockBatchJobRunner {
         }
     }
 
-    private ScheduledFuture<?> startLockHeartbeat(
-            StockBatchJob job,
-            AtomicReference<RuntimeException> lockHeartbeatFailure
-    ) {
-        return lockHeartbeatExecutor.scheduleWithFixedDelay(
-                () -> renewLock(job, lockHeartbeatFailure),
-                lockHeartbeatIntervalSeconds,
-                lockHeartbeatIntervalSeconds,
-                TimeUnit.SECONDS
-        );
-    }
-
-    private void renewLock(StockBatchJob job, AtomicReference<RuntimeException> lockHeartbeatFailure) {
-        try {
-            boolean renewed = batchJobLockRegistry.renew(job.jobName(), LocalDateTime.now());
-            if (!renewed) {
-                lockHeartbeatFailure.compareAndSet(
-                        null,
-                        new IllegalStateException("Job lock heartbeat lost ownership")
-                );
-                log.warn(
-                        "Stock batch job lock heartbeat lost ownership: job={}, mode={}",
-                        job.jobName(),
-                        job.executionMode()
-                );
-            }
-        } catch (RuntimeException ex) {
-            log.warn(
-                    "Stock batch job lock heartbeat failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage(),
-                    ex
-            );
-            lockHeartbeatFailure.compareAndSet(null, ex);
-        }
-    }
-
-    private void releaseLock(StockBatchJob job) {
-        try {
-            batchJobLockRegistry.release(job.jobName());
-        } catch (RuntimeException ex) {
-            log.warn(
-                    "Stock batch job lock release failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage(),
-                    ex
-            );
-        }
-    }
-
     private void requireNonNegativeProcessedCount(StockBatchJob job, int processedCount) {
         if (processedCount < 0) {
             throw new IllegalStateException(
@@ -349,5 +286,17 @@ public class StockBatchJobRunner {
                             .formatted(job.jobName(), processedCount)
             );
         }
+    }
+
+    private static ScheduledExecutorService newLockHeartbeatExecutor(String threadName) {
+        return Executors.newSingleThreadScheduledExecutor(daemonThreadFactory(threadName));
+    }
+
+    private static ThreadFactory daemonThreadFactory(String threadName) {
+        return runnable -> {
+            Thread thread = new Thread(runnable, threadName);
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 }

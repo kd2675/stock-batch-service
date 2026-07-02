@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 
@@ -14,17 +13,14 @@ import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 public class MarketDataRefreshScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
-    private final BatchJobRuntimeControl batchJobRuntimeControl;
+    private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
             initialDelayString = "${stock.batch.market-data.initial-delay-ms:30000}",
             fixedDelayString = "${stock.batch.market-data.fixed-delay-ms:60000}"
     )
     public void refreshMarketData() {
-        if (!batchJobRuntimeControl.shouldRunScheduledJob(MarketDataRefreshJob.JOB_NAME, true)) {
-            return;
-        }
-        stockBatchJobLauncher.refreshMarketData();
+        scheduledJobGuard.runIfEnabled(MarketDataRefreshJob.JOB_NAME, true, stockBatchJobLauncher::refreshMarketData);
     }
 
 }

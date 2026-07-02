@@ -12,7 +12,7 @@ public class SmallDiversifierBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public int orderCount(ProfileSignalContext context) {
-        return clamp(standardOrderCount(context, false) + 1, 1, 8);
+        return Math.clamp(standardOrderCount(context, false) + 1, 1, 8);
     }
 
     @Override

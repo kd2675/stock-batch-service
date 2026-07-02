@@ -2,7 +2,6 @@ package stock.batch.service.common.act;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
@@ -10,9 +9,9 @@ import stock.batch.service.batch.common.policy.BatchJobRuntimeCatalog;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -297,22 +296,6 @@ class StockBatchJobControllerTest {
     }
 
     private JdbcTemplate createJdbcTemplate() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource();
-        dataSource.setDriverClassName("org.h2.Driver");
-        dataSource.setUrl("jdbc:h2:mem:stock_batch_job_controller_test_%s;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false".formatted(UUID.randomUUID()));
-        dataSource.setUsername("sa");
-        dataSource.setPassword("");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("""
-                create table if not exists stock_batch_job_control (
-                  job_name varchar(100) not null primary key,
-                  runtime_enabled boolean not null default true,
-                  updated_by varchar(64),
-                  created_at timestamp not null,
-                  updated_at timestamp not null,
-                  constraint chk_stock_batch_job_control_name check (job_name <> '')
-                )
-                """);
-        return template;
+        return BatchTestDatabaseFactory.createJobControlJdbcTemplate("stock_batch_job_controller_test");
     }
 }

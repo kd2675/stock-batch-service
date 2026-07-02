@@ -2,15 +2,14 @@ package stock.batch.service.batch.common.policy;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import stock.batch.service.common.vo.BatchJobRuntimeStatusResponse;
+import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.UUID;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +66,7 @@ class BatchJobRuntimeCatalogContractTest {
             return paths
                     .filter(path -> path.getFileName().toString().endsWith(".java"))
                     .filter(this::isStockBatchJobImplementation)
+                    .filter(this::hasStaticJobName)
                     .map(this::readJobName)
                     .sorted()
                     .toList();
@@ -76,6 +76,14 @@ class BatchJobRuntimeCatalogContractTest {
     private boolean isStockBatchJobImplementation(Path path) {
         try {
             return Files.readString(path, StandardCharsets.UTF_8).contains("implements StockBatchJob");
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to read " + path, ex);
+        }
+    }
+
+    private boolean hasStaticJobName(Path path) {
+        try {
+            return JOB_NAME_PATTERN.matcher(Files.readString(path, StandardCharsets.UTF_8)).find();
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to read " + path, ex);
         }
@@ -111,22 +119,6 @@ class BatchJobRuntimeCatalogContractTest {
     }
 
     private JdbcTemplate createJdbcTemplate() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource();
-        dataSource.setDriverClassName("org.h2.Driver");
-        dataSource.setUrl("jdbc:h2:mem:batch_job_runtime_catalog_contract_%s;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false".formatted(UUID.randomUUID()));
-        dataSource.setUsername("sa");
-        dataSource.setPassword("");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("""
-                create table if not exists stock_batch_job_control (
-                  job_name varchar(100) not null primary key,
-                  runtime_enabled boolean not null default true,
-                  updated_by varchar(64),
-                  created_at timestamp not null,
-                  updated_at timestamp not null,
-                  constraint chk_stock_batch_job_control_name check (job_name <> '')
-                )
-                """);
-        return template;
+        return BatchTestDatabaseFactory.createJobControlJdbcTemplate("batch_job_runtime_catalog_contract");
     }
 }

@@ -14,8 +14,10 @@ spring:
     username: sa
     password:
     hikari:
+      pool-name: stock-business-test-pool
       maximum-pool-size: 4
       connection-timeout: 30000
+      validation-timeout: 5000
   sql:
     init:
       mode: always
@@ -39,8 +41,10 @@ stock:
         username: sa
         password:
         hikari:
+          pool-name: stock-batch-metadata-test-pool
           maximum-pool-size: 2
           connection-timeout: 30000
+          validation-timeout: 5000
     market-data:
       enabled: false
       initial-delay-ms: 600000

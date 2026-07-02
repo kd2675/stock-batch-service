@@ -1,13 +1,17 @@
 package stock.batch.service.common.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.HandlerInterceptor;
+import web.common.core.response.base.dto.ResponseErrorDTO;
+import web.common.core.response.base.vo.Code;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +22,8 @@ import java.security.MessageDigest;
 public class StockBatchInternalApiInterceptor implements HandlerInterceptor {
 
     private static final String INTERNAL_TOKEN_HEADER = "X-Internal-Token";
+
+    private final ObjectMapper objectMapper;
 
     @Value("${stock.batch.internal.token:}")
     private String internalToken;
@@ -46,11 +52,9 @@ public class StockBatchInternalApiInterceptor implements HandlerInterceptor {
 
     private void writeUnauthorized(HttpServletResponse response, String message) throws IOException {
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(String.format(
-                "{\"success\":false,\"code\":401,\"message\":\"%s\"}",
-                message
-        ));
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        objectMapper.writeValue(response.getWriter(), ResponseErrorDTO.of(Code.UNAUTHORIZED, message));
     }
 
     private boolean constantTimeEquals(String expected, String actual) {

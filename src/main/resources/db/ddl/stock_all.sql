@@ -26,6 +26,26 @@ CREATE TABLE IF NOT EXISTS stock_batch_job_lock (
   CONSTRAINT chk_stock_batch_job_lock_owner CHECK (lock_owner <> '')
 );
 
+CREATE TABLE IF NOT EXISTS stock_simulation_clock (
+  clock_id VARCHAR(40) NOT NULL,
+  base_simulation_date DATE NOT NULL,
+  real_seconds_per_simulation_day INT NOT NULL,
+  accumulated_real_seconds BIGINT NOT NULL DEFAULT 0,
+  running BOOLEAN NOT NULL DEFAULT FALSE,
+  last_started_at DATETIME NULL,
+  last_heartbeat_at DATETIME NULL,
+  timezone VARCHAR(50) NOT NULL DEFAULT 'Asia/Seoul',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (clock_id),
+  CONSTRAINT chk_stock_simulation_clock_id CHECK (clock_id <> ''),
+  CONSTRAINT chk_stock_simulation_clock_day_seconds CHECK (real_seconds_per_simulation_day > 0),
+  CONSTRAINT chk_stock_simulation_clock_accumulated CHECK (accumulated_real_seconds >= 0),
+  CONSTRAINT chk_stock_simulation_clock_running_dates CHECK (
+    running = FALSE OR (last_started_at IS NOT NULL AND last_heartbeat_at IS NOT NULL)
+  )
+);
+
 CREATE TABLE IF NOT EXISTS stock_account (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_key VARCHAR(64) NULL,
@@ -64,6 +84,7 @@ CREATE TABLE IF NOT EXISTS stock_account_cash_flow (
   PRIMARY KEY (id),
   KEY idx_stock_account_cash_flow_account_time (account_id, created_at, id),
   KEY idx_stock_account_cash_flow_account_reason_creator_time (account_id, reason, created_by, created_at, id),
+  KEY idx_stock_account_cash_flow_account_type_reason_time (account_id, flow_type, reason, created_at, id),
   KEY idx_stock_account_cash_flow_time (created_at, id),
   CONSTRAINT chk_stock_account_cash_flow_type CHECK (CASE `flow_type` WHEN 'DEPOSIT' THEN 1 WHEN 'WITHDRAW' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_account_cash_flow_amount CHECK (amount > 0),
@@ -292,10 +313,13 @@ CREATE TABLE IF NOT EXISTS stock_order (
   UNIQUE KEY uk_stock_order_client_order_id (client_order_id),
   KEY idx_stock_order_account_created (account_id, created_at),
   KEY idx_stock_order_account_status_created (account_id, status, created_at),
+  KEY idx_stock_order_account_symbol_created (account_id, symbol, created_at),
   KEY idx_stock_order_status_symbol (status, symbol),
   KEY idx_stock_order_market_status_symbol (market_type, status, symbol),
   KEY idx_stock_order_market_status_side (market_type, status, side),
+  KEY idx_stock_order_market_status_account_time (market_type, status, account_id, created_at),
   KEY idx_stock_order_market_account_time (market_type, account_id, created_at),
+  KEY idx_stock_order_market_account_symbol_time (market_type, account_id, symbol, created_at),
   KEY idx_stock_order_market_created_status (market_type, created_at, status),
   KEY idx_stock_order_side_status_account (side, status, account_id),
   KEY idx_stock_order_execution_scan (status, order_type, created_at, symbol),
@@ -329,8 +353,11 @@ CREATE TABLE IF NOT EXISTS stock_execution (
   executed_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_stock_execution_account_time (account_id, executed_at),
+  KEY idx_stock_execution_account_symbol_time (account_id, symbol, executed_at),
   KEY idx_stock_execution_time_account (executed_at, account_id),
   KEY idx_stock_execution_source_account_time (source, account_id, executed_at),
+  KEY idx_stock_execution_source_account_symbol_time (source, account_id, symbol, executed_at),
+  KEY idx_stock_execution_source_time_account (source, executed_at, account_id),
   KEY idx_stock_execution_source_symbol_time (source, symbol, executed_at),
   KEY idx_stock_execution_source_time (source, executed_at),
   KEY idx_stock_execution_order (order_id),
@@ -622,6 +649,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
   PRIMARY KEY (user_key, symbol),
   KEY idx_stock_auto_participant_symbol_enabled (enabled, symbol, user_key),
   KEY idx_stock_auto_participant_symbol_lookup (symbol, user_key),
+  KEY idx_stock_auto_participant_symbol_user_enabled (user_key, enabled, symbol),
   CONSTRAINT chk_stock_auto_participant_symbol_intensity CHECK (intensity between 1 and 10)
 );
 

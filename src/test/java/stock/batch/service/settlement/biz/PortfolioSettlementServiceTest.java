@@ -31,6 +31,7 @@ class PortfolioSettlementServiceTest {
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_account");
+        jdbcTemplate.update("delete from stock_simulation_clock");
     }
 
     @Test

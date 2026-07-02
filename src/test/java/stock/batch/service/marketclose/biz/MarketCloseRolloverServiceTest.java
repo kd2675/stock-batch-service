@@ -1,6 +1,7 @@
 package stock.batch.service.marketclose.biz;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,7 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_account where user_key like 'market-close-%'");
         jdbcTemplate.update("delete from stock_price_tick");
         jdbcTemplate.update("delete from stock_price");
+        jdbcTemplate.update("delete from stock_simulation_clock");
     }
 
     @Test
@@ -161,6 +163,8 @@ class MarketCloseRolloverServiceTest {
 
     @Test
     void rolloverClosingPrices_sameDayMultipleCloses_createSeparateHoldingSnapshots() {
+        LocalDate simulationDate = LocalDate.of(2026, 1, 3);
+        setSimulationDate(simulationDate);
         insertPrice("MC002", "73500.00", "70000.00", "internal-order-book");
         insertAccount("market-close-holder", "500000.00");
         insertHolding("market-close-holder", "MC002", 10L, 0L, "70000.00");
@@ -182,7 +186,7 @@ class MarketCloseRolloverServiceTest {
         assertThat(firstProcessedCount).isEqualTo(2);
         assertThat(secondProcessedCount).isEqualTo(1);
         assertThat(secondCloseRunId).isGreaterThan(firstCloseRunId);
-        assertThat(queryLong("select count(*) from stock_market_close_run where business_date = current_date"))
+        assertThat(queryLong("select count(*) from stock_market_close_run where business_date = ?", simulationDate))
                 .isEqualTo(2L);
         assertThat(queryLong("""
                 select quantity
@@ -196,6 +200,29 @@ class MarketCloseRolloverServiceTest {
                  where symbol = 'MC002'
                    and close_run_id = ?
                 """, secondCloseRunId)).isEqualTo(25L);
+    }
+
+    private void setSimulationDate(LocalDate simulationDate) {
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update(
+                """
+                merge into stock_simulation_clock(
+                    clock_id,
+                    base_simulation_date,
+                    real_seconds_per_simulation_day,
+                    accumulated_real_seconds,
+                    running,
+                    last_started_at,
+                    last_heartbeat_at,
+                    timezone,
+                    created_at,
+                    updated_at
+                ) key(clock_id) values ('DEFAULT', ?, 7200, 0, false, null, null, 'Asia/Seoul', ?, ?)
+                """,
+                simulationDate,
+                now,
+                now
+        );
     }
 
     private void insertPrice(String symbol, String currentPrice, String previousClose, String provider) {

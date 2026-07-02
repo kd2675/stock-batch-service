@@ -15,10 +15,10 @@ public class NewsReactiveBehavior extends AbstractAutoProfileBehavior {
         if (!context.hasHolding()) {
             return BUY;
         }
-        if (context.effectiveIntensity() >= 8 && context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.effectiveIntensity() >= 8 && context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
-        if (context.effectiveIntensity() <= 3 && context.orderIndex() == 0) {
+        if (context.effectiveIntensity() <= 3 && context.isFirstOrder()) {
             return SELL;
         }
         return chooseByBuyBias(context);

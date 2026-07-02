@@ -54,6 +54,13 @@ class OrderExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("69000.00"));
         assertThat(queryLong("select count(*) from stock_execution e join stock_account a on a.id = e.account_id where a.user_key = 'buyer'"))
                 .isEqualTo(1L);
+        LocalDateTime executedAt = queryDateTime("select executed_at from stock_execution where order_id = (select id from stock_order where client_order_id = 'buyer-buy')");
+        assertThat(queryDateTime("select updated_at from stock_order where client_order_id = 'buyer-buy'"))
+                .isEqualTo(executedAt);
+        assertThat(queryDateTime("select h.updated_at from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'buyer' and h.symbol = '005930'"))
+                .isEqualTo(executedAt);
+        assertThat(queryDateTime("select updated_at from stock_account where user_key = 'buyer'"))
+                .isEqualTo(executedAt);
     }
 
     @Test
@@ -315,6 +322,10 @@ class OrderExecutionServiceTest {
 
     private Long queryLong(String sql) {
         return jdbcTemplate.queryForObject(sql, Long.class);
+    }
+
+    private LocalDateTime queryDateTime(String sql) {
+        return jdbcTemplate.queryForObject(sql, LocalDateTime.class);
     }
 
     private Long accountIdFor(String userKey) {

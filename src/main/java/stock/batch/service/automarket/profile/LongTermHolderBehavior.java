@@ -20,7 +20,7 @@ public class LongTermHolderBehavior extends AbstractAutoProfileBehavior {
         if (context.isDeepLoss()) {
             return context.canBuyOne() ? BUY : null;
         }
-        if (context.unrealizedReturn() >= 0.35 && context.hasHolding() && context.orderIndex() > 0) {
+        if (context.unrealizedReturn() >= 0.35 && context.hasHolding() && context.isAdditionalOrder()) {
             return SELL;
         }
         if (context.unrealizedReturn() >= 0.15 && context.hasHolding()) {

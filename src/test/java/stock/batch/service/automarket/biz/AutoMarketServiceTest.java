@@ -11,7 +11,6 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
-import stock.batch.service.automarket.support.SimulationTimeScale;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
@@ -57,6 +56,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_market_config");
         jdbcTemplate.update("delete from stock_auto_participant_profile_config");
         jdbcTemplate.update("delete from stock_auto_participant");
+        jdbcTemplate.update("delete from stock_simulation_clock");
 
         jdbcTemplate.update(
                 """
@@ -221,8 +221,8 @@ class AutoMarketServiceTest {
                         70000.00, 7, 0, 0.00, ?, ?)
                 """,
                 accountId,
-                LocalDateTime.now().minusSeconds(4),
-                LocalDateTime.now().minusSeconds(4)
+                LocalDateTime.now().toLocalDate().atStartOfDay().minusSeconds(31),
+                LocalDateTime.now().toLocalDate().atStartOfDay().minusSeconds(31)
         );
 
         autoMarketService.runAutoMarketStep();
@@ -292,7 +292,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-scalper', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -5, CURRENT_TIMESTAMP), DATEADD('SECOND', -5, CURRENT_TIMESTAMP)
+                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -45, CURRENT_DATE), DATEADD('SECOND', -45, CURRENT_DATE)
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -305,7 +305,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-long-term', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -5, CURRENT_TIMESTAMP), DATEADD('SECOND', -5, CURRENT_TIMESTAMP)
+                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -45, CURRENT_DATE), DATEADD('SECOND', -45, CURRENT_DATE)
                 from stock_account
                 where user_key = 'stock-auto-002'
                 """
@@ -1175,12 +1175,14 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runtimeOrderTtl_appliesSimulationScaleWithMinimumTtl() {
+    void runtimeOrderTtl_usesProjectTtlBecauseMarketTimestampsAreSimulationTime() {
+        int scalperProjectTtl = autoMarketService.orderTtlSecondsForProfile(AutoParticipantProfileType.SCALPER, 60);
+        int longTermProjectTtl = autoMarketService.orderTtlSecondsForProfile(AutoParticipantProfileType.LONG_TERM_HOLDER, 60);
         int scalperRuntimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.SCALPER, 60);
         int longTermRuntimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.LONG_TERM_HOLDER, 60);
 
-        assertThat(scalperRuntimeTtl).isEqualTo(3);
-        assertThat(longTermRuntimeTtl).isEqualTo(7);
+        assertThat(scalperRuntimeTtl).isEqualTo(scalperProjectTtl);
+        assertThat(longTermRuntimeTtl).isEqualTo(longTermProjectTtl);
         assertThat(scalperRuntimeTtl).isLessThan(longTermRuntimeTtl);
     }
 
@@ -1200,7 +1202,18 @@ class AutoMarketServiceTest {
         int runtimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.DAY_TRADER, 60);
 
         assertThat(projectTtl).isEqualTo(48);
-        assertThat(runtimeTtl).isEqualTo(SimulationTimeScale.projectAutoOrderTtlToRuntimeSeconds(projectTtl));
+        assertThat(runtimeTtl).isEqualTo(projectTtl);
+    }
+
+    @Test
+    void profileRuntimeScale_isIndependentFromConfiguredRealDaySeconds() {
+        insertSimulationClock(3600);
+
+        int projectTtl = autoMarketService.orderTtlSecondsForProfile(AutoParticipantProfileType.DAY_TRADER, 60);
+        int runtimeTtl = autoMarketService.runtimeOrderTtlSecondsForProfile(AutoParticipantProfileType.DAY_TRADER, 60);
+
+        assertThat(projectTtl).isEqualTo(48);
+        assertThat(runtimeTtl).isEqualTo(projectTtl);
     }
 
     @Test
@@ -1210,7 +1223,36 @@ class AutoMarketServiceTest {
                 insert into stock_price_tick(symbol, price, provider, price_time, created_at)
                 values ('005930', 69000.00, 'test', ?, current_timestamp)
                 """,
-                LocalDateTime.now().minusMinutes(3)
+                LocalDateTime.of(2025, 12, 31, 22, 59, 50)
+        );
+        AutoMarketConfig config = new AutoMarketConfig(
+                "005930",
+                5,
+                3,
+                15,
+                300,
+                BigDecimal.valueOf(100),
+                new BigDecimal("70000.00"),
+                new BigDecimal("50000.00"),
+                BigDecimal.valueOf(30),
+                null
+        );
+
+        double momentum = autoMarketService.priceMomentum(config);
+
+        assertThat(momentum).isGreaterThan(0.20);
+        assertThat(momentum).isLessThan(0.50);
+    }
+
+    @Test
+    void priceMomentum_isIndependentFromConfiguredRealDaySecondsForProjectHourWindow() {
+        insertSimulationClock(3600);
+        jdbcTemplate.update(
+                """
+                insert into stock_price_tick(symbol, price, provider, price_time, created_at)
+                values ('005930', 69000.00, 'test', ?, current_timestamp)
+                """,
+                LocalDateTime.of(2025, 12, 31, 22, 59, 50)
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
@@ -1999,7 +2041,7 @@ class AutoMarketServiceTest {
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         jdbcTemplate.update("""
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -2, CURRENT_TIMESTAMP)
+                select id, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -2, CURRENT_DATE)
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """);
@@ -2192,7 +2234,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('DAY', -10, CURRENT_TIMESTAMP)
+                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('DAY', -29, CURRENT_TIMESTAMP)
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -2220,14 +2262,14 @@ class AutoMarketServiceTest {
 
         autoParticipantCashFlowService.fundRecurringCash();
 
-	        assertThat(queryLong("""
-	                select count(*)
-	                from stock_account_cash_flow f
-	                join stock_account a on a.id = f.account_id
-	                where a.user_key = 'stock-auto-001'
-	                  and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
-	                """)).isEqualTo(2L);
-	    }
+        assertThat(queryLong("""
+                select count(*)
+                from stock_account_cash_flow f
+                join stock_account a on a.id = f.account_id
+                where a.user_key = 'stock-auto-001'
+                  and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
+                """)).isEqualTo(2L);
+    }
 
     @Test
     void fundRecurringCash_profileConfigSupportsSecondRecurringDepositInterval() {
@@ -2255,7 +2297,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -10, CURRENT_TIMESTAMP)
+                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -10, CURRENT_DATE)
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -2404,6 +2446,21 @@ class AutoMarketServiceTest {
                 values ('005930', 'PUBLISH', '자동장 보고서', '자동장 테스트 보고서', ?, null, null, null, 'test', current_timestamp)
                 """,
                 score
+        );
+    }
+
+    private void insertSimulationClock(int realSecondsPerSimulationDay) {
+        jdbcTemplate.update("delete from stock_simulation_clock");
+        jdbcTemplate.update(
+                """
+                insert into stock_simulation_clock(
+                    clock_id, base_simulation_date, real_seconds_per_simulation_day,
+                    accumulated_real_seconds, running, last_started_at, last_heartbeat_at,
+                    timezone, created_at, updated_at
+                )
+                values ('DEFAULT', DATE '2026-01-01', ?, 0, false, null, null, 'Asia/Seoul', current_timestamp, current_timestamp)
+                """,
+                realSecondsPerSimulationDay
         );
     }
 

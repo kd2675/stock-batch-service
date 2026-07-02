@@ -12,7 +12,7 @@ public class FomoBuyerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if ((context.momentumPressure() > 0.50 || context.herdPressure() > 0.50) && context.canBuyOne() && context.orderIndex() == 0) {
+        if ((context.momentumPressure() > 0.50 || context.herdPressure() > 0.50) && context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);

@@ -1,22 +1,27 @@
 package stock.batch.service.batch.execution.reader;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.execution.model.VirtualPriceHoldingRow;
 import stock.batch.service.batch.execution.model.VirtualPriceOrderCandidate;
 
 @Component
-@RequiredArgsConstructor
 public class VirtualPriceExecutionReader {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final JdbcClient jdbcClient;
+
+    public VirtualPriceExecutionReader(JdbcTemplate jdbcTemplate) {
+        this.jdbcClient = JdbcClient.create(jdbcTemplate);
+    }
 
     public List<VirtualPriceOrderCandidate> findCandidatesForUpdate(int scanLimit) {
-        return jdbcTemplate.query(
+        return jdbcClient.sql(
                 """
                 select o.id, o.account_id, o.symbol, o.side, o.order_type, o.limit_price,
                        o.quantity, o.filled_quantity, o.average_fill_price, o.reserved_cash, p.current_price
@@ -28,42 +33,51 @@ public class VirtualPriceExecutionReader {
                 order by o.created_at asc
                 limit ?
                 for update
-                """,
-                (rs, rowNum) -> new VirtualPriceOrderCandidate(
-                        rs.getLong("id"),
-                        rs.getLong("account_id"),
-                        rs.getString("symbol"),
-                        rs.getString("side"),
-                        rs.getString("order_type"),
-                        rs.getBigDecimal("limit_price"),
-                        rs.getLong("quantity"),
-                        rs.getLong("filled_quantity"),
-                        rs.getBigDecimal("average_fill_price"),
-                        rs.getBigDecimal("reserved_cash"),
-                        rs.getBigDecimal("current_price")
-                ),
-                scanLimit
-        );
+                """
+        )
+                .params(scanLimit)
+                .query((rs, rowNum) -> mapOrderCandidate(rs))
+                .list();
     }
 
     public VirtualPriceHoldingRow findHoldingForUpdate(long accountId, String symbol) {
-        List<VirtualPriceHoldingRow> rows = jdbcTemplate.query(
+        return jdbcClient.sql(
                 """
                 select id, quantity, average_price
                   from stock_holding
                  where account_id = ?
                    and symbol = ?
                  for update
-                """,
-                (rs, rowNum) -> new VirtualPriceHoldingRow(
-                        rs.getLong("id"),
-                        rs.getLong("quantity"),
-                        rs.getBigDecimal("average_price")
-                ),
-                accountId,
-                symbol
+                """
+        )
+                .params(accountId, symbol)
+                .query((rs, rowNum) -> mapHoldingRow(rs))
+                .optional()
+                .orElse(null);
+    }
+
+    private VirtualPriceOrderCandidate mapOrderCandidate(ResultSet rs) throws SQLException {
+        return new VirtualPriceOrderCandidate(
+                rs.getLong("id"),
+                rs.getLong("account_id"),
+                rs.getString("symbol"),
+                rs.getString("side"),
+                rs.getString("order_type"),
+                rs.getBigDecimal("limit_price"),
+                rs.getLong("quantity"),
+                rs.getLong("filled_quantity"),
+                rs.getBigDecimal("average_fill_price"),
+                rs.getBigDecimal("reserved_cash"),
+                rs.getBigDecimal("current_price")
         );
-        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    private VirtualPriceHoldingRow mapHoldingRow(ResultSet rs) throws SQLException {
+        return new VirtualPriceHoldingRow(
+                rs.getLong("id"),
+                rs.getLong("quantity"),
+                rs.getBigDecimal("average_price")
+        );
     }
 
 }

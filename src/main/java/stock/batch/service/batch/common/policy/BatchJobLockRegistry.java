@@ -40,7 +40,7 @@ public class BatchJobLockRegistry {
     }
 
     public boolean tryAcquire(String jobName, LocalDateTime now) {
-        String normalizedJobName = normalizeJobName(jobName);
+        String normalizedJobName = BatchJobNames.normalize(jobName);
         LocalDateTime lockedUntil = now.plusSeconds(lockTtlSeconds);
         try {
             jdbcTemplate.update(
@@ -61,7 +61,7 @@ public class BatchJobLockRegistry {
     }
 
     public void release(String jobName) {
-        String normalizedJobName = normalizeJobName(jobName);
+        String normalizedJobName = BatchJobNames.normalize(jobName);
         jdbcTemplate.update(
                 """
                 delete from stock_batch_job_lock
@@ -74,7 +74,7 @@ public class BatchJobLockRegistry {
     }
 
     public boolean renew(String jobName, LocalDateTime now) {
-        String normalizedJobName = normalizeJobName(jobName);
+        String normalizedJobName = BatchJobNames.normalize(jobName);
         LocalDateTime lockedUntil = now.plusSeconds(lockTtlSeconds);
         int updatedRows = jdbcTemplate.update(
                 """
@@ -113,12 +113,5 @@ public class BatchJobLockRegistry {
                 now
         );
         return updatedRows == 1;
-    }
-
-    private String normalizeJobName(String jobName) {
-        if (!StringUtils.hasText(jobName)) {
-            throw new IllegalArgumentException("jobName is required");
-        }
-        return jobName.trim();
     }
 }

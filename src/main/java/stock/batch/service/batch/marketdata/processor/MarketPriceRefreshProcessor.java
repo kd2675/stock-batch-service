@@ -3,14 +3,19 @@ package stock.batch.service.batch.marketdata.processor;
 import java.math.BigDecimal;
 import java.util.Locale;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.marketdata.model.MarketPriceQuoteSnapshot;
 import stock.batch.service.batch.marketdata.model.MarketPriceRefreshCommand;
 import stock.batch.service.marketdata.provider.MarketPriceQuote;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Component
+@RequiredArgsConstructor
 public class MarketPriceRefreshProcessor {
+
+    private final SimulationClockService simulationClockService;
 
     public MarketPriceRefreshCommand process(MarketPriceQuoteSnapshot snapshot) {
         MarketPriceQuote quote = normalizeQuote(snapshot.target().symbol(), snapshot.quote());
@@ -40,7 +45,7 @@ public class MarketPriceRefreshProcessor {
                 normalizedExpectedSymbol,
                 quote.currentPrice(),
                 quote.provider().trim(),
-                quote.priceTime()
+                simulationClockService.currentMarketDateTime()
         );
     }
 

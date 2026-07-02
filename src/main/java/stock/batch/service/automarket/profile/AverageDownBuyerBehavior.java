@@ -12,7 +12,7 @@ public class AverageDownBuyerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.isLosing() && context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.isLosing() && context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);
@@ -20,6 +20,7 @@ public class AverageDownBuyerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public int quantityUpperBound(int maxOrderQuantity, ProfilePolicy policy) {
-        return Math.max(1, Math.min(Math.max(1, maxOrderQuantity), (int) Math.ceil(Math.max(1, maxOrderQuantity) * 0.80)));
+        int baseQuantity = Math.max(1, maxOrderQuantity);
+        return Math.clamp((int) Math.ceil(baseQuantity * 0.80), 1, baseQuantity);
     }
 }

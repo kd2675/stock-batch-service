@@ -2,9 +2,7 @@ package stock.batch.service.batch.common.policy;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
-
-import java.util.UUID;
+import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,23 +66,7 @@ class BatchJobRuntimeControlTest {
     }
 
     private JdbcTemplate createJdbcTemplate() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource();
-        dataSource.setDriverClassName("org.h2.Driver");
-        dataSource.setUrl("jdbc:h2:mem:batch_job_runtime_control_test_%s;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false".formatted(UUID.randomUUID()));
-        dataSource.setUsername("sa");
-        dataSource.setPassword("");
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.execute("""
-                create table if not exists stock_batch_job_control (
-                  job_name varchar(100) not null primary key,
-                  runtime_enabled boolean not null default true,
-                  updated_by varchar(64),
-                  created_at timestamp not null,
-                  updated_at timestamp not null,
-                  constraint chk_stock_batch_job_control_name check (job_name <> '')
-                )
-                """);
-        return template;
+        return BatchTestDatabaseFactory.createJobControlJdbcTemplate("batch_job_runtime_control_test");
     }
 
     private Long controlRowCount(JdbcTemplate jdbcTemplate, String jobName) {

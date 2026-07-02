@@ -14,7 +14,7 @@ public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
     public int orderCount(ProfileSignalContext context) {
         int baseCount = standardOrderCount(context, false);
         if (context.hasRecentDividendPayment() && context.canBuyOne()) {
-            return clamp(baseCount + 1, 1, 8);
+            return Math.clamp(baseCount + 1, 1, 8);
         }
         return baseCount;
     }
@@ -45,6 +45,6 @@ public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
         if (context.hasRecentDividendPayment()) {
             bias += 0.18;
         }
-        return clampDouble(0.08, 0.95, bias);
+        return Math.clamp(bias, 0.08, 0.95);
     }
 }

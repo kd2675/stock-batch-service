@@ -2,20 +2,23 @@ package stock.batch.service.batch.marketdata.reader;
 
 import java.util.List;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.marketdata.model.MarketPriceRefreshTarget;
 
 @Component
-@RequiredArgsConstructor
 public class MarketPriceRefreshTargetReader {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final JdbcClient jdbcClient;
+
+    public MarketPriceRefreshTargetReader(JdbcTemplate jdbcTemplate) {
+        this.jdbcClient = JdbcClient.create(jdbcTemplate);
+    }
 
     public List<MarketPriceRefreshTarget> readTargets() {
-        return jdbcTemplate.query(
+        return jdbcClient.sql(
                 """
                 select watched.symbol, p.current_price, watched.reference_price
                 from (
@@ -28,7 +31,6 @@ public class MarketPriceRefreshTargetReader {
                               select 1
                               from stock_order_book_instrument obi
                               where obi.symbol = stock_instrument.symbol
-                                and obi.enabled = false
                           )
                         union all
                         select symbol, limit_price as reference_price
@@ -39,7 +41,6 @@ public class MarketPriceRefreshTargetReader {
                               select 1
                               from stock_order_book_instrument obi
                               where obi.symbol = stock_order.symbol
-                                and obi.enabled = false
                           )
                         union all
                         select symbol, average_price as reference_price
@@ -49,19 +50,19 @@ public class MarketPriceRefreshTargetReader {
                               select 1
                               from stock_order_book_instrument obi
                               where obi.symbol = stock_holding.symbol
-                                and obi.enabled = false
                           )
                     ) watched_raw
                     group by symbol
                 ) watched
                 left join stock_price p on p.symbol = watched.symbol
                 order by watched.symbol asc
-                """,
-                (rs, rowNum) -> new MarketPriceRefreshTarget(
+                """
+        )
+                .query((rs, rowNum) -> new MarketPriceRefreshTarget(
                         rs.getString("symbol"),
                         rs.getBigDecimal("current_price"),
                         rs.getBigDecimal("reference_price")
-                )
-        );
+                ))
+                .list();
     }
 }

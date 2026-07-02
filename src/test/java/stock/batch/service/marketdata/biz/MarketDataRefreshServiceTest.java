@@ -16,6 +16,7 @@ import stock.batch.service.batch.marketdata.reader.MarketPriceRefreshTargetReade
 import stock.batch.service.batch.marketdata.writer.MarketPriceRefreshWriter;
 import stock.batch.service.marketdata.provider.MarketPriceProvider;
 import stock.batch.service.marketdata.provider.MarketPriceQuote;
+import stock.batch.service.simulation.SimulationClockService;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -31,10 +32,13 @@ import static org.mockito.Mockito.when;
 
 class MarketDataRefreshServiceTest {
 
+    private static final LocalDateTime SIMULATION_PRICE_TIME = LocalDateTime.of(2026, 7, 1, 10, 0);
+
     private JdbcTemplate jdbcTemplate;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> valueOperations;
     private MarketPriceProvider marketPriceProvider;
+    private SimulationClockService simulationClockService;
     private MarketPriceRefreshWriter marketPriceRefreshWriter;
     private MarketDataRefreshService marketDataRefreshService;
     private StockPriceRedisPublisher stockPriceRedisPublisher;
@@ -47,14 +51,16 @@ class MarketDataRefreshServiceTest {
         redisTemplate = mock(StringRedisTemplate.class);
         valueOperations = mock(ValueOperations.class);
         marketPriceProvider = mock(MarketPriceProvider.class);
+        simulationClockService = mock(SimulationClockService.class);
         objectMapper = new ObjectMapper();
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(simulationClockService.currentMarketDateTime()).thenReturn(SIMULATION_PRICE_TIME);
         stockPriceRedisPublisher = new StockPriceRedisPublisher(redisTemplate, objectMapper);
         marketPriceRefreshWriter = new MarketPriceRefreshWriter(jdbcTemplate);
         marketDataRefreshService = new MarketDataRefreshService(
                 new MarketPriceRefreshTargetReader(jdbcTemplate),
                 new MarketPriceQuoteReader(marketPriceProvider),
-                new MarketPriceRefreshProcessor(),
+                new MarketPriceRefreshProcessor(simulationClockService),
                 marketPriceRefreshWriter,
                 stockPriceRedisPublisher
         );
@@ -88,8 +94,10 @@ class MarketDataRefreshServiceTest {
                 .isEqualTo(1L);
         assertThat(queryDecimal("select price from stock_price_tick where symbol = '005930'"))
                 .isEqualByComparingTo(new BigDecimal("70100.00"));
+        assertThat(queryDateTime("select price_time from stock_price_tick where symbol = '005930'"))
+                .isEqualTo(SIMULATION_PRICE_TIME);
         verify(valueOperations).set("stock:price:005930", "70100.00", Duration.ofSeconds(60));
-        verifyPublishedPriceEvent("stock.price.005930", "005930", "70100.00", priceTime, "test-provider");
+        verifyPublishedPriceEvent("stock.price.005930", "005930", "70100.00", SIMULATION_PRICE_TIME, "test-provider");
     }
 
     @Test
@@ -127,7 +135,7 @@ class MarketDataRefreshServiceTest {
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '123456'"))
                 .isEqualTo(1L);
         verify(valueOperations).set("stock:price:123456", "51000.00", Duration.ofSeconds(60));
-        verifyPublishedPriceEvent("stock.price.123456", "123456", "51000.00", priceTime, "test-provider");
+        verifyPublishedPriceEvent("stock.price.123456", "123456", "51000.00", SIMULATION_PRICE_TIME, "test-provider");
     }
 
     @Test
@@ -145,7 +153,29 @@ class MarketDataRefreshServiceTest {
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '654321'"))
                 .isEqualTo(1L);
         verify(valueOperations).set("stock:price:654321", "83100.00", Duration.ofSeconds(60));
-        verifyPublishedPriceEvent("stock.price.654321", "654321", "83100.00", priceTime, "test-provider");
+        verifyPublishedPriceEvent("stock.price.654321", "654321", "83100.00", SIMULATION_PRICE_TIME, "test-provider");
+    }
+
+    @Test
+    void refreshWatchedPrices_enabledOrderBookSymbol_skipsMarketDataRefresh() {
+        insertInstrument("ZQ001", true);
+        insertOrderBookInstrument("ZQ001", true);
+        insertPrice("ZQ001", "70000.00");
+        insertPendingOrder("order-book-pending-order", "ZQ001");
+        insertHolding("order-book-holder", "ZQ001", "70000.00");
+
+        int refreshedCount = marketDataRefreshService.refreshWatchedPrices();
+
+        assertThat(refreshedCount).isZero();
+        assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ001'"))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+        assertThat(queryLong("select count(*) from stock_price_tick where symbol = 'ZQ001'"))
+                .isZero();
+        org.mockito.Mockito.verifyNoInteractions(valueOperations);
+        org.mockito.Mockito.verify(redisTemplate, org.mockito.Mockito.never()).convertAndSend(
+                org.mockito.Mockito.anyString(),
+                org.mockito.Mockito.anyString()
+        );
     }
 
     @Test
@@ -249,7 +279,7 @@ class MarketDataRefreshServiceTest {
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930'"))
                 .isEqualTo(1L);
         verify(valueOperations).set("stock:price:005930", "70400.00", Duration.ofSeconds(60));
-        verifyPublishedPriceEvent("stock.price.005930", "005930", "70400.00", priceTime, "test-provider");
+        verifyPublishedPriceEvent("stock.price.005930", "005930", "70400.00", SIMULATION_PRICE_TIME, "test-provider");
     }
 
     @Test
@@ -265,7 +295,7 @@ class MarketDataRefreshServiceTest {
 
         assertThat(refreshedCount).isEqualTo(1);
         verify(valueOperations).set("stock:price:005930", "70450.00", Duration.ofSeconds(1));
-        verifyPublishedPriceEvent("stock.price.005930", "005930", "70450.00", priceTime, "test-provider");
+        verifyPublishedPriceEvent("stock.price.005930", "005930", "70450.00", SIMULATION_PRICE_TIME, "test-provider");
     }
 
     @Test
@@ -383,6 +413,10 @@ class MarketDataRefreshServiceTest {
 
     private String queryString(String sql) {
         return jdbcTemplate.queryForObject(sql, String.class);
+    }
+
+    private LocalDateTime queryDateTime(String sql) {
+        return jdbcTemplate.queryForObject(sql, LocalDateTime.class);
     }
 
     private Long queryLong(String sql) {

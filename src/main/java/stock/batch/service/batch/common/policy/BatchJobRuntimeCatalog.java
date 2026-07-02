@@ -2,7 +2,6 @@ package stock.batch.service.batch.common.policy;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -76,19 +75,12 @@ public class BatchJobRuntimeCatalog {
     }
 
     private RuntimeDefinition requireDefinition(String jobName) {
-        String normalizedJobName = normalizeJobName(jobName);
+        String normalizedJobName = BatchJobNames.normalize(jobName);
         RuntimeDefinition definition = definitions.get(normalizedJobName);
         if (definition == null) {
             throw new IllegalArgumentException("Unknown batch job: " + normalizedJobName);
         }
         return definition;
-    }
-
-    private String normalizeJobName(String jobName) {
-        if (!StringUtils.hasText(jobName)) {
-            throw new IllegalArgumentException("jobName is required");
-        }
-        return jobName.trim();
     }
 
     private BatchJobRuntimeStatusResponse toResponse(BatchJobRuntimeStatus status) {

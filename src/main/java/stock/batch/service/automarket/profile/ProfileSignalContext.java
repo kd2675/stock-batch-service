@@ -71,12 +71,24 @@ public record ProfileSignalContext(
         return unrealizedReturn <= -0.25;
     }
 
+    public boolean isFirstOrder() {
+        return orderIndex == 0;
+    }
+
+    public boolean isAdditionalOrder() {
+        return orderIndex > 0;
+    }
+
+    public boolean isThirdOrLaterOrder() {
+        return orderIndex > 1;
+    }
+
     public boolean hasRecentDividendPayment() {
         return recentDividendCashAmount != null && recentDividendCashAmount.compareTo(BigDecimal.ZERO) > 0;
     }
 
     public double pricePressure() {
-        return (clamp(effectiveIntensity, 1, 10) - 5.5) / 4.5;
+        return (Math.clamp(effectiveIntensity, 1, 10) - 5.5) / 4.5;
     }
 
     public ProfileSignalContext withOrderIndex(int nextOrderIndex) {
@@ -97,7 +109,4 @@ public record ProfileSignalContext(
         );
     }
 
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
 }

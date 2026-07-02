@@ -9,12 +9,14 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
+import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 
 @Component
 @RequiredArgsConstructor
 public class AutoMarketWriter {
 
     private final JdbcTemplate jdbcTemplate;
+    private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
     public void insertAccount(AutoParticipant participant, LocalDateTime createdAt) {
         jdbcTemplate.update(
@@ -68,19 +70,7 @@ public class AutoMarketWriter {
         if (remaining <= 0) {
             return;
         }
-        jdbcTemplate.update(
-                """
-                update stock_holding
-                set reserved_quantity = case when reserved_quantity >= ? then reserved_quantity - ? else 0 end,
-                    updated_at = ?
-                where account_id = ? and symbol = ?
-                """,
-                remaining,
-                remaining,
-                updatedAt,
-                order.accountId(),
-                order.symbol()
-        );
+        holdingReservationJdbcSupport.releaseReservedSellQuantity(order.accountId(), order.symbol(), remaining, updatedAt);
     }
 
     public void cancelOrder(AutoOrder order, LocalDateTime cancelledAt) {

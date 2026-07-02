@@ -86,6 +86,34 @@ class StockBatchSchedulerConfigurationContractTest {
     }
 
     @Test
+    void jdbcQueryTimeoutDefault_isPositiveAndExternallyConfigurable() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        Object propertyValue = applicationProperties.getProperty("stock.batch.jdbc.query-timeout-seconds");
+
+        assertThat(propertyValue).isEqualTo("${STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS:30}");
+        assertThat(defaultNumber(propertyValue)).isPositive();
+    }
+
+    @Test
+    void autoParticipantCashFlowDefaultPollInterval_isNotOneSecondDatabaseScan() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+        String schedulerSource = Files.readString(
+                Path.of("src/main/java/stock/batch/service/scheduler/AutoParticipantCashFlowScheduler.java"),
+                StandardCharsets.UTF_8
+        );
+        String readme = Files.readString(Path.of("README.md"), StandardCharsets.UTF_8);
+
+        Object propertyValue = applicationProperties.getProperty("stock.batch.auto-participant-cash-flow.fixed-delay-ms");
+
+        assertThat(propertyValue).isEqualTo("${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:60000}");
+        assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(60_000);
+        assertThat(schedulerSource).contains("stock.batch.auto-participant-cash-flow.fixed-delay-ms:60000");
+        assertThat(readme).contains("기본값은 60000ms");
+        assertThat(readme).contains("실제 서버 시간이 기준인 polling 간격");
+    }
+
+    @Test
     void shutdownConfiguration_waitsForRunningScheduledJobs() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 

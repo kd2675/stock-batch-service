@@ -15,6 +15,7 @@ import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.batch.execution.reader.OrderBookExecutionReader;
 import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Service
 @RequiredArgsConstructor
@@ -25,6 +26,7 @@ public class InternalOrderBookExecutionService {
     private final OrderBookExecutionWriter orderBookExecutionWriter;
     private final OrderBookPriceWriter orderBookPriceWriter;
     private final StockPriceRedisPublisher priceRedisPublisher;
+    private final SimulationClockService simulationClockService;
 
     @Value("${stock.batch.execution.scan-limit:100}")
     private int scanLimit;
@@ -56,7 +58,7 @@ public class InternalOrderBookExecutionService {
                 if (executionPrice == null) {
                     continue;
                 }
-                LocalDateTime executedAt = LocalDateTime.now();
+                LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
                 ExecutionCostCalculator.ExecutionAmounts buyAmounts = executionCostCalculator.buy(quantity, executionPrice);
                 ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellOrder, quantity, executionPrice);
                 if (sellAmounts == null) {
@@ -192,11 +194,12 @@ public class InternalOrderBookExecutionService {
     }
 
     private BigDecimal calculateAverageFillPrice(OrderBookOrderRow order, long fillQuantity, BigDecimal executionPrice) {
-        BigDecimal previousAmount = (order.averageFillPrice() == null ? BigDecimal.ZERO : order.averageFillPrice())
-                .multiply(BigDecimal.valueOf(order.filledQuantity()));
-        BigDecimal nextAmount = previousAmount.add(executionPrice.multiply(BigDecimal.valueOf(fillQuantity)));
-        long nextFilledQuantity = order.filledQuantity() + fillQuantity;
-        return nextAmount.divide(BigDecimal.valueOf(nextFilledQuantity), 2, RoundingMode.HALF_UP);
+        return AverageFillPriceCalculator.calculate(
+                order.averageFillPrice(),
+                order.filledQuantity(),
+                fillQuantity,
+                executionPrice
+        );
     }
 
     private void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount, LocalDateTime executedAt) {

@@ -14,20 +14,20 @@ public class DayTraderBehavior extends AbstractAutoProfileBehavior {
     public int orderCount(ProfileSignalContext context) {
         int baseCount = standardOrderCount(context, false);
         if (Math.abs(context.momentumPressure()) >= 0.45 || Math.abs(context.unrealizedReturn()) >= 0.08) {
-            return clamp(baseCount + 1, 1, 8);
+            return Math.clamp(baseCount + 1, 1, 8);
         }
         return baseCount;
     }
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.orderIndex() == 0) {
+        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.isFirstOrder()) {
             return SELL;
         }
-        if (context.momentumPressure() > 0.45 && context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.momentumPressure() > 0.45 && context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
-        if (context.momentumPressure() < -0.45 && context.hasHolding() && context.orderIndex() == 0) {
+        if (context.momentumPressure() < -0.45 && context.hasHolding() && context.isFirstOrder()) {
             return SELL;
         }
         return chooseByBuyBias(context);

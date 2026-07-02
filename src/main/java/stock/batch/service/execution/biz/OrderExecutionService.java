@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -15,6 +14,7 @@ import stock.batch.service.batch.execution.model.VirtualPriceHoldingRow;
 import stock.batch.service.batch.execution.model.VirtualPriceOrderCandidate;
 import stock.batch.service.batch.execution.reader.VirtualPriceExecutionReader;
 import stock.batch.service.batch.execution.writer.VirtualPriceExecutionWriter;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Slf4j
 @Service
@@ -24,6 +24,7 @@ public class OrderExecutionService {
     private final ExecutionCostCalculator executionCostCalculator;
     private final VirtualPriceExecutionReader virtualPriceExecutionReader;
     private final VirtualPriceExecutionWriter virtualPriceExecutionWriter;
+    private final SimulationClockService simulationClockService;
 
     @Value("${stock.batch.execution.scan-limit:100}")
     private int scanLimit;
@@ -62,20 +63,20 @@ public class OrderExecutionService {
         }
 
         BigDecimal executionPrice = candidate.currentPrice();
+        LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
         ExecutionCostCalculator.ExecutionAmounts amounts;
         if ("BUY".equals(candidate.side())) {
             amounts = executionCostCalculator.buy(remainingQuantity, executionPrice);
-            if (!executeBuy(candidate, remainingQuantity, amounts)) {
+            if (!executeBuy(candidate, remainingQuantity, amounts, executedAt)) {
                 return;
             }
         } else {
-            amounts = executeSell(candidate, remainingQuantity, executionPrice);
+            amounts = executeSell(candidate, remainingQuantity, executionPrice, executedAt);
             if (amounts == null) {
                 return;
             }
         }
 
-        LocalDateTime executedAt = LocalDateTime.now();
         BigDecimal averageFillPrice = calculateAverageFillPrice(candidate, remainingQuantity, executionPrice);
 
         virtualPriceExecutionWriter.insertExecution(candidate, remainingQuantity, executionPrice, amounts, executedAt);
@@ -83,37 +84,38 @@ public class OrderExecutionService {
     }
 
     private BigDecimal calculateAverageFillPrice(VirtualPriceOrderCandidate candidate, long fillQuantity, BigDecimal executionPrice) {
-        BigDecimal previousAverage = candidate.averageFillPrice() == null ? BigDecimal.ZERO : candidate.averageFillPrice();
-        BigDecimal previousAmount = previousAverage.multiply(BigDecimal.valueOf(candidate.filledQuantity()));
-        BigDecimal nextAmount = previousAmount.add(executionPrice.multiply(BigDecimal.valueOf(fillQuantity)));
-        long nextFilledQuantity = candidate.filledQuantity() + fillQuantity;
-        return nextAmount.divide(BigDecimal.valueOf(nextFilledQuantity), 2, RoundingMode.HALF_UP);
+        return AverageFillPriceCalculator.calculate(
+                candidate.averageFillPrice(),
+                candidate.filledQuantity(),
+                fillQuantity,
+                executionPrice
+        );
     }
 
     private boolean executeBuy(
             VirtualPriceOrderCandidate candidate,
             long quantity,
-            ExecutionCostCalculator.ExecutionAmounts amounts
+            ExecutionCostCalculator.ExecutionAmounts amounts,
+            LocalDateTime executedAt
     ) {
         BigDecimal reservedCost = candidate.reservedCash();
         BigDecimal actualCost = amounts.netAmount();
         BigDecimal release = reservedCost.subtract(actualCost).max(BigDecimal.ZERO);
         BigDecimal shortfall = actualCost.subtract(reservedCost).max(BigDecimal.ZERO);
-        if (shortfall.compareTo(BigDecimal.ZERO) > 0 && !chargeShortfall(candidate, shortfall)) {
-            rejectBuyOrder(candidate);
+        if (shortfall.compareTo(BigDecimal.ZERO) > 0 && !chargeShortfall(candidate, shortfall, executedAt)) {
+            rejectBuyOrder(candidate, executedAt);
             return false;
         }
-        virtualPriceExecutionWriter.creditCash(candidate.accountId(), release, LocalDateTime.now());
-        upsertHolding(candidate.accountId(), candidate.symbol(), quantity, amounts.netAmount());
+        virtualPriceExecutionWriter.creditCash(candidate.accountId(), release, executedAt);
+        upsertHolding(candidate.accountId(), candidate.symbol(), quantity, amounts.netAmount(), executedAt);
         return true;
     }
 
-    private boolean chargeShortfall(VirtualPriceOrderCandidate candidate, BigDecimal shortfall) {
-        return virtualPriceExecutionWriter.chargeShortfall(candidate.accountId(), shortfall, LocalDateTime.now());
+    private boolean chargeShortfall(VirtualPriceOrderCandidate candidate, BigDecimal shortfall, LocalDateTime executedAt) {
+        return virtualPriceExecutionWriter.chargeShortfall(candidate.accountId(), shortfall, executedAt);
     }
 
-    private void rejectBuyOrder(VirtualPriceOrderCandidate candidate) {
-        LocalDateTime rejectedAt = LocalDateTime.now();
+    private void rejectBuyOrder(VirtualPriceOrderCandidate candidate, LocalDateTime rejectedAt) {
         virtualPriceExecutionWriter.creditCash(candidate.accountId(), candidate.reservedCash(), rejectedAt);
         virtualPriceExecutionWriter.rejectBuyOrder(candidate, rejectedAt);
     }
@@ -121,26 +123,26 @@ public class OrderExecutionService {
     private ExecutionCostCalculator.ExecutionAmounts executeSell(
             VirtualPriceOrderCandidate candidate,
             long quantity,
-            BigDecimal executionPrice
+            BigDecimal executionPrice,
+            LocalDateTime executedAt
     ) {
         VirtualPriceHoldingRow holding = virtualPriceExecutionReader.findHoldingForUpdate(candidate.accountId(), candidate.symbol());
         if (holding == null || holding.quantity() < quantity) {
-            rejectSellOrder(candidate);
+            rejectSellOrder(candidate, executedAt);
             return null;
         }
         ExecutionCostCalculator.ExecutionAmounts amounts = executionCostCalculator.sell(quantity, executionPrice, holding.averagePrice());
-        int updatedRows = virtualPriceExecutionWriter.reduceReservedSellHolding(holding, quantity, LocalDateTime.now());
+        int updatedRows = virtualPriceExecutionWriter.reduceReservedSellHolding(holding, quantity, executedAt);
         if (updatedRows == 0) {
-            rejectSellOrder(candidate);
+            rejectSellOrder(candidate, executedAt);
             return null;
         }
-        virtualPriceExecutionWriter.creditCash(candidate.accountId(), amounts.netAmount(), LocalDateTime.now());
+        virtualPriceExecutionWriter.creditCash(candidate.accountId(), amounts.netAmount(), executedAt);
         virtualPriceExecutionWriter.deleteEmptyHolding(candidate.accountId(), candidate.symbol());
         return amounts;
     }
 
-    private void rejectSellOrder(VirtualPriceOrderCandidate candidate) {
-        LocalDateTime rejectedAt = LocalDateTime.now();
+    private void rejectSellOrder(VirtualPriceOrderCandidate candidate, LocalDateTime rejectedAt) {
         virtualPriceExecutionWriter.releaseReservedSellQuantity(
                 candidate.accountId(),
                 candidate.symbol(),
@@ -150,8 +152,8 @@ public class OrderExecutionService {
         virtualPriceExecutionWriter.rejectSellOrder(candidate, rejectedAt);
     }
 
-    private void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount) {
-        virtualPriceExecutionWriter.upsertHolding(accountId, symbol, quantity, costAmount, LocalDateTime.now());
+    private void upsertHolding(long accountId, String symbol, long quantity, BigDecimal costAmount, LocalDateTime executedAt) {
+        virtualPriceExecutionWriter.upsertHolding(accountId, symbol, quantity, costAmount, executedAt);
     }
 
 }

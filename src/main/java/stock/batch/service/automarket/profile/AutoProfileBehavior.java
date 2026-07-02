@@ -19,10 +19,10 @@ public interface AutoProfileBehavior {
     default int effectiveIntensity(AutoParticipantStrategy strategy, AutoMarketConfig config, ProfilePolicy policy) {
         Integer reportScore = config.reportScore();
         if (reportScore == null) {
-            return clamp(strategy.intensity(), 1, 10);
+            return Math.clamp(strategy.intensity(), 1, 10);
         }
-        double blended = strategy.intensity() * (1.0 - policy.newsWeight()) + clamp(reportScore, 1, 10) * policy.newsWeight();
-        return clamp((int) Math.round(blended), 1, 10);
+        double blended = strategy.intensity() * (1.0 - policy.newsWeight()) + Math.clamp(reportScore, 1, 10) * policy.newsWeight();
+        return Math.clamp((int) Math.round(blended), 1, 10);
     }
 
     int orderCount(ProfileSignalContext context);
@@ -47,7 +47,4 @@ public interface AutoProfileBehavior {
         return policy.recurringDepositIntervalUnit();
     }
 
-    static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
 }

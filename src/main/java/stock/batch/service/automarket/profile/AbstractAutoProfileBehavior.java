@@ -1,9 +1,10 @@
 package stock.batch.service.automarket.profile;
 
 import java.math.BigDecimal;
-import java.util.concurrent.ThreadLocalRandom;
 
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+
+import static stock.batch.service.automarket.support.AutoMarketRandomSupport.chance;
 
 public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior {
 
@@ -59,7 +60,9 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     @Override
     public int quantityUpperBound(int maxOrderQuantity, ProfilePolicy policy) {
-        return Math.max(1, (int) Math.floor(Math.max(1, maxOrderQuantity) * Math.min(1.0, policy.quantityMultiplier())));
+        int baseQuantity = Math.max(1, maxOrderQuantity);
+        double multiplier = Math.clamp(policy.quantityMultiplier(), 0.0, 1.0);
+        return Math.max(1, (int) Math.floor(baseQuantity * multiplier));
     }
 
     @Override
@@ -77,7 +80,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         if (context.unrealizedReturn() > 0) {
             profitBoost += Math.min(0.75, context.unrealizedReturn() * 4.0 * context.policy().overconfidenceWeight());
         }
-        return clamp((int) Math.round(baseOrderCount * context.policy().orderMultiplier() * profitBoost), canStayIdle ? 0 : 1, 8);
+        return Math.clamp((int) Math.round(baseOrderCount * context.policy().orderMultiplier() * profitBoost), canStayIdle ? 0 : 1, 8);
     }
 
     protected double weightedBuyBias(ProfileSignalContext context) {
@@ -110,15 +113,15 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
             buyBias += policy.dipBuyWeight() * 0.24;
         }
         buyBias += context.noise();
-        return clampDouble(0.08, 0.92, buyBias);
+        return Math.clamp(buyBias, 0.08, 0.92);
     }
 
     protected String chooseByBuyBias(ProfileSignalContext context) {
-        return ThreadLocalRandom.current().nextDouble() < buyBias(context) ? BUY : SELL;
+        return chance(buyBias(context)) ? BUY : SELL;
     }
 
     protected String chooseDominantConfiguredSide(ProfileSignalContext context) {
-        if (context.orderIndex() > 0) {
+        if (context.isAdditionalOrder()) {
             return null;
         }
         ProfilePolicy policy = context.policy();
@@ -163,11 +166,4 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
                 || (context.unrealizedReturn() <= -0.25 && policy.deepLossHoldWeight() >= 0.70);
     }
 
-    protected int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    protected double clampDouble(double min, double max, double value) {
-        return Math.max(min, Math.min(max, value));
-    }
 }

@@ -8,29 +8,17 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
-import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
+import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 
 @Component
 @RequiredArgsConstructor
 public class CorporateActionWriter {
 
     private final JdbcTemplate jdbcTemplate;
+    private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
     public int markActionExRightsApplied(long actionId, String nextStatus, String sourceStatus, LocalDateTime appliedAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_corporate_action
-                   set status = ?,
-                       applied_at = ?
-                 where id = ?
-                   and status = ?
-                """,
-                nextStatus,
-                appliedAt,
-                actionId,
-                sourceStatus
-        );
+        return markCorporateActionTimestamp(actionId, nextStatus, sourceStatus, "applied_at", appliedAt);
     }
 
     public int markDueRightsPayments(
@@ -57,114 +45,20 @@ public class CorporateActionWriter {
         );
     }
 
-    public int creditCash(long accountId, BigDecimal cashAmount, LocalDateTime updatedAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_account
-                   set cash_balance = cash_balance + ?,
-                       updated_at = ?
-                 where id = ?
-                """,
-                cashAmount,
-                updatedAt,
-                accountId
-        );
-    }
-
-    public void recordDividendPaymentCashFlow(long accountId, BigDecimal cashAmount, LocalDateTime createdAt) {
-        jdbcTemplate.update(
-                """
-                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                values (?, 'DEPOSIT', ?, 'DIVIDEND_PAYMENT', 'CORPORATE_ACTION', ?)
-                """,
-                accountId,
-                cashAmount,
-                createdAt
-        );
-    }
-
-    public void markEntitlementPaid(long entitlementId, String paidStatus, String sourceStatus, LocalDateTime paidAt) {
-        jdbcTemplate.update(
-                """
-                update stock_corporate_action_entitlement
-                   set status = ?,
-                       paid_at = ?
-                 where id = ?
-                   and status = ?
-                """,
-                paidStatus,
-                paidAt,
-                entitlementId,
-                sourceStatus
-        );
-    }
-
     public int markActionPaid(long actionId, String paidStatus, String sourceStatus, LocalDateTime paidAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_corporate_action
-                   set status = ?,
-                       paid_at = ?
-                 where id = ?
-                   and status = ?
-                """,
-                paidStatus,
-                paidAt,
-                actionId,
-                sourceStatus
-        );
+        return markCorporateActionTimestamp(actionId, paidStatus, sourceStatus, "paid_at", paidAt);
     }
 
     public int markActionListed(long actionId, String listedStatus, String sourceStatus, LocalDateTime listedAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_corporate_action
-                   set status = ?,
-                       listed_at = ?
-                 where id = ?
-                   and status = ?
-                """,
-                listedStatus,
-                listedAt,
-                actionId,
-                sourceStatus
-        );
+        return markCorporateActionTimestamp(actionId, listedStatus, sourceStatus, "listed_at", listedAt);
     }
 
     public int markActionDelisted(long actionId, String delistedStatus, String sourceStatus, LocalDateTime appliedAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_corporate_action
-                   set status = ?,
-                       applied_at = ?
-                 where id = ?
-                   and status = ?
-                """,
-                delistedStatus,
-                appliedAt,
-                actionId,
-                sourceStatus
-        );
+        return markCorporateActionTimestamp(actionId, delistedStatus, sourceStatus, "applied_at", appliedAt);
     }
 
     public void releaseReservedSellQuantity(long accountId, String symbol, long quantity, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
-                """
-                update stock_holding
-                   set reserved_quantity = case
-                           when reserved_quantity >= ? then reserved_quantity - ?
-                           else 0
-                       end,
-                       updated_at = ?
-                 where account_id = ?
-                   and symbol = ?
-                """,
-                quantity,
-                quantity,
-                updatedAt,
-                accountId,
-                symbol
-        );
+        holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
     }
 
     public void cancelOrder(long orderId, LocalDateTime updatedAt) {
@@ -211,39 +105,47 @@ public class CorporateActionWriter {
     }
 
     public void disableAutoMarket(String symbol, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
-                """
-                update stock_auto_market_config
-                   set enabled = false,
-                       updated_at = ?
-                 where symbol = ?
-                """,
-                updatedAt,
-                symbol
-        );
+        disableSymbolConfig("stock_auto_market_config", symbol, updatedAt);
     }
 
     public void disableListingAutoAccount(String symbol, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
-                """
-                update stock_listing_auto_account_config
-                   set enabled = false,
-                       updated_at = ?
-                 where symbol = ?
-                """,
-                updatedAt,
-                symbol
-        );
+        disableSymbolConfig("stock_listing_auto_account_config", symbol, updatedAt);
     }
 
     public void disableParticipantSymbolConfigs(String symbol, LocalDateTime updatedAt) {
+        disableSymbolConfig("stock_auto_participant_symbol_config", symbol, updatedAt);
+    }
+
+    private int markCorporateActionTimestamp(
+            long actionId,
+            String nextStatus,
+            String sourceStatus,
+            String timestampColumn,
+            LocalDateTime timestamp
+    ) {
+        return jdbcTemplate.update(
+                """
+                update stock_corporate_action
+                   set status = ?,
+                       %s = ?
+                 where id = ?
+                   and status = ?
+                """.formatted(timestampColumn),
+                nextStatus,
+                timestamp,
+                actionId,
+                sourceStatus
+        );
+    }
+
+    private void disableSymbolConfig(String tableName, String symbol, LocalDateTime updatedAt) {
         jdbcTemplate.update(
                 """
-                update stock_auto_participant_symbol_config
+                update %s
                    set enabled = false,
                        updated_at = ?
                  where symbol = ?
-                """,
+                """.formatted(tableName),
                 updatedAt,
                 symbol
         );
@@ -321,82 +223,4 @@ public class CorporateActionWriter {
         );
     }
 
-    public void createDividendEntitlements(
-            ExRightsActionRow row,
-            long holdingSnapshotRunId,
-            String announcedStatus,
-            LocalDateTime createdAt
-    ) {
-        jdbcTemplate.update(
-                """
-                insert into stock_corporate_action_entitlement(
-                  action_id, account_id, symbol, quantity, share_quantity, cash_amount, status,
-                  holding_snapshot_run_id, created_at, paid_at
-                )
-                select ?, account_id, symbol, quantity, null, quantity * ?, ?, ?, ?, null
-                  from stock_holding_snapshot
-                 where symbol = ?
-                   and close_run_id = ?
-                   and quantity > 0
-                """,
-                row.id(),
-                row.dividendAmount(),
-                announcedStatus,
-                holdingSnapshotRunId,
-                createdAt,
-                row.symbol(),
-                holdingSnapshotRunId
-        );
-    }
-
-    public void createShareEntitlements(
-            ExRightsActionRow row,
-            long holdingSnapshotRunId,
-            String announcedStatus,
-            LocalDateTime createdAt
-    ) {
-        jdbcTemplate.update(
-                """
-                insert into stock_corporate_action_entitlement(
-                  action_id, account_id, symbol, quantity, share_quantity, cash_amount, status,
-                  holding_snapshot_run_id, created_at, paid_at
-                )
-                select ?, h.account_id, h.symbol, h.quantity,
-                       floor(h.quantity * a.share_quantity / i.issued_shares),
-                       null, ?, ?, ?, null
-                  from stock_holding_snapshot h
-                  join stock_corporate_action a on a.id = ?
-                  join stock_order_book_instrument i on i.symbol = h.symbol
-                 where h.symbol = ?
-                   and h.close_run_id = ?
-                   and h.quantity > 0
-                   and floor(h.quantity * a.share_quantity / i.issued_shares) > 0
-                """,
-                row.id(),
-                announcedStatus,
-                holdingSnapshotRunId,
-                createdAt,
-                row.id(),
-                row.symbol(),
-                holdingSnapshotRunId
-        );
-    }
-
-    public int creditShareHolding(ShareEntitlementRow entitlement, LocalDateTime updatedAt) {
-        return jdbcTemplate.update(
-                """
-                update stock_holding
-                   set average_price = (average_price * quantity) / (quantity + ?),
-                       quantity = quantity + ?,
-                       updated_at = ?
-                 where account_id = ?
-                   and symbol = ?
-                """,
-                entitlement.shareQuantity(),
-                entitlement.shareQuantity(),
-                updatedAt,
-                entitlement.accountId(),
-                entitlement.symbol()
-        );
-    }
 }

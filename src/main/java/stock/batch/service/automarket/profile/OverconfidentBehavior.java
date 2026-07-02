@@ -14,14 +14,14 @@ public class OverconfidentBehavior extends AbstractAutoProfileBehavior {
     public int orderCount(ProfileSignalContext context) {
         int base = standardOrderCount(context, false);
         if (context.isWinning()) {
-            return clamp(base + 1, 1, 8);
+            return Math.clamp(base + 1, 1, 8);
         }
         return base;
     }
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.isWinning() && context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.isWinning() && context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);

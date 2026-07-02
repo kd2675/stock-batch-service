@@ -15,6 +15,8 @@ import org.springframework.batch.core.step.StepExecution;
 import org.springframework.batch.infrastructure.item.ExecutionContext;
 import org.springframework.stereotype.Component;
 
+import stock.batch.service.simulation.SimulationClockService;
+
 @Component
 @RequiredArgsConstructor
 public class StockBatchJobRepositoryRecorder {
@@ -22,10 +24,11 @@ public class StockBatchJobRepositoryRecorder {
     private static final String STEP_SUFFIX = "Step";
 
     private final JobRepository jobRepository;
+    private final SimulationClockService simulationClockService;
 
     public StockBatchJobExecutionRecord start(StockBatchJob job, LocalDateTime startedAt) {
         JobParameters jobParameters = new JobParametersBuilder()
-                .addLocalDate("businessDate", startedAt.toLocalDate(), true)
+                .addLocalDate("businessDate", simulationClockService.currentDate(), true)
                 .addString("jobMode", job.executionMode(), true)
                 .addString("runId", UUID.randomUUID().toString(), true)
                 .addString("requestId", UUID.randomUUID().toString(), false)
@@ -68,13 +71,13 @@ public class StockBatchJobRepositoryRecorder {
     public void skip(StockBatchJobExecutionRecord record, LocalDateTime endedAt) {
         StepExecution stepExecution = record.stepExecution();
         stepExecution.setStatus(BatchStatus.COMPLETED);
-        stepExecution.setExitStatus(ExitStatus.NOOP.addExitDescription("Job is already running"));
+        stepExecution.setExitStatus(ExitStatus.NOOP.addExitDescription(StockBatchJobRunResponses.ALREADY_RUNNING_MESSAGE));
         stepExecution.setEndTime(endedAt);
         jobRepository.update(stepExecution);
 
         JobExecution jobExecution = record.jobExecution();
         jobExecution.setStatus(BatchStatus.COMPLETED);
-        jobExecution.setExitStatus(ExitStatus.NOOP.addExitDescription("Job is already running"));
+        jobExecution.setExitStatus(ExitStatus.NOOP.addExitDescription(StockBatchJobRunResponses.ALREADY_RUNNING_MESSAGE));
         jobExecution.setEndTime(endedAt);
         jobRepository.update(jobExecution);
     }

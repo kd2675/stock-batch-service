@@ -96,15 +96,21 @@ class StockDdlContractTest {
             "stock_batch_job_lock"
     );
 
+    private static final List<String> SIMULATION_CLOCK_TABLE_MARKERS = List.of(
+            "stock_simulation_clock"
+    );
+
     private static final List<String> ADMIN_QUERY_INDEX_MARKERS = List.of(
             "idx_stock_account_status_id",
             "idx_stock_account_cash_flow_account_reason_creator_time",
             "idx_stock_account_cash_flow_time",
             "idx_stock_order_market_status_side",
+            "idx_stock_order_market_status_account_time",
             "idx_stock_order_market_account_time",
             "idx_stock_order_market_created_status",
             "idx_stock_execution_time_account",
             "idx_stock_execution_source_account_time",
+            "idx_stock_execution_source_time_account",
             "idx_stock_execution_source_symbol_time",
             "idx_stock_execution_source_time",
             "idx_stock_holding_symbol_account",
@@ -183,6 +189,7 @@ class StockDdlContractTest {
             String ddl = readDdlResource(resourcePath);
 
             assertThat(ddl).as(resourcePath).contains(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(resourcePath).contains(SIMULATION_CLOCK_TABLE_MARKERS.toArray(String[]::new));
         }
     }
 
@@ -226,6 +233,17 @@ class StockDdlContractTest {
                         "updated_at TIMESTAMP NOT NULL",
                         "CONSTRAINT chk_stock_batch_job_lock_name CHECK (job_name <> '')",
                         "CONSTRAINT chk_stock_batch_job_lock_owner CHECK (lock_owner <> '')"
+                );
+        assertThat(extractCreateTableBlock(h2Ddl, "stock_simulation_clock"))
+                .contains(
+                        "clock_id VARCHAR(40) NOT NULL PRIMARY KEY",
+                        "base_simulation_date DATE NOT NULL",
+                        "real_seconds_per_simulation_day INT NOT NULL",
+                        "accumulated_real_seconds BIGINT NOT NULL DEFAULT 0",
+                        "running BOOLEAN NOT NULL DEFAULT FALSE",
+                        "CONSTRAINT chk_stock_simulation_clock_id CHECK (clock_id <> '')",
+                        "CONSTRAINT chk_stock_simulation_clock_day_seconds CHECK (real_seconds_per_simulation_day > 0)",
+                        "CONSTRAINT chk_stock_simulation_clock_accumulated CHECK (accumulated_real_seconds >= 0)"
                 );
     }
 

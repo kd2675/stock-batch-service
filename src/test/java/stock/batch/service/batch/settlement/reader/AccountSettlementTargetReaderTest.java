@@ -15,7 +15,9 @@ import java.sql.ResultSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -34,8 +36,9 @@ class AccountSettlementTargetReaderTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void readTargets_readsSettlementAmountsWithSingleAggregateQuery() {
-        when(jdbcTemplate.query(anyString(), org.mockito.ArgumentMatchers.<RowMapper<AccountSettlementTarget>>any())).thenAnswer(invocation -> {
+        doAnswer(invocation -> {
             RowMapper<AccountSettlementTarget> rowMapper = invocation.getArgument(1);
             ResultSet resultSet = org.mockito.Mockito.mock(ResultSet.class);
             when(resultSet.getLong("id")).thenReturn(10L);
@@ -45,7 +48,7 @@ class AccountSettlementTargetReaderTest {
             when(resultSet.getBigDecimal("market_value")).thenReturn(new BigDecimal("250000.00"));
             when(resultSet.getBigDecimal("reserved_buy_cash")).thenReturn(new BigDecimal("30000.00"));
             return List.of(rowMapper.mapRow(resultSet, 0));
-        });
+        }).when(jdbcTemplate).query(anyString(), any(RowMapper.class), any(Object[].class));
 
         List<AccountSettlementTarget> targets = reader.readTargets();
 
@@ -59,7 +62,7 @@ class AccountSettlementTargetReaderTest {
         assertThat(target.reservedBuyCash()).isEqualByComparingTo(new BigDecimal("30000.00"));
 
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate).query(sqlCaptor.capture(), org.mockito.ArgumentMatchers.<RowMapper<AccountSettlementTarget>>any());
+        verify(jdbcTemplate).query(sqlCaptor.capture(), any(RowMapper.class), any(Object[].class));
         assertThat(sqlCaptor.getValue())
                 .contains("left join (")
                 .contains("from stock_account_cash_flow f")

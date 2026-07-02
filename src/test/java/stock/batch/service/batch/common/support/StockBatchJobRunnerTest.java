@@ -56,6 +56,26 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void run_repositoryStartThrows_returnsFailedResponseWithoutAcquiringLock() {
+        TestStockBatchJob job = new TestStockBatchJob("repository-start-fail-job", "test-mode", 7);
+        RuntimeException repositoryFailure = new IllegalStateException("batch metadata connection timeout");
+        when(stockBatchJobRepositoryRecorder.start(eq(job), any(LocalDateTime.class)))
+                .thenThrow(repositoryFailure);
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("batch metadata connection timeout");
+        assertThat(job.runCount()).isZero();
+        verify(batchJobLockRegistry, never()).tryAcquire(any(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).fail(any(), any(RuntimeException.class), any());
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).skip(any(), any());
+        verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void run_lockAcquireThrows_recordsFailedExecutionAndDoesNotRunJob() {
         TestStockBatchJob job = new TestStockBatchJob("lock-fail-job", "test-mode", 7);
         RuntimeException lockFailure = new IllegalStateException("lock table unavailable");
@@ -72,6 +92,29 @@ class StockBatchJobRunnerTest {
         verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
         verify(stockBatchJobRepositoryRecorder, never()).skip(any(), any());
         verify(batchJobLockRegistry, never()).release("lock-fail-job");
+        verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void run_lockAcquireThrows_whenFailRecordingThrows_preservesOriginalFailureResponse() {
+        TestStockBatchJob job = new TestStockBatchJob("lock-fail-recording-fail-job", "test-mode", 7);
+        RuntimeException lockFailure = new IllegalStateException("lock table unavailable");
+        when(batchJobLockRegistry.tryAcquire(eq("lock-fail-recording-fail-job"), any(LocalDateTime.class)))
+                .thenThrow(lockFailure);
+        doThrow(new IllegalStateException("batch metadata commit timeout"))
+                .when(stockBatchJobRepositoryRecorder)
+                .fail(eq(executionRecord), eq(lockFailure), any(LocalDateTime.class));
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("lock table unavailable");
+        assertThat(job.runCount()).isZero();
+        verify(stockBatchJobRepositoryRecorder).fail(eq(executionRecord), eq(lockFailure), any(LocalDateTime.class));
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).skip(any(), any());
+        verify(batchJobLockRegistry, never()).release("lock-fail-recording-fail-job");
         verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
     }
 
@@ -194,6 +237,48 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void run_completeRecordingThrows_returnsFailedResponseWithoutSecondFailRecording() {
+        TestStockBatchJob job = new TestStockBatchJob("complete-recording-fail-job", "test-mode", 5);
+        RuntimeException completeFailure = new IllegalStateException("batch metadata commit timeout");
+        when(batchJobLockRegistry.tryAcquire(eq("complete-recording-fail-job"), any(LocalDateTime.class)))
+                .thenReturn(true);
+        doThrow(completeFailure)
+                .when(stockBatchJobRepositoryRecorder)
+                .complete(eq(executionRecord), eq(5), any(LocalDateTime.class));
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("batch metadata commit timeout");
+        assertThat(job.runCount()).isEqualTo(1);
+        verify(stockBatchJobRepositoryRecorder).complete(eq(executionRecord), eq(5), any(LocalDateTime.class));
+        verify(stockBatchJobRepositoryRecorder, never()).fail(any(), any(RuntimeException.class), any());
+        verify(lockHeartbeatFuture).cancel(false);
+    }
+
+    @Test
+    void run_skipRecordingThrows_preservesAlreadyRunningResponse() {
+        TestStockBatchJob job = new TestStockBatchJob("skip-recording-fail-job", "test-mode", 5);
+        when(batchJobLockRegistry.tryAcquire(eq("skip-recording-fail-job"), any(LocalDateTime.class)))
+                .thenReturn(false);
+        doThrow(new IllegalStateException("batch metadata commit timeout"))
+                .when(stockBatchJobRepositoryRecorder)
+                .skip(eq(executionRecord), any(LocalDateTime.class));
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("Job is already running");
+        assertThat(job.runCount()).isZero();
+        verify(stockBatchJobRepositoryRecorder).skip(eq(executionRecord), any(LocalDateTime.class));
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).fail(any(), any(RuntimeException.class), any());
+        verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void run_jobReturnsNegativeProcessedCount_recordsFailedExecution() {
         TestStockBatchJob job = new TestStockBatchJob("negative-count-job", "test-mode", -1);
         when(batchJobLockRegistry.tryAcquire(eq("negative-count-job"), any(LocalDateTime.class)))
@@ -210,6 +295,48 @@ class StockBatchJobRunnerTest {
                 any(IllegalStateException.class),
                 any(LocalDateTime.class)
         );
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(lockHeartbeatFuture).cancel(false);
+    }
+
+    @Test
+    void run_jobThrows_whenFailRecordingThrows_preservesOriginalFailureResponse() {
+        RuntimeException jobFailure = new IllegalStateException("job query timeout");
+        TestStockBatchJob job = new TestStockBatchJob("job-fail-recording-fail-job", "test-mode", 5, () -> {
+            throw jobFailure;
+        });
+        when(batchJobLockRegistry.tryAcquire(eq("job-fail-recording-fail-job"), any(LocalDateTime.class)))
+                .thenReturn(true);
+        doThrow(new IllegalStateException("batch metadata commit timeout"))
+                .when(stockBatchJobRepositoryRecorder)
+                .fail(eq(executionRecord), eq(jobFailure), any(LocalDateTime.class));
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("job query timeout");
+        assertThat(job.runCount()).isEqualTo(1);
+        verify(stockBatchJobRepositoryRecorder).fail(eq(executionRecord), eq(jobFailure), any(LocalDateTime.class));
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(lockHeartbeatFuture).cancel(false);
+    }
+
+    @Test
+    void run_jobThrowsWithoutMessage_returnsExceptionTypeAsFailureMessage() {
+        RuntimeException jobFailure = new IllegalStateException();
+        TestStockBatchJob job = new TestStockBatchJob("job-fail-empty-message-job", "test-mode", 5, () -> {
+            throw jobFailure;
+        });
+        when(batchJobLockRegistry.tryAcquire(eq("job-fail-empty-message-job"), any(LocalDateTime.class)))
+                .thenReturn(true);
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isZero();
+        assertThat(response.message()).isEqualTo("IllegalStateException");
+        verify(stockBatchJobRepositoryRecorder).fail(eq(executionRecord), eq(jobFailure), any(LocalDateTime.class));
         verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
         verify(lockHeartbeatFuture).cancel(false);
     }

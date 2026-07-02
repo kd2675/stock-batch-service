@@ -13,15 +13,15 @@ public class PaydayAccumulatorBehavior extends AbstractAutoProfileBehavior {
     @Override
     public String chooseSide(ProfileSignalContext context) {
         if (context.isLosing()) {
-            return context.canBuyOne() && context.orderIndex() == 0 ? BUY : null;
+            return context.canBuyOne() && context.isFirstOrder() ? BUY : null;
         }
-        if (context.unrealizedReturn() >= 0.25 && context.hasHolding() && context.orderIndex() > 0) {
+        if (context.unrealizedReturn() >= 0.25 && context.hasHolding() && context.isAdditionalOrder()) {
             return SELL;
         }
-        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.orderIndex() > 1) {
+        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.isThirdOrLaterOrder()) {
             return chooseByBuyBias(context);
         }
-        if (context.canBuyOne() && context.orderIndex() == 0) {
+        if (context.canBuyOne() && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);

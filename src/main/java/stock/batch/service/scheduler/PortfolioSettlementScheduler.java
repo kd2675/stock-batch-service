@@ -1,20 +1,26 @@
 package stock.batch.service.scheduler;
 
+import java.time.LocalDate;
+
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
+
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
+import stock.batch.service.batch.common.support.StockBatchJobRunResponses;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
+import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.simulation.SimulationClockService;
 
 @Component
 @RequiredArgsConstructor
 public class PortfolioSettlementScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
-    private final BatchJobRuntimeControl batchJobRuntimeControl;
+    private final StockBatchScheduledJobGuard scheduledJobGuard;
+    private final SimulationClockService simulationClockService;
 
     @Value("${stock.batch.market-close.enabled:true}")
     private boolean marketCloseSchedulerConfigured;
@@ -22,34 +28,59 @@ public class PortfolioSettlementScheduler {
     @Value("${stock.batch.settlement.enabled:true}")
     private boolean settlementSchedulerConfigured;
 
-    @Scheduled(
-            cron = "${stock.batch.market-close.cron:0 0 * * * *}",
-            zone = "${stock.batch.market-close.zone:Asia/Seoul}"
-    )
-    public void rolloverClosingPrices() {
+    private LocalDate lastObservedSimulationDate;
+
+    @Scheduled(fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:5000}")
+    public void rolloverSimulationDayIfNeeded() {
+        LocalDate currentSimulationDate = simulationClockService.currentDate();
+        if (lastObservedSimulationDate == null) {
+            lastObservedSimulationDate = currentSimulationDate;
+            return;
+        }
+        if (!currentSimulationDate.isAfter(lastObservedSimulationDate)) {
+            return;
+        }
+        if (settlePortfolios()) {
+            lastObservedSimulationDate = currentSimulationDate;
+        }
+    }
+
+    void rolloverClosingPrices() {
         runMarketCloseRollover();
     }
 
-    @Scheduled(
-            cron = "${stock.batch.settlement.cron:0 40 15 * * MON-FRI}",
-            zone = "${stock.batch.settlement.zone:Asia/Seoul}"
-    )
-    public void settlePortfolios() {
-        runMarketCloseRollover();
-        if (batchJobRuntimeControl.shouldRunScheduledJob(
+    boolean settlePortfolios() {
+        if (!runMarketCloseRollover()) {
+            return false;
+        }
+        return runPortfolioSettlement();
+    }
+
+    private boolean runPortfolioSettlement() {
+        if (!settlementSchedulerConfigured) {
+            return true;
+        }
+        StockBatchJobRunResponse response = scheduledJobGuard.runBatchIfEnabled(
                 PortfolioSettlementJob.JOB_NAME,
-                settlementSchedulerConfigured
-        )) {
-            stockBatchJobLauncher.settlePortfolios();
-        }
+                settlementSchedulerConfigured,
+                stockBatchJobLauncher::settlePortfolios
+        );
+        return isNotFailed(response);
     }
 
-    private void runMarketCloseRollover() {
-        if (batchJobRuntimeControl.shouldRunScheduledJob(
-                MarketCloseRolloverJob.JOB_NAME,
-                marketCloseSchedulerConfigured
-        )) {
-            stockBatchJobLauncher.rolloverClosingPrices();
+    private boolean runMarketCloseRollover() {
+        if (!marketCloseSchedulerConfigured) {
+            return true;
         }
+        StockBatchJobRunResponse response = scheduledJobGuard.runBatchIfEnabled(
+                MarketCloseRolloverJob.JOB_NAME,
+                marketCloseSchedulerConfigured,
+                stockBatchJobLauncher::rolloverClosingPrices
+        );
+        return isNotFailed(response);
+    }
+
+    private boolean isNotFailed(StockBatchJobRunResponse response) {
+        return !StockBatchJobRunResponses.isFailed(response);
     }
 }

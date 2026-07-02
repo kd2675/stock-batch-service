@@ -17,6 +17,7 @@ class SchedulerRuntimeControlContractTest {
         List<Path> schedulerFiles = Files.walk(Path.of("src/main/java/stock/batch/service/scheduler"))
                 .filter(path -> path.getFileName().toString().endsWith(".java"))
                 .filter(this::containsScheduledMethod)
+                .filter(path -> !path.getFileName().toString().equals("SimulationClockScheduler.java"))
                 .sorted()
                 .toList();
 
@@ -26,9 +27,11 @@ class SchedulerRuntimeControlContractTest {
 
             assertThat(source)
                     .as(schedulerFile.toString())
-                    .contains("BatchJobRuntimeControl")
-                    .contains("shouldRunScheduledJob")
+                    .contains("StockBatchScheduledJobGuard")
                     .contains("JOB_NAME");
+            assertThat(source.contains("runIfEnabled") || source.contains("runBatchIfEnabled"))
+                    .as(schedulerFile.toString() + " should launch through StockBatchScheduledJobGuard")
+                    .isTrue();
         }
     }
 

@@ -2,7 +2,6 @@ package stock.batch.service.batch.common.support;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
 import stock.batch.service.automarket.biz.AutoMarketService;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
@@ -20,11 +19,11 @@ import stock.batch.service.execution.biz.OrderExecutionService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
 import stock.batch.service.settlement.biz.PortfolioSettlementService;
+import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -291,25 +290,6 @@ class StockBatchJobLauncherTest {
     }
 
     private JdbcTemplate createJdbcTemplate() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource();
-        dataSource.setDriverClassName("org.h2.Driver");
-        dataSource.setUrl("jdbc:h2:mem:stock_batch_job_launcher_test_%s;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false".formatted(UUID.randomUUID()));
-        dataSource.setUsername("sa");
-        dataSource.setPassword("");
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
-        jdbcTemplate.execute(
-                """
-                create table if not exists stock_batch_job_lock (
-                  job_name varchar(100) not null primary key,
-                  lock_owner varchar(128) not null,
-                  locked_until timestamp not null,
-                  created_at timestamp not null,
-                  updated_at timestamp not null,
-                  constraint chk_stock_batch_job_lock_name check (job_name <> ''),
-                  constraint chk_stock_batch_job_lock_owner check (lock_owner <> '')
-                )
-                """
-        );
-        return jdbcTemplate;
+        return BatchTestDatabaseFactory.createJobLockJdbcTemplate("stock_batch_job_launcher_test");
     }
 }

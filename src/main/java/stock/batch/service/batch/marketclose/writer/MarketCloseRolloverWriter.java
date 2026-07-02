@@ -7,19 +7,30 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Component;
 
+import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 import stock.batch.service.batch.marketclose.model.MarketCloseOrderRow;
 
 @Component
-@RequiredArgsConstructor
 public class MarketCloseRolloverWriter {
 
     private final JdbcTemplate jdbcTemplate;
+    private final JdbcClient jdbcClient;
+    private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
+
+    public MarketCloseRolloverWriter(
+            JdbcTemplate jdbcTemplate,
+            StockHoldingReservationJdbcSupport holdingReservationJdbcSupport
+    ) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.jdbcClient = JdbcClient.create(jdbcTemplate);
+        this.holdingReservationJdbcSupport = holdingReservationJdbcSupport;
+    }
 
     public long createCloseRun(String symbol, LocalDate businessDate, LocalDateTime closedAt) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
@@ -50,7 +61,7 @@ public class MarketCloseRolloverWriter {
     }
 
     public List<MarketCloseOrderRow> findOpenOrderBookOrdersForUpdate(String symbol) {
-        return jdbcTemplate.query(
+        return jdbcClient.sql(
                 """
                 select id,
                        account_id,
@@ -61,21 +72,22 @@ public class MarketCloseRolloverWriter {
                   from stock_order
                  where market_type = 'ORDER_BOOK'
                    and status in ('PENDING', 'PARTIALLY_FILLED')
-                   and (? is null or symbol = ?)
-                 order by symbol asc, created_at asc, id asc
-                 for update
-                """,
-                (rs, rowNum) -> new MarketCloseOrderRow(
+	                   and (? is null or symbol = ?)
+	                 order by symbol asc, created_at asc, id asc
+	                 for update
+	                """
+        )
+                .param(symbol)
+                .param(symbol)
+                .query((rs, rowNum) -> new MarketCloseOrderRow(
                         rs.getLong("id"),
                         rs.getLong("account_id"),
                         rs.getString("symbol"),
                         rs.getString("side"),
                         rs.getLong("remaining_quantity"),
                         rs.getBigDecimal("reserved_cash")
-                ),
-                symbol,
-                symbol
-        );
+                ))
+                .list();
     }
 
     public void creditCash(long accountId, BigDecimal cashAmount, LocalDateTime updatedAt) {
@@ -93,23 +105,7 @@ public class MarketCloseRolloverWriter {
     }
 
     public void releaseReservedSellQuantity(long accountId, String symbol, long quantity, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
-                """
-                update stock_holding
-                   set reserved_quantity = case
-                           when reserved_quantity >= ? then reserved_quantity - ?
-                           else 0
-                       end,
-                       updated_at = ?
-                 where account_id = ?
-                   and symbol = ?
-                """,
-                quantity,
-                quantity,
-                updatedAt,
-                accountId,
-                symbol
-        );
+        holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
     }
 
     public void cancelOrder(long orderId, LocalDateTime updatedAt) {

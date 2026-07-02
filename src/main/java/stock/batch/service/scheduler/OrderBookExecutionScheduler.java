@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 
@@ -14,16 +13,17 @@ import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 public class OrderBookExecutionScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
-    private final BatchJobRuntimeControl batchJobRuntimeControl;
+    private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
             initialDelayString = "${stock.batch.order-book-execution.initial-delay-ms:36000}",
             fixedDelayString = "${stock.batch.order-book-execution.fixed-delay-ms:1000}"
     )
     public void executeOrderBookOrders() {
-        if (!batchJobRuntimeControl.shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true)) {
-            return;
-        }
-        stockBatchJobLauncher.executeOrderBookOrders();
+        scheduledJobGuard.runIfEnabled(
+                OrderBookExecutionJob.JOB_NAME,
+                true,
+                stockBatchJobLauncher::executeOrderBookOrders
+        );
     }
 }

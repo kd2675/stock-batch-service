@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
@@ -15,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class KisMarketPriceProviderTest {
 
@@ -28,7 +30,7 @@ class KisMarketPriceProviderTest {
 
     @BeforeEach
     void setUp() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext("/oauth2/tokenP", exchange -> {
             byte[] response = """
                     {"access_token":"test-token","expires_in":3600}
@@ -56,7 +58,7 @@ class KisMarketPriceProviderTest {
         server.start();
 
         provider = new KisMarketPriceProvider(new ObjectMapper());
-        ReflectionTestUtils.setField(provider, "baseUrl", "http://localhost:" + server.getAddress().getPort());
+        ReflectionTestUtils.setField(provider, "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort());
         ReflectionTestUtils.setField(provider, "appKey", "test-app-key");
         ReflectionTestUtils.setField(provider, "appSecret", "test-app-secret");
         ReflectionTestUtils.setField(provider, "marketDivCode", "J");
@@ -79,5 +81,17 @@ class KisMarketPriceProviderTest {
         assertThat(priceAuthorization.get()).isEqualTo("Bearer test-token");
         assertThat(priceAppKey.get()).isEqualTo("test-app-key");
         assertThat(priceTrId.get()).isEqualTo("FHKST01010100");
+    }
+
+    @Test
+    void constructor_nonPositiveTimeout_rejectsConfiguration() {
+        ObjectMapper objectMapper = new ObjectMapper();
+
+        assertThatThrownBy(() -> new KisMarketPriceProvider(objectMapper, 0, 10000))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("KIS connect timeout must be positive");
+        assertThatThrownBy(() -> new KisMarketPriceProvider(objectMapper, 5000, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("KIS request timeout must be positive");
     }
 }

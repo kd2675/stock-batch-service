@@ -2,7 +2,6 @@ package stock.batch.service.marketdata.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -15,13 +14,13 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 
 @Component
-@RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "stock.batch.market-data", name = "provider", havingValue = "kis")
 public class KisMarketPriceProvider implements MarketPriceProvider {
 
@@ -31,9 +30,8 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
     private static final String INQUIRE_PRICE_TR_ID = "FHKST01010100";
 
     private final ObjectMapper objectMapper;
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .build();
+    private final HttpClient httpClient;
+    private final Duration requestTimeout;
 
     @Value("${stock.batch.market-data.kis.base-url:https://openapi.koreainvestment.com:9443}")
     private String baseUrl;
@@ -48,6 +46,22 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
     private String marketDivCode;
 
     private volatile AccessToken cachedToken;
+
+    public KisMarketPriceProvider(
+            ObjectMapper objectMapper,
+            @Value("${stock.batch.market-data.kis.connect-timeout-ms:5000}") long connectTimeoutMs,
+            @Value("${stock.batch.market-data.kis.request-timeout-ms:10000}") long requestTimeoutMs
+    ) {
+        this.objectMapper = objectMapper;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(positiveDuration(connectTimeoutMs, "KIS connect timeout"))
+                .build();
+        this.requestTimeout = positiveDuration(requestTimeoutMs, "KIS request timeout");
+    }
+
+    KisMarketPriceProvider(ObjectMapper objectMapper) {
+        this(objectMapper, 5000, 10000);
+    }
 
     @Override
     public MarketPriceQuote fetch(String symbol, BigDecimal previousPrice) {
@@ -78,11 +92,11 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
             String requestBody = objectMapper.writeValueAsString(new TokenRequest("client_credentials", appKey, appSecret));
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(normalizedBaseUrl() + TOKEN_PATH))
-                    .timeout(Duration.ofSeconds(10))
+                    .timeout(requestTimeout)
                     .header("content-type", "application/json; charset=utf-8")
                     .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                     .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = send(request, "KIS token request");
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new IllegalStateException("KIS token request failed: status=" + response.statusCode());
             }
@@ -95,9 +109,6 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
             return new AccessToken(accessToken, Instant.now().plusSeconds(Math.max(60, expiresIn - 60)));
         } catch (IOException ex) {
             throw new IllegalStateException("KIS token response parsing failed", ex);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("KIS token request interrupted", ex);
         }
     }
 
@@ -107,7 +118,7 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
                     + "&FID_INPUT_ISCD=" + encode(symbol);
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(normalizedBaseUrl() + INQUIRE_PRICE_PATH + "?" + query))
-                    .timeout(Duration.ofSeconds(10))
+                    .timeout(requestTimeout)
                     .header("authorization", "Bearer " + accessToken)
                     .header("appkey", appKey)
                     .header("appsecret", appSecret)
@@ -115,7 +126,7 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
                     .header("accept", "application/json")
                     .GET()
                     .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = send(request, "KIS price request: symbol=" + symbol);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new IllegalStateException("KIS price request failed: symbol=" + symbol + ", status=" + response.statusCode());
             }
@@ -130,9 +141,19 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
             return output;
         } catch (IOException ex) {
             throw new IllegalStateException("KIS price response parsing failed: symbol=" + symbol, ex);
+        }
+    }
+
+    private HttpResponse<String> send(HttpRequest request, String operation) {
+        try {
+            return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (HttpTimeoutException ex) {
+            throw new IllegalStateException(operation + " timed out", ex);
+        } catch (IOException ex) {
+            throw new IllegalStateException(operation + " failed", ex);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("KIS price request interrupted: symbol=" + symbol, ex);
+            throw new IllegalStateException(operation + " interrupted", ex);
         }
     }
 
@@ -157,6 +178,13 @@ public class KisMarketPriceProvider implements MarketPriceProvider {
 
     private String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static Duration positiveDuration(long millis, String label) {
+        if (millis <= 0) {
+            throw new IllegalArgumentException(label + " must be positive");
+        }
+        return Duration.ofMillis(millis);
     }
 
     private record TokenRequest(String grant_type, String appkey, String appsecret) {

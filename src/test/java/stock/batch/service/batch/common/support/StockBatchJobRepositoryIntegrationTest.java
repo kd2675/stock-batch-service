@@ -1,6 +1,7 @@
 package stock.batch.service.batch.common.support;
 
 import java.sql.SQLException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -132,10 +133,11 @@ class StockBatchJobRepositoryIntegrationTest {
     }
 
     @Test
-    void start_recordsBusinessDateFromStartedAtAndExpectedIdentifyingParameters() {
+    void start_recordsBusinessDateFromSimulationClockAndExpectedIdentifyingParameters() {
         String jobName = "metadata-parameter-test-" + UUID.randomUUID();
         LocalDateTime startedAt = LocalDateTime.of(2026, 1, 2, 3, 4, 5);
         StockBatchJob job = new TestStockBatchJob(jobName, "parameter-mode", () -> 0);
+        setSimulationDate(LocalDate.of(2026, 1, 2));
 
         StockBatchJobExecutionRecord record = stockBatchJobRepositoryRecorder.start(job, startedAt);
         stockBatchJobRepositoryRecorder.complete(record, 0, startedAt.plusSeconds(1));
@@ -229,6 +231,30 @@ class StockBatchJobRepositoryIntegrationTest {
                 """,
                 Long.class,
                 jobName
+        );
+    }
+
+    private void setSimulationDate(LocalDate simulationDate) {
+        businessJdbcTemplate().update(
+                """
+                merge into stock_simulation_clock(
+                    clock_id,
+                    base_simulation_date,
+                    real_seconds_per_simulation_day,
+                    accumulated_real_seconds,
+                    running,
+                    last_started_at,
+                    last_heartbeat_at,
+                    timezone,
+                    created_at,
+                    updated_at
+                )
+                key(clock_id)
+                values ('DEFAULT', ?, 7200, 0, false, null, null, 'Asia/Seoul', ?, ?)
+                """,
+                simulationDate,
+                LocalDateTime.now(),
+                LocalDateTime.now()
         );
     }
 

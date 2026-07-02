@@ -44,6 +44,11 @@ server:
   shutdown: ${STOCK_BATCH_SERVER_SHUTDOWN:graceful}
 
 stock:
+  simulation-clock:
+    base-date: ${STOCK_SIMULATION_BASE_DATE:}
+    real-seconds-per-day: ${STOCK_SIMULATION_REAL_SECONDS_PER_DAY:7200}
+    stale-after-seconds: ${STOCK_SIMULATION_STALE_AFTER_SECONDS:30}
+    heartbeat-fixed-delay-ms: ${STOCK_SIMULATION_HEARTBEAT_FIXED_DELAY_MS:5000}
   batch:
     shutdown:
       await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}
@@ -53,6 +58,8 @@ stock:
     job-lock:
       ttl-seconds: ${STOCK_BATCH_JOB_LOCK_TTL_SECONDS:1800}
       heartbeat-interval-seconds: ${STOCK_BATCH_JOB_LOCK_HEARTBEAT_INTERVAL_SECONDS:30}
+    jdbc:
+      query-timeout-seconds: ${STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS:30}
     repository:
       schema:
         initialize: ${STOCK_BATCH_SCHEMA_INITIALIZE:false}
@@ -63,10 +70,14 @@ stock:
         password: 1234
         driver-class-name: com.mysql.cj.jdbc.Driver
         hikari:
+          pool-name: stock-batch-metadata-pool
           maximum-pool-size: 4
+          minimum-idle: 1
           connection-timeout: 30000
-          max-lifetime: 540000
-          keepalive-time: 300000
+          validation-timeout: 5000
+          idle-timeout: 240000
+          max-lifetime: 300000
+          keepalive-time: 120000
     market-data:
       enabled: ${STOCK_BATCH_MARKET_DATA_ENABLED:true}
       provider: ${STOCK_BATCH_MARKET_DATA_PROVIDER:mock}
@@ -76,6 +87,8 @@ stock:
         app-key: ${KIS_APP_KEY:}
         app-secret: ${KIS_APP_SECRET:}
         market-div-code: ${KIS_MARKET_DIV_CODE:J}
+        connect-timeout-ms: ${KIS_CONNECT_TIMEOUT_MS:5000}
+        request-timeout-ms: ${KIS_REQUEST_TIMEOUT_MS:10000}
       initial-delay-ms: 30000
       fixed-delay-ms: 60000
     execution:
@@ -99,15 +112,12 @@ stock:
     auto-participant-cash-flow:
       enabled: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_INITIAL_DELAY_MS:5000}
-      fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:1000}
+      fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:60000}
     market-close:
       enabled: ${STOCK_BATCH_MARKET_CLOSE_ENABLED:true}
-      cron: ${STOCK_BATCH_MARKET_CLOSE_CRON:0 0 * * * *}
-      zone: ${STOCK_BATCH_MARKET_CLOSE_ZONE:Asia/Seoul}
+      poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:5000}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
-      cron: ${STOCK_BATCH_SETTLEMENT_CRON:0 40 15 * * MON-FRI}
-      zone: ${STOCK_BATCH_SETTLEMENT_ZONE:Asia/Seoul}
 
 eureka:
   client:

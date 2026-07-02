@@ -46,11 +46,11 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse fundAutoParticipantsManually() {
-        return stockBatchJobRunner.run(new DelegatingStockBatchJob(
+        return runDelegatingJob(
                 AutoParticipantCashFlowJob.JOB_NAME,
                 "manual-recurring-cash",
                 autoParticipantCashFlowJob::runManually
-        ));
+        );
     }
 
     public StockBatchJobRunResponse runAutoMarket() {
@@ -66,15 +66,19 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse rolloverClosingPrices(String symbol) {
-        return stockBatchJobRunner.run(new DelegatingStockBatchJob(
+        return runDelegatingJob(
                 MarketCloseRolloverJob.JOB_NAME,
                 "price-limit-base:" + symbol,
                 () -> marketCloseRolloverJob.run(symbol)
-        ));
+        );
     }
 
     public StockBatchJobRunResponse applyCorporateActions() {
         return stockBatchJobRunner.run(corporateActionJob);
+    }
+
+    private StockBatchJobRunResponse runDelegatingJob(String jobName, String executionMode, IntSupplier runner) {
+        return stockBatchJobRunner.run(new DelegatingStockBatchJob(jobName, executionMode, runner));
     }
 
     private record DelegatingStockBatchJob(

@@ -8,7 +8,7 @@
 - Redis 최신가 캐시 갱신
 - 가격 변경 이벤트 발행
 - 미체결 주문 체결 조건 검사
-- 일별 평가금액, 수익률, 랭킹 정산
+- 시뮬레이션일별 평가금액, 수익률, 랭킹 정산
 
 ## 현재 API
 
@@ -39,7 +39,7 @@
   - 지정가끼리는 교차된 호가를 체결합니다.
   - 시장가 매수는 최우선 지정가 매도 호가와, 시장가 매도는 최우선 지정가 매수 호가와 체결합니다.
   - 양쪽이 모두 시장가이면 가격 기준이 없으므로 체결하지 않고 다음 스캔을 기다립니다.
-- `PortfolioSettlementScheduler`: 일별 자산/수익률 스냅샷 정산
+- `PortfolioSettlementScheduler`: 시뮬레이션일별 자산/수익률 스냅샷 정산
 - `MarketCloseRolloverService`: 장마감 종가를 다음 장 가격제한폭 기준가로 넘기기 위해 `stock_price.current_price`를 `previous_close`로 복사
 
 ## 실행과 검증
@@ -100,6 +100,7 @@ scripts/stock-gateway-h2-smoke.sh
 - 현재 custom scheduler job은 Spring Batch metadata를 고빈도 실행 이력 ledger로 사용합니다. `businessDate`, `jobMode`, `runId`를 identifying parameter로 기록해 같은 업무일/모드의 반복 실행도 서로 다른 `JobInstance`가 되게 합니다. 재시작 가능한 chunk job을 새로 만들 때는 `runId` 방식으로 우회하지 말고 해당 job의 restart contract를 별도로 설계합니다.
 - Hikari 풀은 local/dev 기본 8개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
 - Batch metadata Hikari 풀은 local/dev 기본 4개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
+- 배치 업무 SQL은 `stock.batch.jdbc.query-timeout-seconds`로 statement query timeout을 적용합니다. 기본값은 30초이며 `STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS`로 조정합니다.
 - DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
 - Redis key: `stock:price:{symbol}`. 값은 현재 단일 가격 문자열이며 `stock-back-service` 시장 가격 API가 우선 조회합니다. TTL 기본값은 60초이며 `STOCK_PRICE_CACHE_TTL_SECONDS`로 조정합니다.
 - Redis channel: `stock.price.{symbol}`
@@ -138,15 +139,15 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
 - `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
-- `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기
+- `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기. 기본값은 60000ms입니다. 지급 여부는 시뮬레이션 시간 기준으로 판단하지만, 이 값은 실제 서버 시간이 기준인 polling 간격입니다. 초 단위 주기 입금을 즉시성 있게 테스트해야 할 때만 환경값으로 더 낮춥니다.
 - `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
-- `stock.batch.market-close.cron`: 시뮬레이션 장마감 기준가 롤오버 cron. 기본값 `0 0 * * * *`
-- `stock.batch.market-close.zone`: 시뮬레이션 장마감 기준가 롤오버 timezone. 기본값 `Asia/Seoul`
+- `stock.batch.market-close.poll-fixed-delay-ms`: 시뮬레이션 날짜 변경 감지 주기. 기본값은 5000ms이며, `stock_simulation_clock` 기준 날짜가 바뀔 때 장마감과 정산을 실행합니다.
 - `stock.batch.settlement.enabled`: 포트폴리오 정산 job 활성화 여부
 - 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버가 최초 조회 시 `runtime_enabled=true`로 생성합니다. 운영 중에는 stock-back이 `/api/stock/v1/markets/batch-jobs/runtime-controls`를 통해 stock-batch 내부 API를 호출해 이 DB 값을 변경합니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
 - `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 1800초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 합니다.
 - `stock.batch.job-lock.heartbeat-interval-seconds`: 실행 중인 batch 서버가 자기 소유 DB 락의 `locked_until`을 연장하는 주기입니다. 기본값은 30초이며 `ttl-seconds`보다 충분히 짧게 둬야 정상 실행 중인 job을 다른 서버가 만료 락으로 가져가지 않습니다.
+- `stock.batch.jdbc.query-timeout-seconds`: 업무 DB용 `JdbcTemplate` statement query timeout입니다. 기본값은 30초이며 0 이하 값은 시작 시 거부합니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
 - `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 60초입니다.
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 70초입니다.
@@ -155,8 +156,6 @@ KIS_MARKET_DIV_CODE=J
 - 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
 - `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
 - `stock.batch.execution.sell-tax-rate`: 매도 거래세율. 기본값 `0.0000`
-- `stock.batch.settlement.cron`: 장 마감 정산 cron. 기본값 `0 40 15 * * MON-FRI`
-- `stock.batch.settlement.zone`: 장 마감 정산 기준 timezone. 기본값 `Asia/Seoul`
 
 KIS provider는 OAuth 접근토큰을 발급받은 뒤 `/uapi/domestic-stock/v1/quotations/inquire-price`를 호출하고, 응답의 현재가를 `stock_price`, `stock_price_tick`, Redis 최신가 캐시에 반영합니다.
 
@@ -187,7 +186,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - `batch/<domain>/writer`: DB/Redis snapshot/outbox 등 한 종류의 반영 책임
 - `marketdata`: 외부 시세 Provider client, 최신가 캐시 writer
 - `execution`: 미체결 주문 조회와 가상 체결 판단
-- `settlement`: 일별 평가, 수익률, 랭킹 정산
+- `settlement`: 시뮬레이션일별 평가, 수익률, 랭킹 정산
 - `scheduler`: 잡 트리거와 실행 주기 관리
 
 ## 설계 기준
@@ -213,4 +212,4 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.
 - 주문장 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
 - 내부 주문장 모드는 자전거래 방지를 위해 같은 사용자끼리의 매수/매도 주문은 매칭하지 않습니다.
-- 시뮬레이션 장마감 기준가 롤오버는 기본적으로 매시 정각 `Asia/Seoul` 기준으로 실행합니다. 프로젝트 하루를 현실 1시간으로 보는 자동장에서는 `previous_close`가 이 기준으로 갱신됩니다. 포트폴리오 정산 스케줄은 기본적으로 평일 15:40 `Asia/Seoul` 기준으로 실행하며, 정산 직전에도 기준가 롤오버를 한 번 더 시도한 뒤 포트폴리오 snapshot을 만듭니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.
+- 시뮬레이션 장마감 기준가 롤오버와 포트폴리오 정산은 벽시계 cron이 아니라 `stock_simulation_clock`의 시뮬레이션 날짜 변경을 감지해 실행합니다. 프로젝트 하루는 batch 서버 heartbeat 기준 현실 2시간이며, 서버가 꺼져 heartbeat가 멈추면 시뮬레이션 시간도 마지막 heartbeat 시점에서 멈춥니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.

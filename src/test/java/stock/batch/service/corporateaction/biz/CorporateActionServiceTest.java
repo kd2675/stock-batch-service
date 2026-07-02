@@ -46,6 +46,7 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_auto_market_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order_book_market_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order_book_instrument where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_simulation_clock");
     }
 
     @Test
@@ -65,6 +66,23 @@ class CorporateActionServiceTest {
                 .isEqualTo(130000L);
         assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ003'"))
                 .isEqualByComparingTo(new BigDecimal("70000.00"));
+    }
+
+    @Test
+    void applyDueCorporateActions_pausedSimulationClock_usesLastHeartbeatForTimestamps() {
+        LocalDateTime lastHeartbeatAt = LocalDateTime.of(2026, 1, 2, 3, 4, 5);
+        insertPausedSimulationClock(LocalDate.now(), lastHeartbeatAt);
+        insertOrderBookInstrument("ZQ020", 100000L, 100000L);
+        insertPrice("ZQ020", "70000.00");
+        insertAdditionalIssue("ZQ020", 30000L, "60000.00", LocalDate.now().minusDays(1));
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryDateTime("select listed_at from stock_corporate_action where symbol = 'ZQ020'"))
+                .isEqualTo(lastHeartbeatAt);
+        assertThat(queryDateTime("select updated_at from stock_order_book_instrument where symbol = 'ZQ020'"))
+                .isEqualTo(lastHeartbeatAt);
     }
 
     @Test
@@ -594,6 +612,30 @@ class CorporateActionServiceTest {
         );
     }
 
+    private void insertPausedSimulationClock(LocalDate baseDate, LocalDateTime lastHeartbeatAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_simulation_clock(
+                    clock_id,
+                    base_simulation_date,
+                    real_seconds_per_simulation_day,
+                    accumulated_real_seconds,
+                    running,
+                    last_started_at,
+                    last_heartbeat_at,
+                    timezone,
+                    created_at,
+                    updated_at
+                )
+                values ('DEFAULT', ?, 7200, 0, false, null, ?, 'Asia/Seoul', ?, ?)
+                """,
+                baseDate,
+                lastHeartbeatAt,
+                lastHeartbeatAt,
+                lastHeartbeatAt
+        );
+    }
+
     private void insertPrice(String symbol, String price) {
         jdbcTemplate.update(
                 "insert into stock_price(symbol, current_price, previous_close, price_time, provider) values (?, ?, ?, ?, 'test')",
@@ -948,5 +990,9 @@ class CorporateActionServiceTest {
 
     private Long queryLong(String sql) {
         return jdbcTemplate.queryForObject(sql, Long.class);
+    }
+
+    private LocalDateTime queryDateTime(String sql) {
+        return jdbcTemplate.queryForObject(sql, LocalDateTime.class);
     }
 }

@@ -3,20 +3,23 @@ package stock.batch.service.batch.settlement.reader;
 import java.math.BigDecimal;
 import java.util.List;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.settlement.model.AccountSettlementTarget;
 
 @Component
-@RequiredArgsConstructor
 public class AccountSettlementTargetReader {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final JdbcClient jdbcClient;
+
+    public AccountSettlementTargetReader(JdbcTemplate jdbcTemplate) {
+        this.jdbcClient = JdbcClient.create(jdbcTemplate);
+    }
 
     public List<AccountSettlementTarget> readTargets() {
-        return jdbcTemplate.query(
+        return jdbcClient.sql(
                 """
                 select a.id,
                        a.user_key,
@@ -56,16 +59,17 @@ public class AccountSettlementTargetReader {
                   and a.user_key is not null
                   and a.user_key not like 'stock-listing-%'
                 order by a.id asc
-                """,
-                (rs, rowNum) -> new AccountSettlementTarget(
+                """
+        )
+                .query((rs, rowNum) -> new AccountSettlementTarget(
                         rs.getLong("id"),
                         rs.getString("user_key"),
                         rs.getBigDecimal("cash_balance"),
                         nullToZero(rs.getBigDecimal("net_cash_flow")),
                         nullToZero(rs.getBigDecimal("market_value")),
                         nullToZero(rs.getBigDecimal("reserved_buy_cash"))
-                )
-        );
+                ))
+                .list();
     }
 
     private BigDecimal nullToZero(BigDecimal value) {
