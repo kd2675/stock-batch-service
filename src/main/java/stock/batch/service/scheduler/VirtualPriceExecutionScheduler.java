@@ -16,6 +16,7 @@ public class VirtualPriceExecutionScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.EXECUTION,
             initialDelayString = "${stock.batch.virtual-price-execution.initial-delay-ms:35000}",
             fixedDelayString = "${stock.batch.virtual-price-execution.fixed-delay-ms:5000}"
     )

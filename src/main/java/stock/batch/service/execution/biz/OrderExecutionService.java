@@ -26,7 +26,7 @@ public class OrderExecutionService {
     private final VirtualPriceExecutionWriter virtualPriceExecutionWriter;
     private final SimulationClockService simulationClockService;
 
-    @Value("${stock.batch.execution.scan-limit:100}")
+    @Value("${stock.batch.execution.scan-limit:300}")
     private int scanLimit;
 
     @Transactional

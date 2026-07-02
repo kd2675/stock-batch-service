@@ -30,7 +30,10 @@ public class PortfolioSettlementScheduler {
 
     private LocalDate lastObservedSimulationDate;
 
-    @Scheduled(fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:5000}")
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.MAINTENANCE,
+            fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:5000}"
+    )
     public void rolloverSimulationDayIfNeeded() {
         LocalDate currentSimulationDate = simulationClockService.currentDate();
         if (lastObservedSimulationDate == null) {

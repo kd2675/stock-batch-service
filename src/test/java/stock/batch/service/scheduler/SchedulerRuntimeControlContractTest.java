@@ -35,6 +35,24 @@ class SchedulerRuntimeControlContractTest {
         }
     }
 
+    @Test
+    void scheduledJobs_useDedicatedTaskSchedulers() throws IOException {
+        List<Path> schedulerFiles = Files.walk(Path.of("src/main/java/stock/batch/service/scheduler"))
+                .filter(path -> path.getFileName().toString().endsWith(".java"))
+                .filter(this::containsScheduledMethod)
+                .sorted()
+                .toList();
+
+        assertThat(schedulerFiles).isNotEmpty();
+        for (Path schedulerFile : schedulerFiles) {
+            String source = Files.readString(schedulerFile, StandardCharsets.UTF_8);
+
+            assertThat(source)
+                    .as(schedulerFile.toString())
+                    .contains("scheduler = StockBatchSchedulerNames.");
+        }
+    }
+
     private boolean containsScheduledMethod(Path path) {
         try {
             return Files.readString(path, StandardCharsets.UTF_8).contains("@Scheduled");

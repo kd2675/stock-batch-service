@@ -16,6 +16,7 @@ public class MarketDataRefreshScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.MAINTENANCE,
             initialDelayString = "${stock.batch.market-data.initial-delay-ms:30000}",
             fixedDelayString = "${stock.batch.market-data.fixed-delay-ms:60000}"
     )

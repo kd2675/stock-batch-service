@@ -33,13 +33,15 @@ class AutoMarketOrderExecutor {
     }
 
     void expireOrder(AutoOrder order, LocalDateTime now) {
+        if (!autoMarketWriter.cancelOpenOrder(order, now)) {
+            return;
+        }
         if (BUY.equals(order.side()) && order.reservedCash().compareTo(BigDecimal.ZERO) > 0) {
             autoMarketWriter.creditCash(order.accountId(), order.reservedCash(), now);
         }
         if (SELL.equals(order.side())) {
             autoMarketWriter.releaseReservedSellQuantity(order, now);
         }
-        autoMarketWriter.cancelOrder(order, now);
     }
 
     boolean placeOrder(long accountId, String symbol, String side, BigDecimal price, long quantity) {

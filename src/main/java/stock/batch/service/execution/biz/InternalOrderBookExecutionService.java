@@ -1,9 +1,12 @@
 package stock.batch.service.execution.biz;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -17,6 +20,7 @@ import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
 import stock.batch.service.simulation.SimulationClockService;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class InternalOrderBookExecutionService {
@@ -27,15 +31,24 @@ public class InternalOrderBookExecutionService {
     private final OrderBookPriceWriter orderBookPriceWriter;
     private final StockPriceRedisPublisher priceRedisPublisher;
     private final SimulationClockService simulationClockService;
+    private final TransactionTemplate transactionTemplate;
 
-    @Value("${stock.batch.execution.scan-limit:100}")
+    @Value("${stock.batch.execution.scan-limit:300}")
     private int scanLimit;
 
-    @Transactional
+    @Value("${stock.batch.execution.buy-candidate-scan-limit:20}")
+    private int buyCandidateScanLimit;
+
+    @Value("${stock.batch.execution.deadlock-retry-max-attempts:3}")
+    private int deadlockRetryMaxAttempts;
+
+    @Value("${stock.batch.execution.deadlock-retry-backoff-ms:50}")
+    private long deadlockRetryBackoffMillis;
+
     public int executeEligibleOrders() {
         int matchCount = 0;
         for (String symbol : orderBookExecutionReader.findExecutableSymbols()) {
-            while (matchCount < scanLimit && matchNext(symbol)) {
+            while (matchCount < scanLimit && matchNextWithRetry(symbol)) {
                 matchCount++;
             }
             if (matchCount >= scanLimit) {
@@ -45,40 +58,81 @@ public class InternalOrderBookExecutionService {
         return matchCount;
     }
 
-    private boolean matchNext(String symbol) {
-        for (OrderBookOrderRow buyOrder : orderBookExecutionReader.findBestBuyCandidates(symbol, scanLimit)) {
-            OrderBookOrderRow sellOrder = orderBookExecutionReader.findBestSell(symbol, buyOrder);
-            if (sellOrder != null) {
-                long quantity = Math.min(buyOrder.remainingQuantity(), sellOrder.remainingQuantity());
-                if (quantity <= 0) {
-                    continue;
+    private boolean matchNextWithRetry(String symbol) {
+        int attempts = Math.max(1, deadlockRetryMaxAttempts);
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                Boolean matched = transactionTemplate.execute(status -> matchNext(symbol));
+                return Boolean.TRUE.equals(matched);
+            } catch (CannotAcquireLockException ex) {
+                if (attempt >= attempts) {
+                    throw ex;
                 }
-
-                BigDecimal executionPrice = resolveExecutionPrice(buyOrder, sellOrder);
-                if (executionPrice == null) {
-                    continue;
-                }
-                LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
-                ExecutionCostCalculator.ExecutionAmounts buyAmounts = executionCostCalculator.buy(quantity, executionPrice);
-                ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellOrder, quantity, executionPrice);
-                if (sellAmounts == null) {
-                    rejectSellOrder(sellOrder, executedAt);
-                    continue;
-                }
-                if (!hasEnoughBuyCash(buyOrder, quantity, executionPrice, buyAmounts)) {
-                    rejectBuyOrder(buyOrder, executedAt);
-                    continue;
-                }
-                if (!executeSell(sellOrder, quantity, executionPrice, sellAmounts, executedAt)) {
-                    continue;
-                }
-                executeBuy(buyOrder, quantity, executionPrice, buyAmounts, executedAt);
-                orderBookPriceWriter.updateLastTradePrice(symbol, executionPrice, executedAt);
-                priceRedisPublisher.publish(symbol, executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
-                return true;
+                sleepBeforeRetry(symbol, attempt, ex);
             }
         }
         return false;
+    }
+
+    private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
+        long backoffMillis = Math.max(0L, deadlockRetryBackoffMillis) * attempt;
+        log.debug(
+                "Order book match retry after lock acquisition failure: symbol={}, attempt={}, backoffMs={}, reason={}",
+                symbol,
+                attempt,
+                backoffMillis,
+                ex.getMessage()
+        );
+        if (backoffMillis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(backoffMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while retrying order book match", interrupted);
+        }
+    }
+
+    private boolean matchNext(String symbol) {
+        int candidateLimit = Math.max(1, Math.min(scanLimit, buyCandidateScanLimit));
+        for (OrderBookOrderRow buyOrder : orderBookExecutionReader.findBestBuyCandidates(symbol, candidateLimit)) {
+            OrderBookOrderRow sellOrder = orderBookExecutionReader.findBestSell(symbol, buyOrder);
+            if (sellOrder != null) {
+                return matchOrders(buyOrder, sellOrder);
+            }
+        }
+        return false;
+    }
+
+    private boolean matchOrders(OrderBookOrderRow buyOrder, OrderBookOrderRow sellOrder) {
+        long quantity = Math.min(buyOrder.remainingQuantity(), sellOrder.remainingQuantity());
+        if (quantity <= 0) {
+            return false;
+        }
+
+        BigDecimal executionPrice = resolveExecutionPrice(buyOrder, sellOrder);
+        if (executionPrice == null) {
+            return false;
+        }
+        LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
+        ExecutionCostCalculator.ExecutionAmounts buyAmounts = executionCostCalculator.buy(quantity, executionPrice);
+        ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellOrder, quantity, executionPrice);
+        if (sellAmounts == null) {
+            rejectSellOrder(sellOrder, executedAt);
+            return false;
+        }
+        if (!hasEnoughBuyCash(buyOrder, quantity, executionPrice, buyAmounts)) {
+            rejectBuyOrder(buyOrder, executedAt);
+            return false;
+        }
+        if (!executeSell(sellOrder, quantity, executionPrice, sellAmounts, executedAt)) {
+            return false;
+        }
+        executeBuy(buyOrder, quantity, executionPrice, buyAmounts, executedAt);
+        orderBookPriceWriter.updateLastTradePrice(buyOrder.symbol(), executionPrice, executedAt);
+        priceRedisPublisher.publish(buyOrder.symbol(), executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
+        return true;
     }
 
     private BigDecimal resolveExecutionPrice(OrderBookOrderRow buyOrder, OrderBookOrderRow sellOrder) {

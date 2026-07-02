@@ -96,6 +96,23 @@ class StockBatchSchedulerConfigurationContractTest {
     }
 
     @Test
+    void orderBookExecutionLockRetryDefaults_areExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.execution.scan-limit"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_SCAN_LIMIT:300}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.buy-candidate-scan-limit"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_BUY_CANDIDATE_SCAN_LIMIT:20}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-max-attempts"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-backoff-ms"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.scan-limit"))).isGreaterThan(0);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.buy-candidate-scan-limit"))).isBetween(1, 100);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-max-attempts"))).isBetween(1, 10);
+    }
+
+    @Test
     void autoParticipantCashFlowDefaultPollInterval_isNotOneSecondDatabaseScan() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
         String schedulerSource = Files.readString(
@@ -127,6 +144,29 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_SHUTDOWN_TIMEOUT:70s}");
         assertThat(applicationProperties.getProperty("stock.batch.shutdown.await-running-jobs-seconds"))
                 .isEqualTo("${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}");
+    }
+
+    @Test
+    void dedicatedSchedulerPoolDefaults_areExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.shutdown-await-seconds"))
+                .isEqualTo("${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:60}");
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}");
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:1}");
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
+                .isEqualTo("${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}");
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"))
+                .isEqualTo("${STOCK_BATCH_SIMULATION_CLOCK_SCHEDULER_POOL_SIZE:1}");
+
+        int defaultTotalSchedulerThreads = defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
+                + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))
+                + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
+                + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"));
+
+        assertThat(defaultTotalSchedulerThreads).isLessThanOrEqualTo(6);
     }
 
     @Test

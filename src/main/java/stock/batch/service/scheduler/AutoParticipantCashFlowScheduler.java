@@ -16,6 +16,7 @@ public class AutoParticipantCashFlowScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.MAINTENANCE,
             initialDelayString = "${stock.batch.auto-participant-cash-flow.initial-delay-ms:5000}",
             fixedDelayString = "${stock.batch.auto-participant-cash-flow.fixed-delay-ms:60000}"
     )

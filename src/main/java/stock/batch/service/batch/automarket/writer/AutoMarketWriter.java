@@ -73,18 +73,20 @@ public class AutoMarketWriter {
         holdingReservationJdbcSupport.releaseReservedSellQuantity(order.accountId(), order.symbol(), remaining, updatedAt);
     }
 
-    public void cancelOrder(AutoOrder order, LocalDateTime cancelledAt) {
-        jdbcTemplate.update(
+    public boolean cancelOpenOrder(AutoOrder order, LocalDateTime cancelledAt) {
+        int updatedRows = jdbcTemplate.update(
                 """
                 update stock_order
                 set status = 'CANCELLED',
                     reserved_cash = 0,
                     updated_at = ?
                 where id = ?
+                  and status in ('PENDING', 'PARTIALLY_FILLED')
                 """,
                 cancelledAt,
                 order.id()
         );
+        return updatedRows > 0;
     }
 
     public boolean reserveBuyCash(long accountId, BigDecimal reservedCash, LocalDateTime updatedAt) {

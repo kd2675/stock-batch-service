@@ -58,6 +58,16 @@ stock:
     job-lock:
       ttl-seconds: ${STOCK_BATCH_JOB_LOCK_TTL_SECONDS:1800}
       heartbeat-interval-seconds: ${STOCK_BATCH_JOB_LOCK_HEARTBEAT_INTERVAL_SECONDS:30}
+    scheduler-pools:
+      shutdown-await-seconds: ${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:60}
+      execution:
+        pool-size: ${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}
+      auto-market:
+        pool-size: ${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:1}
+      maintenance:
+        pool-size: ${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}
+      simulation-clock:
+        pool-size: ${STOCK_BATCH_SIMULATION_CLOCK_SCHEDULER_POOL_SIZE:1}
     jdbc:
       query-timeout-seconds: ${STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS:30}
     repository:
@@ -92,7 +102,10 @@ stock:
       initial-delay-ms: 30000
       fixed-delay-ms: 60000
     execution:
-      scan-limit: 100
+      scan-limit: ${STOCK_BATCH_EXECUTION_SCAN_LIMIT:300}
+      buy-candidate-scan-limit: ${STOCK_BATCH_EXECUTION_BUY_CANDIDATE_SCAN_LIMIT:20}
+      deadlock-retry-max-attempts: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}
+      deadlock-retry-backoff-ms: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}
     virtual-price-execution:
       enabled: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_INITIAL_DELAY_MS:35000}

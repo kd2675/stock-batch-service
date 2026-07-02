@@ -16,6 +16,7 @@ public class AutoMarketScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
             initialDelayString = "${stock.batch.auto-market.initial-delay-ms:5000}",
             fixedDelayString = "${stock.batch.auto-market.fixed-delay-ms:1000}"
     )

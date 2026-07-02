@@ -147,7 +147,16 @@ KIS_MARKET_DIV_CODE=J
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
 - `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 1800초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 합니다.
 - `stock.batch.job-lock.heartbeat-interval-seconds`: 실행 중인 batch 서버가 자기 소유 DB 락의 `locked_until`을 연장하는 주기입니다. 기본값은 30초이며 `ttl-seconds`보다 충분히 짧게 둬야 정상 실행 중인 job을 다른 서버가 만료 락으로 가져가지 않습니다.
+- `stock.batch.scheduler-pools.execution.pool-size`: 주문장/현재가 체결 job 전용 scheduler pool 크기. 기본값은 2입니다. 자동장 주문 생성이 오래 걸려도 체결 job이 실행 기회를 잃지 않도록 분리합니다.
+- `stock.batch.scheduler-pools.auto-market.pool-size`: 자동 참여자 주문 생성/TTL 정리 전용 scheduler pool 크기. 기본값은 1입니다. 같은 주문/계좌/보유 테이블을 쓰므로 기본은 단일 실행을 유지합니다.
+- `stock.batch.scheduler-pools.maintenance.pool-size`: 시세 갱신, 기업 이벤트, 월급 지급, 장마감 감지 등 유지보수성 job scheduler pool 크기. 기본값은 2입니다.
+- `stock.batch.scheduler-pools.simulation-clock.pool-size`: 시뮬레이션 시간 heartbeat 전용 scheduler pool 크기. 기본값은 1입니다. 긴 배치 작업 때문에 시뮬레이션 시간이 늦게 누적되지 않도록 별도 분리합니다.
+- `stock.batch.scheduler-pools.shutdown-await-seconds`: 전용 scheduler pool 종료 대기 시간. 기본값은 60초입니다.
 - `stock.batch.jdbc.query-timeout-seconds`: 업무 DB용 `JdbcTemplate` statement query timeout입니다. 기본값은 30초이며 0 이하 값은 시작 시 거부합니다.
+- `stock.batch.execution.scan-limit`: 한 번의 체결 job 실행에서 처리할 최대 체결 횟수입니다. 기본값은 300입니다.
+- `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 잠글 매수 후보 수입니다. 기본값은 20입니다. `EXISTS ... FOR UPDATE`로 매수/매도 범위를 한 번에 잠그지 않고, 매수 후보를 짧게 잠근 뒤 최우선 매도를 별도로 찾습니다.
+- `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.
+- `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
 - `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 60초입니다.
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 70초입니다.

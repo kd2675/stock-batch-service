@@ -21,7 +21,10 @@ public class SimulationClockScheduler {
         simulationClockService.start();
     }
 
-    @Scheduled(fixedDelayString = "${stock.simulation-clock.heartbeat-fixed-delay-ms:5000}")
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.SIMULATION_CLOCK,
+            fixedDelayString = "${stock.simulation-clock.heartbeat-fixed-delay-ms:5000}"
+    )
     public void heartbeat() {
         try {
             simulationClockService.heartbeat();

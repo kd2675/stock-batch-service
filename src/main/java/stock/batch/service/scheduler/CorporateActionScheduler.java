@@ -16,6 +16,7 @@ public class CorporateActionScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.MAINTENANCE,
             initialDelayString = "${stock.batch.corporate-actions.initial-delay-ms:20000}",
             fixedDelayString = "${stock.batch.corporate-actions.fixed-delay-ms:60000}"
     )

@@ -16,6 +16,7 @@ public class OrderBookExecutionScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
 
     @Scheduled(
+            scheduler = StockBatchSchedulerNames.EXECUTION,
             initialDelayString = "${stock.batch.order-book-execution.initial-delay-ms:36000}",
             fixedDelayString = "${stock.batch.order-book-execution.fixed-delay-ms:1000}"
     )

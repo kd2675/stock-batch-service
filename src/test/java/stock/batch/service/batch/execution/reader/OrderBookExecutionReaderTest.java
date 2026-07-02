@@ -94,12 +94,22 @@ class OrderBookExecutionReaderTest {
         insertOrder(2L, 20L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70100.00"), 10L, 0L, 2);
         insertOrder(3L, 30L, "STOCK001", "BUY", "MARKET", "PENDING", null, 10L, 0L, 3);
         insertOrder(4L, 40L, "STOCK001", "BUY", "LIMIT", "FILLED", new BigDecimal("80000.00"), 10L, 10L, 4);
+        insertOrder(5L, 50L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 5);
 
-        List<OrderBookOrderRow> candidates = reader.findBestBuyCandidates("STOCK001", 3);
+        List<OrderBookOrderRow> candidates = reader.findBestBuyCandidates("STOCK001", 10);
 
-        assertThat(candidates)
-                .extracting(OrderBookOrderRow::id)
-                .containsExactly(3L, 2L, 1L);
+        assertThat(candidates).extracting(OrderBookOrderRow::id).containsExactly(3L, 2L, 1L);
+    }
+
+    @Test
+    void findBestBuyCandidates_includesNextBuyWhenTopBuyCanOnlySelfTrade() {
+        insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
+        insertOrder(2L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 2);
+        insertOrder(3L, 20L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("69500.00"), 10L, 0L, 3);
+
+        List<OrderBookOrderRow> candidates = reader.findBestBuyCandidates("STOCK001", 10);
+
+        assertThat(candidates).extracting(OrderBookOrderRow::id).containsExactly(1L, 3L);
     }
 
     @Test

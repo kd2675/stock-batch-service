@@ -69,9 +69,11 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_pausedSimulationClock_usesLastHeartbeatForTimestamps() {
+    void applyDueCorporateActions_pausedSimulationClock_usesSimulationClockForTimestamps() {
         LocalDateTime lastHeartbeatAt = LocalDateTime.of(2026, 1, 2, 3, 4, 5);
-        insertPausedSimulationClock(LocalDate.now(), lastHeartbeatAt);
+        LocalDate simulationDate = LocalDate.now();
+        LocalDateTime expectedSimulationTime = simulationDate.atStartOfDay();
+        insertPausedSimulationClock(simulationDate, lastHeartbeatAt);
         insertOrderBookInstrument("ZQ020", 100000L, 100000L);
         insertPrice("ZQ020", "70000.00");
         insertAdditionalIssue("ZQ020", 30000L, "60000.00", LocalDate.now().minusDays(1));
@@ -80,9 +82,9 @@ class CorporateActionServiceTest {
 
         assertThat(processedCount).isEqualTo(1);
         assertThat(queryDateTime("select listed_at from stock_corporate_action where symbol = 'ZQ020'"))
-                .isEqualTo(lastHeartbeatAt);
+                .isEqualTo(expectedSimulationTime);
         assertThat(queryDateTime("select updated_at from stock_order_book_instrument where symbol = 'ZQ020'"))
-                .isEqualTo(lastHeartbeatAt);
+                .isEqualTo(expectedSimulationTime);
     }
 
     @Test
