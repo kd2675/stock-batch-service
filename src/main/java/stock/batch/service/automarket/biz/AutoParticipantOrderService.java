@@ -3,6 +3,7 @@ package stock.batch.service.automarket.biz;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -45,12 +46,9 @@ class AutoParticipantOrderService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             double momentumPressure
     ) {
-        int placed = 0;
-        int reservedBuy = 0;
-        int reservedSell = 0;
-        int failedReserve = 0;
         Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config);
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
+        List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
         for (AutoParticipantStrategy strategy : strategies) {
             AutoParticipantTradingState tradingState = tradingStates.getOrDefault(
                     strategy.accountId(),
@@ -83,21 +81,12 @@ class AutoParticipantOrderService {
                 if (quantity <= 0) {
                     continue;
                 }
-                if (!autoMarketOrderExecutor.placeOrder(strategy.accountId(), config.symbol(), side, price, quantity)) {
-                    failedReserve++;
-                    continue;
-                }
+                plannedOrders.add(new AutoMarketPlannedOrder(strategy.accountId(), config.symbol(), side, price, quantity));
                 orderBookState = orderBookState.withPlacedOrder(side, price, quantity);
                 tradingState.reserve(side, price, quantity);
-                placed++;
-                if (BUY.equals(side)) {
-                    reservedBuy++;
-                } else {
-                    reservedSell++;
-                }
             }
         }
-        return new AutoParticipantOrderGenerationResult(placed, reservedBuy, reservedSell, failedReserve);
+        return autoMarketOrderExecutor.placeOrders(plannedOrders);
     }
 
     private Map<Long, AutoParticipantTradingState> loadTradingStates(

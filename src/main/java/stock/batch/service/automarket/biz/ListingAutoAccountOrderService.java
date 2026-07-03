@@ -3,6 +3,7 @@ package stock.batch.service.automarket.biz;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import lombok.RequiredArgsConstructor;
@@ -39,9 +40,13 @@ class ListingAutoAccountOrderService {
         if (listingConfigs.isEmpty()) {
             return 0;
         }
+        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
+        LocalDateTime now = clock.simulationDateTime();
+        List<AutoOrder> expiredOrders = new ArrayList<>();
         for (ListingAutoAccountConfig listingConfig : listingConfigs) {
-            processed += expireOldOrders(listingConfig);
+            expiredOrders.addAll(findOldOrders(listingConfig, now));
         }
+        processed += autoMarketOrderExecutor.expireOrders(expiredOrders, now);
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         for (ListingAutoAccountConfig listingConfig : listingConfigs) {
             PlacedListingOrder placedOrder = placeOrder(listingConfig, orderBookState);
@@ -53,18 +58,9 @@ class ListingAutoAccountOrderService {
         return processed;
     }
 
-    private int expireOldOrders(ListingAutoAccountConfig config) {
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        LocalDateTime now = clock.simulationDateTime();
+    private List<AutoOrder> findOldOrders(ListingAutoAccountConfig config, LocalDateTime now) {
         LocalDateTime threshold = now.minusSeconds(Math.max(1, config.orderTtlSeconds()));
-        List<AutoOrder> orders = autoMarketOrderReader.findExpiredListingAutoOrders(config, threshold);
-
-        int expired = 0;
-        for (AutoOrder order : orders) {
-            autoMarketOrderExecutor.expireOrder(order, now);
-            expired++;
-        }
-        return expired;
+        return autoMarketOrderReader.findExpiredListingAutoOrders(config, threshold);
     }
 
     private PlacedListingOrder placeOrder(ListingAutoAccountConfig config, AutoMarketOrderBookState orderBookState) {

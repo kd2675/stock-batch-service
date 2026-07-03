@@ -276,6 +276,45 @@ class StockDdlContractTest {
         }
     }
 
+    @Test
+    void orderBookExpiryAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_order_book_expiry_index_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_order_book_expiry_index_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl)
+                .contains(
+                        "CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule",
+                        "information_schema.statistics",
+                        "idx_stock_auto_order_schedule_due",
+                        "idx_stock_auto_order_schedule_profile_due",
+                        "idx_stock_order_order_book_expiry",
+                        "idx_stock_order_status_symbol",
+                        "PREPARE stock_auto_order_schedule_due_index_stmt",
+                        "PREPARE stock_auto_order_schedule_profile_due_index_stmt",
+                        "PREPARE stock_order_book_expiry_index_stmt",
+                        "PREPARE stock_order_status_symbol_index_stmt",
+                        "DROP INDEX idx_stock_order_status_symbol"
+                );
+        assertThat(batchDdl).doesNotContain("ALTER TABLE stock_order\n  ADD INDEX");
+    }
+
+    @Test
+    void stockOrderDdl_doesNotCreateRedundantStatusSymbolIndex() throws IOException {
+        String mysqlDdl = readDdlResource("db/ddl/stock_all.sql");
+        String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
+
+        assertThat(extractCreateTableBlock(mysqlDdl, "stock_order"))
+                .doesNotContain("idx_stock_order_status_symbol");
+        assertThat(h2Ddl).doesNotContain("idx_stock_order_status_symbol ON stock_order(status, symbol)");
+    }
+
     private String readDdlResource(String resourcePath) throws IOException {
         try (var inputStream = getClass().getClassLoader().getResourceAsStream(resourcePath)) {
             assertThat(inputStream).as(resourcePath + " resource").isNotNull();

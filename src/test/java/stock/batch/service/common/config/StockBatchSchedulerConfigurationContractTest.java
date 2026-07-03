@@ -83,6 +83,8 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(lockTtlSeconds).isPositive();
         assertThat(heartbeatIntervalSeconds).isPositive();
         assertThat(heartbeatIntervalSeconds).isLessThan(lockTtlSeconds);
+        assertThat(lockTtlSeconds).isEqualTo(180);
+        assertThat(lockTtlSeconds).isGreaterThanOrEqualTo(heartbeatIntervalSeconds * 3);
     }
 
     @Test
@@ -113,6 +115,41 @@ class StockBatchSchedulerConfigurationContractTest {
     }
 
     @Test
+    void autoMarketGenerationDefaults_areExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:10000}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-backoff-ms"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.max-size"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:8}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.queue-capacity"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:0}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))).isBetween(5_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))).isBetween(1, 500);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
+    }
+
+    @Test
+    void listingAutoMarketRetryDefaults_areExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}");
+        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))
+                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}");
+        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-backoff-ms"))
+                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))).isBetween(5_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
+    }
+
+    @Test
     void autoParticipantCashFlowDefaultPollInterval_isNotOneSecondDatabaseScan() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
         String schedulerSource = Files.readString(
@@ -139,11 +176,11 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(applicationProperties.getProperty("spring.task.scheduling.shutdown.await-termination"))
                 .isEqualTo("${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION:true}");
         assertThat(applicationProperties.getProperty("spring.task.scheduling.shutdown.await-termination-period"))
-                .isEqualTo("${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION_PERIOD:60s}");
+                .isEqualTo("${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION_PERIOD:120s}");
         assertThat(applicationProperties.getProperty("spring.lifecycle.timeout-per-shutdown-phase"))
-                .isEqualTo("${STOCK_BATCH_SHUTDOWN_TIMEOUT:70s}");
+                .isEqualTo("${STOCK_BATCH_SHUTDOWN_TIMEOUT:130s}");
         assertThat(applicationProperties.getProperty("stock.batch.shutdown.await-running-jobs-seconds"))
-                .isEqualTo("${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}");
+                .isEqualTo("${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:120}");
     }
 
     @Test
@@ -151,7 +188,7 @@ class StockBatchSchedulerConfigurationContractTest {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.shutdown-await-seconds"))
-                .isEqualTo("${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:60}");
+                .isEqualTo("${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:120}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))

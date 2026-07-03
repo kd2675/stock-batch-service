@@ -3,6 +3,7 @@ package stock.batch.service.marketclose.biz;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+
+import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,6 +22,9 @@ class MarketCloseRolloverServiceTest {
 
     @Autowired
     private MarketCloseRolloverService marketCloseRolloverService;
+
+    @Autowired
+    private MarketCloseRolloverWriter marketCloseRolloverWriter;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -33,6 +39,8 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_account where user_key like 'market-close-%'");
         jdbcTemplate.update("delete from stock_price_tick");
         jdbcTemplate.update("delete from stock_price");
+        jdbcTemplate.update("delete from stock_order_book_market_config");
+        jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_simulation_clock");
     }
 
@@ -62,6 +70,20 @@ class MarketCloseRolloverServiceTest {
         int processedCount = marketCloseRolloverService.rolloverClosingPrices();
 
         assertThat(processedCount).isZero();
+    }
+
+    @Test
+    void findCloseLockSymbols_withoutSymbol_includesAllFullCloseWriteTargets() {
+        insertPrice("MC_PRICE_ONLY", "73500.00", "70000.00", "internal-order-book");
+        insertOrderBookInstrument("MC_INSTRUMENT_ONLY");
+        insertOrderBookMarketConfig("MC_MARKET_ONLY");
+        insertAccount("market-close-lock-buyer", "1000000.00");
+        insertReservedBuyOrder("market-close-lock-order", "market-close-lock-buyer", "MC_ORDER_ONLY", "147000.00");
+
+        List<String> lockSymbols = marketCloseRolloverWriter.findCloseLockSymbols(null);
+
+        assertThat(lockSymbols)
+                .contains("MC_PRICE_ONLY", "MC_INSTRUMENT_ONLY", "MC_MARKET_ONLY", "MC_ORDER_ONLY");
     }
 
     @Test
@@ -267,6 +289,32 @@ class MarketCloseRolloverServiceTest {
                 new BigDecimal(previousClose),
                 LocalDateTime.now(),
                 provider
+        );
+    }
+
+    private void insertOrderBookInstrument(String symbol) {
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(
+                    symbol, name, market, initial_price, issued_shares, tradable_shares, enabled, created_at, updated_at
+                )
+                values (?, ?, 'ORDERBOOK', 70000.00, 1000, 1000, true, ?, ?)
+                """,
+                symbol,
+                symbol + " 주문장",
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertOrderBookMarketConfig(String symbol) {
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                values (?, true, 'OPEN', ?)
+                """,
+                symbol,
+                LocalDateTime.now()
         );
     }
 

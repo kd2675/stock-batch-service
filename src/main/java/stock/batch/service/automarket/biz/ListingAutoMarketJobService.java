@@ -5,11 +5,14 @@ import java.util.function.Supplier;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
+import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
@@ -24,6 +27,13 @@ public class ListingAutoMarketJobService {
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
+    private final OrderBookSymbolLock orderBookSymbolLock;
+
+    @Value("${stock.batch.listing-auto-market.deadlock-retry-max-attempts:5}")
+    private int deadlockRetryMaxAttempts = 5;
+
+    @Value("${stock.batch.listing-auto-market.deadlock-retry-backoff-ms:50}")
+    private long deadlockRetryBackoffMs = 50;
 
     public int runListingAutoMarket() {
         long startedNanos = System.nanoTime();
@@ -37,7 +47,7 @@ public class ListingAutoMarketJobService {
 
         int processed = 0;
         for (AutoMarketConfig config : configs) {
-            processed += runIntInTransaction(() -> listingAutoAccountOrderService.run(config));
+            processed += runSymbolListingAutoMarket(config);
         }
         log.info(
                 "Listing auto market completed: symbols={}, processedCount={}, elapsedMs={}",
@@ -48,14 +58,67 @@ public class ListingAutoMarketJobService {
         return processed;
     }
 
+    private int runSymbolListingAutoMarket(AutoMarketConfig config) {
+        return orderBookSymbolLock.tryLock(config.symbol())
+                .map(lock -> {
+                    try (lock) {
+                        return runIntInTransactionWithDeadlockRetry(
+                                config.symbol(),
+                                () -> listingAutoAccountOrderService.run(config)
+                        );
+                    }
+                })
+                .orElseGet(() -> {
+                    log.info("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    return 0;
+                });
+    }
+
     private boolean isRegularSessionActive() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        return !clock.running() || simulationMarketSessionService.isRegularSession();
+        return clock.running() && simulationMarketSessionService.isRegularSession();
     }
 
     private int runIntInTransaction(Supplier<Integer> action) {
         Integer result = transactionTemplate.execute(status -> action.get());
         return result == null ? 0 : result;
+    }
+
+    private int runIntInTransactionWithDeadlockRetry(String symbol, Supplier<Integer> action) {
+        int attempts = Math.max(1, deadlockRetryMaxAttempts);
+        CannotAcquireLockException lastException = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return runIntInTransaction(action);
+            } catch (CannotAcquireLockException ex) {
+                lastException = ex;
+                if (attempt >= attempts) {
+                    break;
+                }
+                sleepBeforeRetry(symbol, attempt, ex);
+            }
+        }
+        throw lastException;
+    }
+
+    private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
+        long backoffMillis = Math.max(0, deadlockRetryBackoffMs) * attempt;
+        log.warn(
+                "Listing auto market deadlock retry: symbol={}, attempt={}, backoffMs={}, reason={}",
+                symbol,
+                attempt,
+                backoffMillis,
+                ex.getMessage()
+        );
+        if (backoffMillis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(backoffMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted during listing auto market deadlock retry", interrupted);
+        }
     }
 
     private long elapsedMillis(long startedNanos) {

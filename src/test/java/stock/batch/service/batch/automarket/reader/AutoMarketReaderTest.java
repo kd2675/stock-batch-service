@@ -8,6 +8,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
@@ -60,6 +61,12 @@ class AutoMarketReaderTest {
                     symbol varchar(20) not null,
                     enabled boolean not null,
                     intensity int not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_market_config (
+                    symbol varchar(20) not null,
+                    enabled boolean not null
                 )
                 """);
         realJdbcTemplate.update(
@@ -140,6 +147,117 @@ class AutoMarketReaderTest {
         assertThat(strategiesBySymbol.get("STOCK002"))
                 .extracting(AutoParticipantStrategy::intensity)
                 .containsExactly(8, 8);
+    }
+
+    @Test
+    void findDueParticipantSymbolStrategies_readsDueParticipantsWithAllEligibleSymbols() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_due_participant_test");
+        realJdbcTemplate.execute("""
+                create table stock_auto_participant (
+                    user_key varchar(64) not null,
+                    display_name varchar(64) not null,
+                    profile_type varchar(64) not null,
+                    enabled boolean not null,
+                    withdrawn_at timestamp null,
+                    recurring_cash_amount decimal(19, 2) null,
+                    recurring_cash_interval_value decimal(19, 2) null,
+                    recurring_cash_interval_unit varchar(32) null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_account (
+                    id bigint not null,
+                    user_key varchar(64) not null,
+                    status varchar(32) not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_participant_symbol_config (
+                    user_key varchar(64) not null,
+                    symbol varchar(20) not null,
+                    enabled boolean not null,
+                    intensity int not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_market_config (
+                    symbol varchar(20) not null,
+                    enabled boolean not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_participant_order_schedule (
+                    user_key varchar(64) not null,
+                    profile_type varchar(40) not null,
+                    next_run_at timestamp not null,
+                    last_run_at timestamp null,
+                    lease_until timestamp null,
+                    lease_owner varchar(80) null,
+                    run_interval_seconds int not null,
+                    priority int not null,
+                    created_at timestamp not null,
+                    updated_at timestamp not null
+                )
+                """);
+        realJdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, profile_type, enabled, withdrawn_at,
+                    recurring_cash_amount, recurring_cash_interval_value, recurring_cash_interval_unit
+                ) values
+                ('auto-001', 'auto 1', 'MOMENTUM_FOLLOWER', true, null, null, null, null),
+                ('auto-002', 'auto 2', 'NOISE_TRADER', true, null, null, null, null)
+                """);
+        realJdbcTemplate.update("insert into stock_account(id, user_key, status) values (10, 'auto-001', 'ACTIVE'), (20, 'auto-002', 'ACTIVE')");
+        realJdbcTemplate.update("insert into stock_auto_participant_symbol_config(user_key, symbol, enabled, intensity) values ('auto-001', 'STOCK002', true, 9)");
+        realJdbcTemplate.update("insert into stock_auto_market_config(symbol, enabled) values ('STOCK001', true), ('STOCK002', true)");
+        realJdbcTemplate.update("""
+                insert into stock_auto_participant_order_schedule(
+                    user_key, profile_type, next_run_at, last_run_at,
+                    lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                ) values
+                ('auto-001', 'MOMENTUM_FOLLOWER', TIMESTAMP '2026-07-03 08:58:00', null, null, null, 10, 80, current_timestamp, current_timestamp),
+                ('auto-002', 'NOISE_TRADER', TIMESTAMP '2026-07-03 08:57:00', null, TIMESTAMP '2026-07-03 09:10:00', 'other', 10, 90, current_timestamp, current_timestamp)
+                """);
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+        AutoMarketConfig stock001 = new AutoMarketConfig(
+                "STOCK001",
+                5,
+                100,
+                15,
+                100000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("70000.00"),
+                null
+        );
+        AutoMarketConfig stock002 = new AutoMarketConfig(
+                "STOCK002",
+                8,
+                100,
+                15,
+                100000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("30000.00"),
+                new BigDecimal("30000.00"),
+                null
+        );
+
+        List<AutoParticipantSymbolStrategy> strategies = realReader.findDueParticipantSymbolStrategies(
+                List.of(stock001, stock002),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                10
+        );
+
+        assertThat(strategies).hasSize(2);
+        assertThat(strategies)
+                .extracting(AutoParticipantSymbolStrategy::symbol)
+                .containsExactly("STOCK001", "STOCK002");
+        assertThat(strategies)
+                .extracting(strategy -> strategy.strategy().userKey())
+                .containsExactly("auto-001", "auto-001");
+        assertThat(strategies)
+                .extracting(strategy -> strategy.strategy().intensity())
+                .containsExactly(5, 9);
     }
 
     @Test

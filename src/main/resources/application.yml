@@ -33,12 +33,12 @@ spring:
     job:
       enabled: false
   lifecycle:
-    timeout-per-shutdown-phase: ${STOCK_BATCH_SHUTDOWN_TIMEOUT:70s}
+    timeout-per-shutdown-phase: ${STOCK_BATCH_SHUTDOWN_TIMEOUT:130s}
   task:
     scheduling:
       shutdown:
         await-termination: ${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION:true}
-        await-termination-period: ${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION_PERIOD:60s}
+        await-termination-period: ${STOCK_BATCH_SCHEDULING_AWAIT_TERMINATION_PERIOD:120s}
 
 server:
   shutdown: ${STOCK_BATCH_SERVER_SHUTDOWN:graceful}
@@ -54,15 +54,15 @@ stock:
     close-time: ${STOCK_MARKET_SESSION_CLOSE_TIME:18:00}
   batch:
     shutdown:
-      await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}
+      await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:120}
     internal:
       token: ${STOCK_BATCH_INTERNAL_TOKEN:}
       allow-empty-token: false
     job-lock:
-      ttl-seconds: ${STOCK_BATCH_JOB_LOCK_TTL_SECONDS:1800}
+      ttl-seconds: ${STOCK_BATCH_JOB_LOCK_TTL_SECONDS:180}
       heartbeat-interval-seconds: ${STOCK_BATCH_JOB_LOCK_HEARTBEAT_INTERVAL_SECONDS:30}
     scheduler-pools:
-      shutdown-await-seconds: ${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:60}
+      shutdown-await-seconds: ${STOCK_BATCH_SCHEDULER_POOL_SHUTDOWN_AWAIT_SECONDS:120}
       execution:
         pool-size: ${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}
       auto-market:
@@ -147,15 +147,13 @@ stock:
       generation-spread-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_SPREAD_SECONDS:10}
       generation-lease-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_LEASE_SECONDS:120}
       generation-due-limit-per-symbol: ${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}
+      deadlock-retry-max-attempts: ${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}
+      deadlock-retry-backoff-ms: ${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}
       slow-symbol-log-threshold-ms: ${STOCK_BATCH_AUTO_MARKET_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
       thread-pool:
         core-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_CORE_SIZE:4}
-        max-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:4}
-        queue-capacity: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:100}
-      profile-lock:
-        type: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_TYPE:redis}
-        key-prefix: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_KEY_PREFIX:stock:automarket:profile:lock:}
-        ttl-seconds: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_TTL_SECONDS:120}
+        max-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:8}
+        queue-capacity: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:0}
     auto-market-order-expiry:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_INITIAL_DELAY_MS:7000}
@@ -167,6 +165,8 @@ stock:
       enabled: ${STOCK_BATCH_LISTING_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_INITIAL_DELAY_MS:8000}
       fixed-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}
+      deadlock-retry-max-attempts: ${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}
+      deadlock-retry-backoff-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}
     auto-participant-cash-flow:
       enabled: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_INITIAL_DELAY_MS:5000}

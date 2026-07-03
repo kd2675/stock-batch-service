@@ -45,24 +45,46 @@ class AutoParticipantOrderScheduleService {
 
     private final String leaseOwner = "stock-batch-" + UUID.randomUUID();
 
-    List<AutoParticipantStrategy> claimDueStrategies(
-            String symbol,
+    int ensureSchedules(
             List<AutoParticipantStrategy> strategies,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
+    ) {
+        return ensureScheduleEntries(strategies, profilePolicies, now);
+    }
+
+    List<AutoParticipantStrategy> claimDueStrategies(
+            List<AutoParticipantStrategy> strategies,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
+    ) {
+        return claimDueStrategies(strategies, profilePolicies, now, true);
+    }
+
+    List<AutoParticipantStrategy> claimDueStrategies(
+            List<AutoParticipantStrategy> strategies,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now,
+            boolean seedMissingSchedules
     ) {
         if (strategies.isEmpty()) {
             return List.of();
         }
         Map<String, AutoParticipantStrategy> strategyByUserKey = strategyByUserKey(strategies);
-        ensureSchedules(symbol, strategies, profilePolicies, now);
-        List<String> dueUserKeys = findDueUserKeys(symbol, strategyByUserKey.keySet().stream().toList(), now);
+        if (seedMissingSchedules) {
+            ensureScheduleEntries(strategies, profilePolicies, now);
+        }
+        List<String> dueUserKeys = findDueUserKeys(strategyByUserKey.keySet().stream().toList(), now);
         if (dueUserKeys.isEmpty()) {
             return List.of();
         }
         List<AutoParticipantStrategy> claimedStrategies = new ArrayList<>();
         LocalDateTime leaseUntil = now.plusSeconds(Math.max(1, leaseSeconds));
         for (String userKey : dueUserKeys) {
+            AutoParticipantStrategy strategy = strategyByUserKey.get(userKey);
+            if (strategy == null) {
+                continue;
+            }
             int updatedRows = jdbcTemplate.update(
                     """
                     update stock_auto_participant_order_schedule
@@ -70,7 +92,6 @@ class AutoParticipantOrderScheduleService {
                         lease_owner = ?,
                         updated_at = ?
                     where user_key = ?
-                      and symbol = ?
                       and next_run_at <= ?
                       and (lease_until is null or lease_until <= ?)
                     """,
@@ -78,27 +99,26 @@ class AutoParticipantOrderScheduleService {
                     leaseOwner,
                     now,
                     userKey,
-                    symbol,
                     now,
                     now
             );
-            if (updatedRows > 0 && strategyByUserKey.containsKey(userKey)) {
-                claimedStrategies.add(strategyByUserKey.get(userKey));
+            if (updatedRows > 0) {
+                claimedStrategies.add(strategy);
             }
         }
         return claimedStrategies;
     }
 
     int completeStrategies(
-            String symbol,
             List<AutoParticipantStrategy> strategies,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
         int completed = 0;
         for (AutoParticipantStrategy strategy : strategies) {
-            int intervalSeconds = intervalSeconds(strategy.profileType(), policy(profilePolicies, strategy.profileType()));
-            LocalDateTime nextRunAt = now.plusSeconds(intervalSeconds + spreadSeconds(strategy.userKey(), symbol, intervalSeconds));
+            ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
+            int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
+            LocalDateTime nextRunAt = now.plusSeconds(intervalSeconds + spreadSeconds(strategy.userKey(), intervalSeconds));
             completed += jdbcTemplate.update(
                     """
                     update stock_auto_participant_order_schedule
@@ -111,48 +131,47 @@ class AutoParticipantOrderScheduleService {
                         priority = ?,
                         updated_at = ?
                     where user_key = ?
-                      and symbol = ?
                       and lease_owner = ?
                     """,
                     strategy.profileType().name(),
                     now,
                     nextRunAt,
                     intervalSeconds,
-                    priority(strategy.profileType(), policy(profilePolicies, strategy.profileType())),
+                    priority(strategy.profileType(), policy),
                     now,
                     strategy.userKey(),
-                    symbol,
                     leaseOwner
             );
         }
         return completed;
     }
 
-    private void ensureSchedules(
-            String symbol,
+    private int ensureScheduleEntries(
             List<AutoParticipantStrategy> strategies,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        Map<String, ScheduleMetadata> existingSchedules = findExistingSchedules(symbol, strategies);
+        int scheduled = 0;
+        Map<String, ScheduleMetadata> existingSchedules = findExistingSchedules(strategies);
         for (AutoParticipantStrategy strategy : strategies) {
             ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
             int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
             int priority = priority(strategy.profileType(), policy);
             ScheduleMetadata existing = existingSchedules.get(strategy.userKey());
             if (existing == null) {
-                insertSchedule(symbol, strategy, intervalSeconds, priority, now);
+                insertSchedule(strategy, intervalSeconds, priority, now);
+                scheduled++;
                 continue;
             }
             if (existing.matches(strategy.profileType(), intervalSeconds, priority)) {
                 continue;
             }
-            updateScheduleMetadata(symbol, strategy, intervalSeconds, priority, now);
+            updateScheduleMetadata(strategy, intervalSeconds, priority, now);
         }
+        return scheduled;
     }
 
     private void insertSchedule(
-            String symbol,
             AutoParticipantStrategy strategy,
             int intervalSeconds,
             int priority,
@@ -162,13 +181,12 @@ class AutoParticipantOrderScheduleService {
             jdbcTemplate.update(
                     """
                     insert into stock_auto_participant_order_schedule(
-                        user_key, symbol, profile_type, next_run_at, last_run_at,
+                        user_key, profile_type, next_run_at, last_run_at,
                         lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
                     )
-                    values (?, ?, ?, ?, null, null, null, ?, ?, ?, ?)
+                    values (?, ?, ?, null, null, null, ?, ?, ?, ?)
                     """,
                     strategy.userKey(),
-                    symbol,
                     strategy.profileType().name(),
                     now,
                     intervalSeconds,
@@ -182,7 +200,6 @@ class AutoParticipantOrderScheduleService {
     }
 
     private void updateScheduleMetadata(
-            String symbol,
             AutoParticipantStrategy strategy,
             int intervalSeconds,
             int priority,
@@ -196,7 +213,6 @@ class AutoParticipantOrderScheduleService {
                     priority = ?,
                     updated_at = ?
                 where user_key = ?
-                  and symbol = ?
                   and (profile_type <> ? or run_interval_seconds <> ? or priority <> ?)
                 """,
                 strategy.profileType().name(),
@@ -204,14 +220,13 @@ class AutoParticipantOrderScheduleService {
                 priority,
                 now,
                 strategy.userKey(),
-                symbol,
                 strategy.profileType().name(),
                 intervalSeconds,
                 priority
         );
     }
 
-    private Map<String, ScheduleMetadata> findExistingSchedules(String symbol, List<AutoParticipantStrategy> strategies) {
+    private Map<String, ScheduleMetadata> findExistingSchedules(List<AutoParticipantStrategy> strategies) {
         List<String> userKeys = strategies.stream()
                 .map(AutoParticipantStrategy::userKey)
                 .filter(userKey -> userKey != null && !userKey.isBlank())
@@ -225,11 +240,9 @@ class AutoParticipantOrderScheduleService {
                         """
                         select user_key, profile_type, run_interval_seconds, priority
                         from stock_auto_participant_order_schedule
-                        where symbol = :symbol
-                          and user_key in (:userKeys)
+                        where user_key in (:userKeys)
                         """
                 )
-                .param("symbol", symbol)
                 .param("userKeys", userKeys)
                 .query((rs, rowNum) -> Map.entry(
                         rs.getString("user_key"),
@@ -253,7 +266,7 @@ class AutoParticipantOrderScheduleService {
         }
     }
 
-    private List<String> findDueUserKeys(String symbol, List<String> userKeys, LocalDateTime now) {
+    private List<String> findDueUserKeys(List<String> userKeys, LocalDateTime now) {
         if (userKeys.isEmpty()) {
             return List.of();
         }
@@ -262,15 +275,13 @@ class AutoParticipantOrderScheduleService {
                         """
                         select user_key
                         from stock_auto_participant_order_schedule
-                        where symbol = :symbol
-                          and user_key in (:userKeys)
+                        where user_key in (:userKeys)
                           and next_run_at <= :now
                           and (lease_until is null or lease_until <= :now)
                         order by priority desc, next_run_at asc, user_key asc
                         limit :limit
                         """
                 )
-                .param("symbol", symbol)
                 .param("userKeys", userKeys)
                 .param("now", now)
                 .param("limit", Math.max(1, dueLimitPerSymbol))
@@ -304,12 +315,12 @@ class AutoParticipantOrderScheduleService {
         return Math.clamp((int) Math.round(activity * 25), 1, 100);
     }
 
-    private long spreadSeconds(String userKey, String symbol, int intervalSeconds) {
+    private long spreadSeconds(String userKey, int intervalSeconds) {
         int maxSpread = Math.min(Math.max(0, spreadSeconds), Math.max(0, intervalSeconds - 1));
         if (maxSpread <= 0) {
             return 0;
         }
-        return Math.floorMod((userKey + "\n" + symbol).hashCode(), maxSpread + 1);
+        return Math.floorMod(userKey.hashCode(), maxSpread + 1);
     }
 
     private ProfilePolicy policy(

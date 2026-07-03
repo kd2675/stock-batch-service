@@ -60,8 +60,6 @@ stock:
       enabled: false
     auto-market:
       enabled: false
-      profile-lock:
-        type: none
     auto-participant-cash-flow:
       enabled: false
     market-close:

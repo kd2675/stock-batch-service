@@ -349,7 +349,6 @@ CREATE TABLE IF NOT EXISTS stock_order (
   KEY idx_stock_order_account_created (account_id, created_at),
   KEY idx_stock_order_account_status_created (account_id, status, created_at),
   KEY idx_stock_order_account_symbol_created (account_id, symbol, created_at),
-  KEY idx_stock_order_status_symbol (status, symbol),
   KEY idx_stock_order_market_status_symbol (market_type, status, symbol),
   KEY idx_stock_order_market_status_side (market_type, status, side),
   KEY idx_stock_order_market_status_account_time (market_type, status, account_id, created_at),
@@ -692,7 +691,6 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
 
 CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule (
   user_key VARCHAR(64) NOT NULL,
-  symbol VARCHAR(20) NOT NULL,
   profile_type VARCHAR(40) NOT NULL,
   next_run_at DATETIME NOT NULL,
   last_run_at DATETIME NULL,
@@ -702,9 +700,9 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule (
   priority INT NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
-  PRIMARY KEY (user_key, symbol),
-  KEY idx_stock_auto_order_schedule_due (symbol, next_run_at, lease_until, priority, user_key),
-  KEY idx_stock_auto_order_schedule_profile_due (profile_type, next_run_at, symbol),
+  PRIMARY KEY (user_key),
+  KEY idx_stock_auto_order_schedule_due (next_run_at, lease_until, priority, user_key),
+  KEY idx_stock_auto_order_schedule_profile_due (profile_type, next_run_at, user_key),
   CONSTRAINT chk_stock_auto_order_schedule_interval CHECK (run_interval_seconds > 0),
   CONSTRAINT chk_stock_auto_order_schedule_priority CHECK (priority between 1 and 100)
 );

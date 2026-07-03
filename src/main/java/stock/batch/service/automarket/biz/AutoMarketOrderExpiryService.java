@@ -1,7 +1,9 @@
 package stock.batch.service.automarket.biz;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -37,7 +39,6 @@ class AutoMarketOrderExpiryService {
             AutoMarketConfig config,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
     ) {
-        int expired = 0;
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         LocalDateTime now = clock.simulationDateTime();
         Map<AutoParticipantProfileType, LocalDateTime> thresholdsByProfile = expiryThresholdsByProfile(config, profilePolicies, clock);
@@ -51,15 +52,15 @@ class AutoMarketOrderExpiryService {
                 ),
                 expiryChunkLimit
         ));
+        List<AutoOrder> expiredOrders = new ArrayList<>();
         for (AutoOrder order : autoMarketOrderReader.findExpiredAutoOrders(config, candidateThreshold, candidateLimit)) {
             LocalDateTime threshold = thresholdsByProfile.getOrDefault(order.profileType(), candidateThreshold);
             if (order.createdAt() != null && !order.createdAt().isBefore(threshold)) {
                 continue;
             }
-            autoMarketOrderExecutor.expireOrder(order, now);
-            expired++;
+            expiredOrders.add(order);
         }
-        return expired;
+        return autoMarketOrderExecutor.expireOrders(expiredOrders, now);
     }
 
     private Map<AutoParticipantProfileType, LocalDateTime> expiryThresholdsByProfile(

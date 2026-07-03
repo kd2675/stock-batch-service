@@ -60,6 +60,42 @@ public class MarketCloseRolloverWriter {
         return key.longValue();
     }
 
+    public List<String> findCloseLockSymbols(String symbol) {
+        if (symbol != null && !symbol.isBlank()) {
+            return List.of(symbol);
+        }
+        return jdbcClient.sql(
+                """
+                select symbol
+                  from (
+                       select symbol
+                         from stock_order_book_market_config
+                        where enabled = true
+                       union
+                       select symbol
+                         from stock_order_book_instrument
+                        where enabled = true
+                       union
+                       select symbol
+                         from stock_price
+                       union
+                       select symbol
+                         from stock_order
+                        where market_type = 'ORDER_BOOK'
+                          and status in ('PENDING', 'PARTIALLY_FILLED')
+                       union
+                       select symbol
+                         from stock_holding
+                        where quantity > 0 or reserved_quantity > 0
+                  ) close_symbols
+                 where symbol is not null
+                 order by symbol asc
+                """
+        )
+                .query(String.class)
+                .list();
+    }
+
     public List<MarketCloseOrderRow> findOpenOrderBookOrdersForUpdate(String symbol) {
         return jdbcClient.sql(
                 """
@@ -108,8 +144,8 @@ public class MarketCloseRolloverWriter {
         holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
     }
 
-    public void cancelOrder(long orderId, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
+    public boolean cancelOrder(long orderId, LocalDateTime updatedAt) {
+        int updatedRows = jdbcTemplate.update(
                 """
                 update stock_order
                    set status = 'CANCELLED',
@@ -121,6 +157,7 @@ public class MarketCloseRolloverWriter {
                 updatedAt,
                 orderId
         );
+        return updatedRows > 0;
     }
 
     public int rolloverClosingPrices(String symbol) {

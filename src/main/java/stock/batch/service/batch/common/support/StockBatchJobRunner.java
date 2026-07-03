@@ -35,7 +35,7 @@ public class StockBatchJobRunner {
             BatchJobLockRegistry batchJobLockRegistry,
             StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder,
             @Value("${stock.batch.job-lock.heartbeat-interval-seconds:30}") long lockHeartbeatIntervalSeconds,
-            @Value("${stock.batch.shutdown.await-running-jobs-seconds:60}") long shutdownAwaitRunningJobsSeconds
+            @Value("${stock.batch.shutdown.await-running-jobs-seconds:120}") long shutdownAwaitRunningJobsSeconds
     ) {
         this(
                 batchJobLockRegistry,

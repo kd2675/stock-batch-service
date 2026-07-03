@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -14,8 +15,11 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
+import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
 @Component
 public class AutoMarketReader {
@@ -106,6 +110,124 @@ public class AutoMarketReader {
                         .toList()
         );
         return AutoMarketStrategyAssembler.bySymbol(configs, activeParticipants, symbolConfigs);
+    }
+
+    public List<AutoParticipantSymbolStrategy> findDueParticipantSymbolStrategies(
+            List<AutoMarketConfig> configs,
+            LocalDateTime now,
+            int participantLimit
+    ) {
+        if (configs.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Integer> configIntensityBySymbol = configs.stream()
+                .collect(Collectors.toMap(
+                        AutoMarketConfig::symbol,
+                        AutoMarketConfig::intensity,
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+        List<String> symbols = configIntensityBySymbol.keySet().stream().toList();
+        int normalizedLimit = Math.max(1, participantLimit);
+        return jdbcClient.sql(
+                """
+                with due_participants as (
+                    select p.user_key,
+                           a.id as account_id,
+                           p.profile_type,
+                           p.recurring_cash_amount,
+                           p.recurring_cash_interval_value,
+                           p.recurring_cash_interval_unit,
+                           s.next_run_at,
+                           s.priority
+                    from stock_auto_participant_order_schedule s
+                    join stock_auto_participant p
+                      on p.user_key = s.user_key
+                     and p.enabled = true
+                     and p.withdrawn_at is null
+                    join stock_account a
+                      on a.user_key = p.user_key
+                     and a.status = 'ACTIVE'
+                    where s.next_run_at <= :now
+                      and (s.lease_until is null or s.lease_until <= :now)
+                    order by s.next_run_at asc, s.priority desc, s.user_key asc
+                    limit :limit
+                )
+                select c.symbol,
+                       d.user_key,
+                       d.account_id,
+                       d.profile_type,
+                       d.recurring_cash_amount,
+                       d.recurring_cash_interval_value,
+                       d.recurring_cash_interval_unit,
+                       sc.intensity as symbol_intensity,
+                       d.next_run_at,
+                       d.priority
+                from due_participants d
+                join stock_auto_market_config c
+                  on c.symbol in (:symbols)
+                 and c.enabled = true
+                left join stock_auto_participant_symbol_config sc
+                  on sc.user_key = d.user_key
+                 and sc.symbol = c.symbol
+                where (sc.enabled is null or sc.enabled = true)
+                order by d.user_key asc, d.next_run_at asc, d.priority desc, c.symbol asc
+                """
+        )
+                .param("symbols", symbols)
+                .param("now", now)
+                .param("limit", normalizedLimit)
+                .query((rs, rowNum) -> {
+                    String symbol = AutoMarketReaderMapper.normalizeSymbol(rs.getString("symbol"));
+                    int symbolIntensity = rs.getInt("symbol_intensity");
+                    if (rs.wasNull()) {
+                        symbolIntensity = configIntensityBySymbol.getOrDefault(symbol, 1);
+                    }
+                    AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                            rs.getString("user_key"),
+                            rs.getLong("account_id"),
+                            Math.clamp(symbolIntensity, 1, 10),
+                            AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                            rs.getBigDecimal("recurring_cash_amount"),
+                            rs.getBigDecimal("recurring_cash_interval_value"),
+                            RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit"))
+                    );
+                    return new AutoParticipantSymbolStrategy(
+                            symbol,
+                            strategy,
+                            rs.getTimestamp("next_run_at").toLocalDateTime(),
+                            rs.getInt("priority")
+                    );
+                })
+                .list();
+    }
+
+    public boolean hasMissingParticipantSchedules(List<AutoMarketConfig> configs) {
+        if (configs.isEmpty()) {
+            return false;
+        }
+        Boolean missing = jdbcClient.sql(
+                """
+                select exists(
+                    select 1
+                    from stock_auto_participant p
+                    join stock_account a
+                      on a.user_key = p.user_key
+                     and a.status = 'ACTIVE'
+                    where p.enabled = true
+                      and p.withdrawn_at is null
+                      and not exists (
+                          select 1
+                          from stock_auto_participant_order_schedule s
+                          where s.user_key = p.user_key
+                      )
+                    limit 1
+                )
+                """
+        )
+                .query(Boolean.class)
+                .single();
+        return Boolean.TRUE.equals(missing);
     }
 
     private List<ActiveParticipantStrategy> findActiveParticipantStrategies() {

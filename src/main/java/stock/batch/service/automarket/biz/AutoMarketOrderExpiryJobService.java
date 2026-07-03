@@ -15,6 +15,7 @@ import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
+import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
@@ -30,12 +31,13 @@ public class AutoMarketOrderExpiryJobService {
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
+    private final OrderBookSymbolLock orderBookSymbolLock;
 
     @Value("${stock.batch.auto-market-order-expiry.deadlock-retry-max-attempts:5}")
-    private int deadlockRetryMaxAttempts;
+    private int deadlockRetryMaxAttempts = 5;
 
     @Value("${stock.batch.auto-market-order-expiry.deadlock-retry-backoff-ms:50}")
-    private long deadlockRetryBackoffMs;
+    private long deadlockRetryBackoffMs = 50;
 
     public int expireAutoMarketOrders() {
         long startedNanos = System.nanoTime();
@@ -51,10 +53,7 @@ public class AutoMarketOrderExpiryJobService {
 
         int expiredOrders = 0;
         for (AutoMarketConfig config : configs) {
-            expiredOrders += runIntInTransactionWithDeadlockRetry(
-                    config.symbol(),
-                    () -> autoMarketOrderExpiryService.expireOldAutoOrders(config, profilePolicies)
-            );
+            expiredOrders += expireSymbolOrders(config, profilePolicies);
         }
         log.info(
                 "Auto market order expiry completed: symbols={}, expiredOrders={}, elapsedMs={}",
@@ -65,9 +64,37 @@ public class AutoMarketOrderExpiryJobService {
         return expiredOrders;
     }
 
+    private int expireSymbolOrders(
+            AutoMarketConfig config,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
+    ) {
+        return orderBookSymbolLock.tryLock(config.symbol())
+                .map(lock -> {
+                    try (lock) {
+                        try {
+                            return runIntInTransactionWithDeadlockRetry(
+                                    config.symbol(),
+                                    () -> autoMarketOrderExpiryService.expireOldAutoOrders(config, profilePolicies)
+                            );
+                        } catch (CannotAcquireLockException ex) {
+                            log.warn(
+                                    "Auto market order expiry skipped after lock retry exhaustion: symbol={}, reason={}",
+                                    config.symbol(),
+                                    ex.getMessage()
+                            );
+                            return 0;
+                        }
+                    }
+                })
+                .orElseGet(() -> {
+                    log.info("Auto market order expiry skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    return 0;
+                });
+    }
+
     private boolean isRegularSessionActive() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        return !clock.running() || simulationMarketSessionService.isRegularSession();
+        return clock.running() && simulationMarketSessionService.isRegularSession();
     }
 
     private int runIntInTransaction(Supplier<Integer> action) {

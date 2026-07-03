@@ -259,6 +259,7 @@ public class InternalOrderBookExecutionService {
             rejectSellOrder(sellOrder, executedAt);
             return false;
         }
+        orderBookExecutionWriter.lockAccountsForUpdate(buyOrder.accountId(), sellOrder.accountId());
         if (!hasEnoughBuyCash(buyOrder, quantity, executionPrice, buyAmounts)) {
             rejectBuyOrder(buyOrder, executedAt);
             return false;
@@ -277,15 +278,13 @@ public class InternalOrderBookExecutionService {
                 executedAt
         );
         orderBookPriceWriter.updateLastTradePrice(buyOrder.symbol(), executionPrice, executedAt);
+        orderBookPriceWriter.insertPriceTick(buyOrder.symbol(), executionPrice, executedAt);
         publishPriceAfterCommit(buyOrder.symbol(), executionPrice, executedAt);
         return true;
     }
 
     private void publishPriceAfterCommit(String symbol, BigDecimal executionPrice, LocalDateTime executedAt) {
-        Runnable action = () -> {
-            orderBookPriceWriter.insertPriceTick(symbol, executionPrice, executedAt);
-            priceRedisPublisher.publish(symbol, executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
-        };
+        Runnable action = () -> priceRedisPublisher.publish(symbol, executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             action.run();
             return;

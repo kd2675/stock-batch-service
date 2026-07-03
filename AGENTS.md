@@ -28,6 +28,8 @@
 - `/internal/stock-batch/v1/jobs/runtime-controls`
 - `/internal/stock-batch/v1/jobs/runtime-controls/{jobName}`
 - `/internal/stock-batch/v1/jobs/auto-market/run`
+- `/internal/stock-batch/v1/jobs/auto-market-order-expiry/run`
+- `/internal/stock-batch/v1/jobs/listing-auto-market/run`
 - `/internal/stock-batch/v1/jobs/portfolio-settlement/run`
 - `/internal/stock-batch/v1/jobs/market-close/rollover`
 - `/internal/stock-batch/v1/jobs/corporate-actions/run`

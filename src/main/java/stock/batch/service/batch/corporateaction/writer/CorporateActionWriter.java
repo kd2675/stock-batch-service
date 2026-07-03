@@ -61,8 +61,8 @@ public class CorporateActionWriter {
         holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
     }
 
-    public void cancelOrder(long orderId, LocalDateTime updatedAt) {
-        jdbcTemplate.update(
+    public boolean cancelOrder(long orderId, LocalDateTime updatedAt) {
+        return jdbcTemplate.update(
                 """
                 update stock_order
                    set status = 'CANCELLED',
@@ -73,7 +73,7 @@ public class CorporateActionWriter {
                 """,
                 updatedAt,
                 orderId
-        );
+        ) > 0;
     }
 
     public int delistInstrument(String symbol, LocalDateTime updatedAt) {

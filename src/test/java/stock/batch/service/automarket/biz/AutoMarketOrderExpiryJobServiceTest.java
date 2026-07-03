@@ -3,6 +3,7 @@ package stock.batch.service.automarket.biz;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -11,6 +12,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
@@ -21,6 +23,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
+import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
@@ -35,6 +38,8 @@ class AutoMarketOrderExpiryJobServiceTest {
         SimulationClockService simulationClockService = mock(SimulationClockService.class);
         SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
+        });
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
@@ -53,7 +58,8 @@ class AutoMarketOrderExpiryJobServiceTest {
                 autoProfileBehaviorSupport,
                 simulationClockService,
                 simulationMarketSessionService,
-                transactionTemplate
+                transactionTemplate,
+                orderBookSymbolLock
         );
         ReflectionTestUtils.setField(service, "deadlockRetryMaxAttempts", 2);
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
@@ -64,12 +70,13 @@ class AutoMarketOrderExpiryJobServiceTest {
                 LocalDateTime.of(2026, 7, 3, 9, 0),
                 LocalDateTime.of(2026, 7, 3, 0, 0),
                 7200,
-                false,
+                true,
                 false,
                 0,
-                null,
-                null
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0)
         ));
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
@@ -86,5 +93,163 @@ class AutoMarketOrderExpiryJobServiceTest {
 
         assertThat(expiredCount).isEqualTo(3);
         verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expireOldAutoOrders(config, Map.of());
+    }
+
+    @Test
+    void expireAutoMarketOrders_deadlockRetryExhausted_skipsSymbolWithoutFailingJob() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        AutoMarketOrderExpiryService autoMarketOrderExpiryService = mock(AutoMarketOrderExpiryService.class);
+        AutoProfileBehaviorSupport autoProfileBehaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
+        });
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        AutoMarketConfig config = new AutoMarketConfig(
+                "STOCK001",
+                5,
+                100,
+                90,
+                100000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("70000.00"),
+                null
+        );
+        AutoMarketOrderExpiryJobService service = new AutoMarketOrderExpiryJobService(
+                autoMarketReader,
+                autoMarketOrderExpiryService,
+                autoProfileBehaviorSupport,
+                simulationClockService,
+                simulationMarketSessionService,
+                transactionTemplate,
+                orderBookSymbolLock
+        );
+        ReflectionTestUtils.setField(service, "deadlockRetryMaxAttempts", 2);
+        ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
+        when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
+                LocalDate.of(2026, 7, 3),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                7200,
+                true,
+                false,
+                0,
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0)
+        ));
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
+        when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
+        when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            TransactionCallback<Integer> callback = invocation.getArgument(0);
+            return callback.doInTransaction(transactionStatus);
+        });
+        when(autoMarketOrderExpiryService.expireOldAutoOrders(config, Map.of()))
+                .thenThrow(new CannotAcquireLockException("deadlock"));
+
+        int expiredCount = service.expireAutoMarketOrders();
+
+        assertThat(expiredCount).isZero();
+        verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expireOldAutoOrders(config, Map.of());
+    }
+
+    @Test
+    void expireAutoMarketOrders_symbolLockBusy_skipsSymbol() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        AutoMarketOrderExpiryService autoMarketOrderExpiryService = mock(AutoMarketOrderExpiryService.class);
+        AutoProfileBehaviorSupport autoProfileBehaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.empty();
+        AutoMarketConfig config = new AutoMarketConfig(
+                "STOCK001",
+                5,
+                100,
+                90,
+                100000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("70000.00"),
+                null
+        );
+        AutoMarketOrderExpiryJobService service = new AutoMarketOrderExpiryJobService(
+                autoMarketReader,
+                autoMarketOrderExpiryService,
+                autoProfileBehaviorSupport,
+                simulationClockService,
+                simulationMarketSessionService,
+                transactionTemplate,
+                orderBookSymbolLock
+        );
+        when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
+                LocalDate.of(2026, 7, 3),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                7200,
+                true,
+                false,
+                0,
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0)
+        ));
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
+        when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
+        when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
+
+        int expiredCount = service.expireAutoMarketOrders();
+
+        assertThat(expiredCount).isZero();
+        verify(autoMarketOrderExpiryService, never()).expireOldAutoOrders(any(), any());
+    }
+
+    @Test
+    void expireAutoMarketOrders_pausedSimulationClockSkipsExpiryEvenDuringRegularSession() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        AutoMarketOrderExpiryService autoMarketOrderExpiryService = mock(AutoMarketOrderExpiryService.class);
+        AutoProfileBehaviorSupport autoProfileBehaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
+        });
+        AutoMarketOrderExpiryJobService service = new AutoMarketOrderExpiryJobService(
+                autoMarketReader,
+                autoMarketOrderExpiryService,
+                autoProfileBehaviorSupport,
+                simulationClockService,
+                simulationMarketSessionService,
+                transactionTemplate,
+                orderBookSymbolLock
+        );
+        when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
+                LocalDate.of(2026, 7, 3),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                LocalDateTime.of(2026, 7, 3, 9, 0),
+                LocalDateTime.of(2026, 7, 3, 0, 0),
+                7200,
+                false,
+                false,
+                0,
+                null,
+                null
+        ));
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+
+        int expiredCount = service.expireAutoMarketOrders();
+
+        assertThat(expiredCount).isZero();
+        verify(autoMarketReader, never()).findEnabledConfigs();
+        verify(autoMarketOrderExpiryService, never()).expireOldAutoOrders(any(), any());
     }
 }

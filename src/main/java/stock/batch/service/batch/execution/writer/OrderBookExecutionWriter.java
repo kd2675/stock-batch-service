@@ -19,6 +19,25 @@ public class OrderBookExecutionWriter {
     private final ExecutionHoldingJdbcSupport holdingJdbcSupport;
     private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
+    public void lockAccountsForUpdate(long firstAccountId, long secondAccountId) {
+        if (firstAccountId == secondAccountId) {
+            lockAccountForUpdate(firstAccountId);
+            return;
+        }
+        long lowerAccountId = Math.min(firstAccountId, secondAccountId);
+        long higherAccountId = Math.max(firstAccountId, secondAccountId);
+        lockAccountForUpdate(lowerAccountId);
+        lockAccountForUpdate(higherAccountId);
+    }
+
+    private void lockAccountForUpdate(long accountId) {
+        jdbcTemplate.queryForList(
+                "select id from stock_account where id = ? for update",
+                Long.class,
+                accountId
+        );
+    }
+
     public void creditCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
             return;

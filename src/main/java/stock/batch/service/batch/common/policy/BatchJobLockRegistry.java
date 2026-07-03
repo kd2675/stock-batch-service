@@ -22,7 +22,7 @@ public class BatchJobLockRegistry {
     @Autowired
     public BatchJobLockRegistry(
             JdbcTemplate jdbcTemplate,
-            @Value("${stock.batch.job-lock.ttl-seconds:1800}") long lockTtlSeconds
+            @Value("${stock.batch.job-lock.ttl-seconds:180}") long lockTtlSeconds
     ) {
         this(jdbcTemplate, lockTtlSeconds, DEFAULT_LOCK_OWNER_PREFIX + UUID.randomUUID());
     }

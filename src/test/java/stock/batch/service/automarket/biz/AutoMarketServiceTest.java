@@ -19,6 +19,7 @@ import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,6 +38,12 @@ class AutoMarketServiceTest {
 
     @Autowired
     private AutoParticipantCashFlowService autoParticipantCashFlowService;
+
+    @Autowired
+    private AutoParticipantOrderScheduleService autoParticipantOrderScheduleService;
+
+    @Autowired
+    private AutoProfileBehaviorSupport autoProfileBehaviorSupport;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -64,6 +71,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant_profile_config");
         jdbcTemplate.update("delete from stock_auto_participant");
         jdbcTemplate.update("delete from stock_simulation_clock");
+        insertSimulationClock(7200);
 
         jdbcTemplate.update(
                 """
@@ -139,9 +147,9 @@ class AutoMarketServiceTest {
                   and a.user_key = 'stock-auto-001'
                 """);
         assertThat(firstRunOrderCount).isPositive();
-        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where symbol = '005930' and user_key = 'stock-auto-001'"))
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key = 'stock-auto-001'"))
                 .isEqualTo(1L);
-        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where symbol = '005930' and user_key = 'stock-auto-001' and last_run_at is not null and next_run_at > last_run_at and lease_owner is null and lease_until is null"))
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key = 'stock-auto-001' and last_run_at is not null and next_run_at > last_run_at and lease_owner is null and lease_until is null"))
                 .isEqualTo(1L);
 
         autoMarketService.runAutoMarketStep();
@@ -153,6 +161,172 @@ class AutoMarketServiceTest {
                 where o.symbol = '005930'
                   and a.user_key = 'stock-auto-001'
                 """)).isEqualTo(firstRunOrderCount);
+    }
+
+    @Test
+    void runAutoMarketStep_existingDueScheduleStillSeedsMissingParticipantSchedule() {
+        insertSimulationClock(7200);
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-003'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key = 'stock-auto-003'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key in ('stock-auto-001', 'stock-auto-002')");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        insertFundedAutoAccount("stock-auto-002", "50000000.00");
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_order_schedule(
+                    user_key, profile_type, next_run_at, last_run_at,
+                    lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                )
+                values ('stock-auto-001', 'NOISE_TRADER', TIMESTAMP '2025-12-31 23:59:59',
+                        null, null, null, 10, 50, current_timestamp, current_timestamp)
+                """
+        );
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key in ('stock-auto-001', 'stock-auto-002')"))
+                .isEqualTo(2L);
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key in ('stock-auto-001', 'stock-auto-002') and last_run_at is not null"))
+                .isEqualTo(2L);
+    }
+
+    @Test
+    void runAutoMarketStep_dueParticipantChoosesOnlyOneSymbolPerTick() {
+        insertSimulationClock(7200);
+        insertLaterOrderBookSymbol();
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol in ('005930', '999999')");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        LocalDateTime dueAt = LocalDateTime.of(2025, 12, 31, 23, 58);
+        insertDueSchedule("stock-auto-001", dueAt);
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                from stock_auto_participant_order_schedule
+                where user_key = 'stock-auto-001'
+                  and last_run_at = TIMESTAMP '2026-01-01 09:00:00'
+                """)).isEqualTo(1L);
+        assertThat(queryLong("""
+                select count(distinct o.symbol)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key = 'stock-auto-001'
+                   and o.symbol in ('005930', '999999')
+                """)).isEqualTo(1L);
+    }
+
+    @Test
+    void runAutoMarketStep_participantChoosesSymbolByProfileSignalWhenDueTimesTie() {
+        insertSimulationClock(7200);
+        insertLaterOrderBookSymbol();
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'MOMENTUM_FOLLOWER' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 1 where user_key = 'stock-auto-001' and symbol = '005930'");
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_symbol_config(user_key, symbol, enabled, intensity, updated_at)
+                values ('stock-auto-001', '999999', true, 10, current_timestamp)
+                """
+        );
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol in ('005930', '999999')");
+        jdbcTemplate.update("update stock_price set current_price = 65000.00, previous_close = 70000.00 where symbol = '005930'");
+        jdbcTemplate.update("update stock_price set current_price = 130000.00, previous_close = 120000.00 where symbol = '999999'");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        LocalDateTime dueAt = LocalDateTime.of(2025, 12, 31, 23, 59);
+        insertDueSchedule("stock-auto-001", dueAt);
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                from stock_auto_participant_order_schedule
+                where user_key = 'stock-auto-001'
+                  and last_run_at = TIMESTAMP '2026-01-01 09:00:00'
+                """)).isEqualTo(1L);
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key = 'stock-auto-001'
+                   and o.symbol = '999999'
+                """)).isPositive();
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key = 'stock-auto-001'
+                   and o.symbol = '005930'
+                """)).isZero();
+    }
+
+    @Test
+    void participantOrderSchedule_claimDoesNotAdvanceScheduleUntilComplete() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        Long accountId = queryLong("select id from stock_account where user_key = 'stock-auto-001'");
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_order_schedule(
+                    user_key, profile_type, next_run_at, last_run_at,
+                    lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                )
+                values ('stock-auto-001', 'NOISE_TRADER', ?, null, null, null, 10, 50, current_timestamp, current_timestamp)
+                """,
+                now.minusMinutes(1)
+        );
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                "stock-auto-001",
+                accountId,
+                10,
+                AutoParticipantProfileType.NOISE_TRADER,
+                null,
+                null,
+                null
+        );
+        var profilePolicies = autoProfileBehaviorSupport.policiesWithOverrides(List.of());
+
+        List<AutoParticipantStrategy> claimedStrategies = autoParticipantOrderScheduleService.claimDueStrategies(
+                List.of(strategy),
+                profilePolicies,
+                now
+        );
+
+        assertThat(claimedStrategies).containsExactly(strategy);
+        assertThat(queryLong("""
+                select count(*)
+                from stock_auto_participant_order_schedule
+                where user_key = 'stock-auto-001'
+                  and last_run_at is null
+                  and next_run_at = ?
+                  and lease_owner is not null
+                  and lease_until > ?
+                """, now.minusMinutes(1), now)).isEqualTo(1L);
+
+        int completed = autoParticipantOrderScheduleService.completeStrategies(
+                claimedStrategies,
+                profilePolicies,
+                now
+        );
+
+        assertThat(completed).isEqualTo(1);
+        assertThat(queryLong("""
+                select count(*)
+                from stock_auto_participant_order_schedule
+                where user_key = 'stock-auto-001'
+                  and last_run_at = ?
+                  and next_run_at > ?
+                  and lease_owner is null
+                  and lease_until is null
+                """, now, now)).isEqualTo(1L);
     }
 
     @Test
@@ -206,22 +380,22 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void reserveSellQuantity_closedAccount_returnsFalseWithoutReserving() {
+    void reserveSellQuantity_insufficientAvailableQuantity_returnsFalseWithoutReserving() {
         jdbcTemplate.update(
                 """
                 insert into stock_account(user_key, cash_balance, status, created_at, updated_at)
-                values ('closed-auto-seller', 0.00, 'CLOSED', current_timestamp, current_timestamp)
+                values ('limited-auto-seller', 0.00, 'ACTIVE', current_timestamp, current_timestamp)
                 """
         );
         jdbcTemplate.update(
                 """
                 insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
-                select id, '005930', 10, 0, 70000.00, current_timestamp
+                select id, '005930', 2, 0, 70000.00, current_timestamp
                 from stock_account
-                where user_key = 'closed-auto-seller'
+                where user_key = 'limited-auto-seller'
                 """
         );
-        Long accountId = queryLong("select id from stock_account where user_key = 'closed-auto-seller'");
+        Long accountId = queryLong("select id from stock_account where user_key = 'limited-auto-seller'");
 
         boolean reserved = autoMarketWriter.reserveSellQuantity(accountId, "005930", 3, LocalDateTime.now());
 
@@ -262,8 +436,8 @@ class AutoMarketServiceTest {
                         70000.00, 7, 0, 0.00, ?, ?)
                 """,
                 accountId,
-                LocalDateTime.now().toLocalDate().atStartOfDay().minusSeconds(31),
-                LocalDateTime.now().toLocalDate().atStartOfDay().minusSeconds(31)
+                LocalDateTime.of(2026, 1, 1, 8, 59, 29),
+                LocalDateTime.of(2026, 1, 1, 8, 59, 29)
         );
 
         listingAutoMarketJobService.runListingAutoMarket();
@@ -333,7 +507,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-scalper', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -45, CURRENT_DATE), DATEADD('SECOND', -45, CURRENT_DATE)
+                       70000.00, 1, 0, null, 70000.00, TIMESTAMP '2026-01-01 08:59:15', TIMESTAMP '2026-01-01 08:59:15'
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -346,7 +520,7 @@ class AutoMarketServiceTest {
                     reserved_cash, created_at, updated_at
                 )
                 select 'ttl-long-term', id, '005930', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING',
-                       70000.00, 1, 0, null, 70000.00, DATEADD('SECOND', -45, CURRENT_DATE), DATEADD('SECOND', -45, CURRENT_DATE)
+                       70000.00, 1, 0, null, 70000.00, TIMESTAMP '2026-01-01 08:59:15', TIMESTAMP '2026-01-01 08:59:15'
                 from stock_account
                 where user_key = 'stock-auto-002'
                 """
@@ -2082,7 +2256,7 @@ class AutoMarketServiceTest {
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         jdbcTemplate.update("""
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -2, CURRENT_DATE)
+                select id, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT', 'AUTO_MARKET', TIMESTAMP '2026-01-01 08:59:58'
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """);
@@ -2275,7 +2449,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('DAY', -29, CURRENT_TIMESTAMP)
+                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', TIMESTAMP '2025-12-03 09:00:00'
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -2295,7 +2469,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('DAY', -31, CURRENT_TIMESTAMP)
+                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', TIMESTAMP '2025-12-01 09:00:00'
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -2338,7 +2512,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
-                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', DATEADD('SECOND', -10, CURRENT_DATE)
+                select id, 'DEPOSIT', 120000.00, 'AUTO_PROFILE_RECURRING_DEPOSIT', 'AUTO_MARKET', TIMESTAMP '2026-01-01 08:59:50'
                 from stock_account
                 where user_key = 'stock-auto-001'
                 """
@@ -2410,8 +2584,80 @@ class AutoMarketServiceTest {
         return jdbcTemplate.queryForObject(sql, Long.class);
     }
 
+    private Long queryLong(String sql, Object... args) {
+        return jdbcTemplate.queryForObject(sql, Long.class, args);
+    }
+
     private String queryString(String sql) {
         return jdbcTemplate.queryForObject(sql, String.class);
+    }
+
+    private void insertSecondOrderBookSymbol() {
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(symbol, name, market, initial_price, issued_shares, tradable_shares, enabled, created_at, updated_at)
+                values ('000660', 'SK하이닉스 주문장', 'ORDERBOOK', 120000.00, 300, 300, true, current_timestamp, current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_price(symbol, current_price, previous_close, price_time, provider)
+                values ('000660', 120000.00, 120000.00, current_timestamp, 'test')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                values ('000660', true, 'OPEN', current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('000660', true, 5, 1, 15, current_timestamp)
+                """
+        );
+    }
+
+    private void insertLaterOrderBookSymbol() {
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(symbol, name, market, initial_price, issued_shares, tradable_shares, enabled, created_at, updated_at)
+                values ('999999', '후순위 주문장', 'ORDERBOOK', 120000.00, 300, 300, true, current_timestamp, current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_price(symbol, current_price, previous_close, price_time, provider)
+                values ('999999', 120000.00, 120000.00, current_timestamp, 'test')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                values ('999999', true, 'OPEN', current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('999999', true, 5, 1, 15, current_timestamp)
+                """
+        );
+    }
+
+    private void insertDueSchedule(String userKey, LocalDateTime nextRunAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_order_schedule(
+                    user_key, profile_type, next_run_at, last_run_at,
+                    lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                )
+                values (?, 'NOISE_TRADER', ?, null, null, null, 10, 50, current_timestamp, current_timestamp)
+                """,
+                userKey,
+                nextRunAt
+        );
     }
 
     private void insertFundedAutoAccount(String userKey, String amount) {
@@ -2499,9 +2745,10 @@ class AutoMarketServiceTest {
                     accumulated_real_seconds, running, last_started_at, last_heartbeat_at,
                     timezone, created_at, updated_at
                 )
-                values ('DEFAULT', DATE '2026-01-01', ?, 0, false, null, null, 'Asia/Seoul', current_timestamp, current_timestamp)
+                values ('DEFAULT', DATE '2026-01-01', ?, ?, true, current_timestamp, current_timestamp, 'Asia/Seoul', current_timestamp, current_timestamp)
                 """,
-                realSecondsPerSimulationDay
+                realSecondsPerSimulationDay,
+                Math.max(1, realSecondsPerSimulationDay) * 3L / 8L
         );
     }
 

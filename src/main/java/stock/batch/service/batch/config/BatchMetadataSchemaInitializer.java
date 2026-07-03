@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.core.io.Resource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
@@ -16,6 +18,7 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 public class BatchMetadataSchemaInitializer {
 
     @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE)
     public ApplicationRunner batchMetadataSchemaApplicationRunner(
             @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_DATA_SOURCE) DataSource dataSource,
             @Value("${stock.batch.repository.schema.initialize:false}") boolean initialize,

@@ -1,9 +1,14 @@
 package stock.batch.service.batch.automarket.writer;
 
 import java.math.BigDecimal;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -57,7 +62,14 @@ public class AutoMarketWriter {
         if (remaining <= 0) {
             return;
         }
-        holdingReservationJdbcSupport.releaseReservedSellQuantity(order.accountId(), order.symbol(), remaining, updatedAt);
+        releaseReservedSellQuantity(order.accountId(), order.symbol(), remaining, updatedAt);
+    }
+
+    public void releaseReservedSellQuantity(long accountId, String symbol, long quantity, LocalDateTime updatedAt) {
+        if (quantity <= 0) {
+            return;
+        }
+        holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
     }
 
     public boolean cancelOpenOrder(AutoOrder order, LocalDateTime cancelledAt) {
@@ -103,12 +115,6 @@ public class AutoMarketWriter {
                 where account_id = ?
                   and symbol = ?
                   and quantity - reserved_quantity >= ?
-                  and exists (
-                      select 1
-                      from stock_account a
-                      where a.id = stock_holding.account_id
-                        and a.status = 'ACTIVE'
-                  )
                 """,
                 quantity,
                 updatedAt,
@@ -129,7 +135,22 @@ public class AutoMarketWriter {
             BigDecimal reservedCash,
             LocalDateTime createdAt
     ) {
-        int updatedRows = jdbcTemplate.update(
+        return insertLimitOrders(List.of(new LimitOrderInsert(
+                clientOrderId,
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                reservedCash
+        )), createdAt) == 1;
+    }
+
+    public int insertLimitOrders(List<LimitOrderInsert> orders, LocalDateTime createdAt) {
+        if (orders.isEmpty()) {
+            return 0;
+        }
+        int[] updatedRows = jdbcTemplate.batchUpdate(
                 """
                 insert into stock_order(
                     client_order_id, account_id, symbol, market_type, side, order_type, status,
@@ -138,16 +159,44 @@ public class AutoMarketWriter {
                 )
                 values (?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)
                 """,
-                clientOrderId,
-                accountId,
-                symbol,
-                side,
-                price,
-                quantity,
-                reservedCash,
-                createdAt,
-                createdAt
+                new BatchPreparedStatementSetter() {
+                    @Override
+                    public void setValues(PreparedStatement ps, int i) throws SQLException {
+                        LimitOrderInsert order = orders.get(i);
+                        ps.setString(1, order.clientOrderId());
+                        ps.setLong(2, order.accountId());
+                        ps.setString(3, order.symbol());
+                        ps.setString(4, order.side());
+                        ps.setBigDecimal(5, order.price());
+                        ps.setLong(6, order.quantity());
+                        ps.setBigDecimal(7, order.reservedCash());
+                        ps.setObject(8, createdAt);
+                        ps.setObject(9, createdAt);
+                    }
+
+                    @Override
+                    public int getBatchSize() {
+                        return orders.size();
+                    }
+                }
         );
-        return updatedRows > 0;
+        int insertedCount = 0;
+        for (int updatedRow : updatedRows) {
+            if (updatedRow > 0 || updatedRow == Statement.SUCCESS_NO_INFO) {
+                insertedCount++;
+            }
+        }
+        return insertedCount;
+    }
+
+    public record LimitOrderInsert(
+            String clientOrderId,
+            long accountId,
+            String symbol,
+            String side,
+            BigDecimal price,
+            long quantity,
+            BigDecimal reservedCash
+    ) {
     }
 }

@@ -32,7 +32,7 @@
 
 - `MarketDataRefreshScheduler`: 관심/보유/미체결 종목 가격 갱신, Redis 최신가/채널 발행
 - `AutoParticipantCashFlowScheduler`: 자동 참여자 주기 입금을 `stock_account_cash_flow`와 `stock_account.cash_balance`에 반영
-- `AutoMarketScheduler`: DB에 등록된 자동 참여자가 실제 `stock_order` 원장에 지정가 주문을 넣고 내부 주문장 체결을 실행
+- `AutoMarketScheduler`: 자동 참여자 주문 생성, 자동장 미체결 주문 만료, 상장주관사 주문 공급 job을 실행
 - `MarketPriceProvider`: 실제 시세 provider 교체 지점. 현재 기본값은 `stock.batch.market-data.provider=mock`
 - `KisMarketPriceProvider`: `stock.batch.market-data.provider=kis`일 때 KIS OpenAPI 국내주식 현재가 시세를 호출
 - `VirtualPriceExecutionScheduler`: `market_type=VIRTUAL_PRICE` 미체결 주문을 현재가 기준으로 체결
@@ -141,6 +141,11 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
 - `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
+- `stock.batch.auto-market.generation-participant-chunk-size`: 한 트랜잭션에서 주문 생성까지 처리할 자동 참여자 수입니다. 기본값은 25입니다.
+- `stock.batch.auto-market.generation-lease-seconds`: 주문 생성 대상으로 claim한 참여자-종목 스케줄의 lease 시간입니다. 주문 생성 실패 시 lease 만료 후 재시도할 수 있게 둡니다.
+- `stock.batch.auto-market.generation-due-limit-per-symbol`: 한 회차에서 종목별로 조회할 주문 생성 대상 최대 수입니다. 기본값은 100입니다.
+- `stock.batch.auto-market.deadlock-retry-max-attempts` / `deadlock-retry-backoff-ms`: 자동장 주문 생성 중 계좌/보유 예약 update에서 deadlock이 발생했을 때 같은 chunk 트랜잭션을 짧게 재시도하는 횟수와 backoff입니다.
+- `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 대상 종목 task를 처리하는 execution thread pool입니다. DB write 경합을 줄이기 위해 실제 동시성은 종목별 Redis symbol lock으로 제한합니다.
 - `stock.batch.auto-market-order-expiry.enabled`: 자동장이 낸 미체결 주문 만료 job 활성화 여부
 - `stock.batch.auto-market-order-expiry.fixed-delay-ms`: 자동장 미체결 주문 만료 검사 주기
 - `stock.batch.auto-market-order-expiry.expiry-chunk-limit`: 한 회차에서 취소할 자동장 만료 주문 후보 최대 수
@@ -160,13 +165,13 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.signal.fixed-delay-ms`: DB signal 큐 폴링 간격. 기본값은 1000ms입니다.
 - `stock.batch.signal.chunk-limit`: 한 번의 폴링에서 처리할 최대 signal 수. 기본값은 20건입니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
-- `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 1800초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 합니다.
+- `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 180초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 하며, heartbeat가 정상 갱신하므로 정상 실행 중인 긴 job은 계속 락을 연장합니다.
 - `stock.batch.job-lock.heartbeat-interval-seconds`: 실행 중인 batch 서버가 자기 소유 DB 락의 `locked_until`을 연장하는 주기입니다. 기본값은 30초이며 `ttl-seconds`보다 충분히 짧게 둬야 정상 실행 중인 job을 다른 서버가 만료 락으로 가져가지 않습니다.
 - `stock.batch.scheduler-pools.execution.pool-size`: 주문장/현재가 체결 job 전용 scheduler pool 크기. 기본값은 2입니다. 자동장 주문 생성이 오래 걸려도 체결 job이 실행 기회를 잃지 않도록 분리합니다.
 - `stock.batch.scheduler-pools.auto-market.pool-size`: 자동 참여자 주문 생성, 자동장 주문 만료, 상장주관사 주문 공급 전용 scheduler pool 크기. 기본값은 1입니다. 같은 주문/계좌/보유 테이블을 쓰므로 기본은 단일 실행을 유지합니다.
 - `stock.batch.scheduler-pools.maintenance.pool-size`: 시세 갱신, 기업 이벤트, 월급 지급, 장마감 감지 등 유지보수성 job scheduler pool 크기. 기본값은 2입니다.
 - `stock.batch.scheduler-pools.simulation-clock.pool-size`: 시뮬레이션 시간 heartbeat 전용 scheduler pool 크기. 기본값은 1입니다. 긴 배치 작업 때문에 시뮬레이션 시간이 늦게 누적되지 않도록 별도 분리합니다.
-- `stock.batch.scheduler-pools.shutdown-await-seconds`: 전용 scheduler pool 종료 대기 시간. 기본값은 60초입니다.
+- `stock.batch.scheduler-pools.shutdown-await-seconds`: 전용 scheduler pool 종료 대기 시간. 기본값은 120초입니다.
 - `stock.batch.jdbc.query-timeout-seconds`: 업무 DB용 `JdbcTemplate` statement query timeout입니다. 기본값은 30초이며 0 이하 값은 시작 시 거부합니다.
 - `stock.batch.execution.scan-limit`: 한 번의 체결 job 실행에서 처리할 최대 체결 횟수입니다. 기본값은 300입니다.
 - `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 잠글 매수 후보 수입니다. 기본값은 20입니다. `EXISTS ... FOR UPDATE`로 매수/매도 범위를 한 번에 잠그지 않고, 매수 후보를 짧게 잠근 뒤 최우선 매도를 별도로 찾습니다.
@@ -178,9 +183,9 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
-- `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 60초입니다.
-- `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 70초입니다.
-- `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 custom job 완료를 기다리는 시간. 기본값은 60초입니다.
+- `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 120초입니다.
+- `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 130초입니다.
+- `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 custom job 완료를 기다리는 시간. 기본값은 120초입니다.
 - 종료가 시작되면 새 수동/스케줄 job은 `SKIPPED`로 거절하고, 이미 실행 중인 job은 위 timeout까지 완료를 기다립니다. 아직 시간이 오지 않은 다음 스케줄 job을 종료 전에 강제로 실행하지는 않습니다.
 - 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
 - `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
@@ -238,7 +243,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 현금배당 기업 이벤트는 배당락일에 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다. 현금배당 자체는 `stock_price`, `stock_price_tick`을 강제로 조정하지 않습니다.
 - 무상증자와 주식배당 기업 이벤트는 배당락일에 이론권리락가격을 반영하고 현재 보유수량 기준으로 신주 entitlement를 만듭니다. 신주상장일에는 `issued_shares`, `tradable_shares`, 보유수량을 늘리고 평균단가를 낮춘 뒤 entitlement를 `PAID`로 전이합니다.
 - 체결 수수료와 매도 거래세는 체결 단위로 계산해 `stock_execution`에 `fee_amount`, `tax_amount`, `net_amount`, `realized_profit`으로 기록합니다. 매수 평균단가는 수수료 포함 원가 기준입니다.
-- 자동장 job은 자동 참여자 주문 생성 후 같은 내부 주문장 체결 엔진을 실행하므로, 브라우저 localStorage나 프론트 전용 가짜 주문 상태에 의존하지 않습니다.
+- 자동장 job은 자동 참여자 주문을 실제 `stock_order` 원장에 공급합니다. 내부 주문장 체결은 별도 `order-book-execution` job이 처리하므로, 브라우저 localStorage나 프론트 전용 가짜 주문 상태에 의존하지 않습니다.
 - 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.
 - 주문장 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
 - 내부 주문장 모드는 자전거래 방지를 위해 같은 사용자끼리의 매수/매도 주문은 매칭하지 않습니다.

@@ -28,6 +28,8 @@ class InternalOrderBookExecutionServiceTest {
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("delete from stock_price_tick");
+        jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_execution");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
@@ -85,6 +87,8 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("69000.00"));
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
+        assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930' and provider = 'internal-order-book'"))
+                .isEqualTo(1L);
     }
 
     @Test

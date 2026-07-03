@@ -11,7 +11,7 @@ public class StockBatchSchedulerConfig {
     @Bean(name = StockBatchSchedulerNames.EXECUTION)
     public ThreadPoolTaskScheduler stockBatchExecutionTaskScheduler(
             @Value("${stock.batch.scheduler-pools.execution.pool-size:2}") int poolSize,
-            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:60}") int shutdownAwaitSeconds
+            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:120}") int shutdownAwaitSeconds
     ) {
         return taskScheduler("stock-batch-execution-", poolSize, shutdownAwaitSeconds);
     }
@@ -19,7 +19,7 @@ public class StockBatchSchedulerConfig {
     @Bean(name = StockBatchSchedulerNames.AUTO_MARKET)
     public ThreadPoolTaskScheduler stockBatchAutoMarketTaskScheduler(
             @Value("${stock.batch.scheduler-pools.auto-market.pool-size:1}") int poolSize,
-            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:60}") int shutdownAwaitSeconds
+            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:120}") int shutdownAwaitSeconds
     ) {
         return taskScheduler("stock-batch-auto-market-", poolSize, shutdownAwaitSeconds);
     }
@@ -27,7 +27,7 @@ public class StockBatchSchedulerConfig {
     @Bean(name = StockBatchSchedulerNames.MAINTENANCE)
     public ThreadPoolTaskScheduler stockBatchMaintenanceTaskScheduler(
             @Value("${stock.batch.scheduler-pools.maintenance.pool-size:2}") int poolSize,
-            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:60}") int shutdownAwaitSeconds
+            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:120}") int shutdownAwaitSeconds
     ) {
         return taskScheduler("stock-batch-maintenance-", poolSize, shutdownAwaitSeconds);
     }
@@ -35,7 +35,7 @@ public class StockBatchSchedulerConfig {
     @Bean(name = StockBatchSchedulerNames.SIMULATION_CLOCK)
     public ThreadPoolTaskScheduler stockBatchSimulationClockTaskScheduler(
             @Value("${stock.batch.scheduler-pools.simulation-clock.pool-size:1}") int poolSize,
-            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:60}") int shutdownAwaitSeconds
+            @Value("${stock.batch.scheduler-pools.shutdown-await-seconds:120}") int shutdownAwaitSeconds
     ) {
         return taskScheduler("stock-batch-simulation-clock-", poolSize, shutdownAwaitSeconds);
     }

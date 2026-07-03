@@ -79,7 +79,7 @@ public class CorporateActionReader {
                   from stock_corporate_action_entitlement
                  where action_id = :actionId
                    and status = :status
-                 order by id asc
+                 order by account_id asc, id asc
                 """
         )
                 .param("actionId", actionId)
@@ -201,7 +201,7 @@ public class CorporateActionReader {
                  where action_id = :actionId
                    and status = :status
                    and share_quantity > 0
-                 order by id asc
+                 order by account_id asc, symbol asc, id asc
                 """
         )
                 .param("actionId", actionId)
