@@ -19,18 +19,6 @@ public class OrderBookExecutionWriter {
     private final ExecutionHoldingJdbcSupport holdingJdbcSupport;
     private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
-    public void debitCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
-            return;
-        }
-        jdbcTemplate.update(
-                "update stock_account set cash_balance = cash_balance - ?, updated_at = ? where id = ?",
-                amount,
-                updatedAt,
-                accountId
-        );
-    }
-
     public void creditCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
             return;
@@ -38,6 +26,18 @@ public class OrderBookExecutionWriter {
         jdbcTemplate.update(
                 "update stock_account set cash_balance = cash_balance + ?, updated_at = ? where id = ?",
                 amount,
+                updatedAt,
+                accountId
+        );
+    }
+
+    public void adjustCash(long accountId, BigDecimal deltaAmount, LocalDateTime updatedAt) {
+        if (deltaAmount.compareTo(BigDecimal.ZERO) == 0) {
+            return;
+        }
+        jdbcTemplate.update(
+                "update stock_account set cash_balance = cash_balance + ?, updated_at = ? where id = ?",
+                deltaAmount,
                 updatedAt,
                 accountId
         );
@@ -65,15 +65,13 @@ public class OrderBookExecutionWriter {
         );
     }
 
-    public void deleteEmptyHolding(long accountId, String symbol) {
-        holdingJdbcSupport.deleteEmptyHolding(accountId, symbol);
-    }
-
-    public void insertExecution(
+    public void insertExecutions(
             OrderBookOrderRow order,
             long quantity,
             BigDecimal executionPrice,
             ExecutionCostCalculator.ExecutionAmounts amounts,
+            OrderBookOrderRow counterOrder,
+            ExecutionCostCalculator.ExecutionAmounts counterAmounts,
             LocalDateTime executedAt
     ) {
         jdbcTemplate.update(
@@ -83,7 +81,8 @@ public class OrderBookExecutionWriter {
                   gross_amount, fee_amount, tax_amount, net_amount, realized_profit,
                   source, executed_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INTERNAL_ORDER_BOOK', ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INTERNAL_ORDER_BOOK', ?),
+                       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INTERNAL_ORDER_BOOK', ?)
                 """,
                 order.id(),
                 order.accountId(),
@@ -96,6 +95,18 @@ public class OrderBookExecutionWriter {
                 amounts.taxAmount(),
                 amounts.netAmount(),
                 amounts.realizedProfit(),
+                executedAt,
+                counterOrder.id(),
+                counterOrder.accountId(),
+                counterOrder.symbol(),
+                counterOrder.side(),
+                quantity,
+                executionPrice,
+                counterAmounts.grossAmount(),
+                counterAmounts.feeAmount(),
+                counterAmounts.taxAmount(),
+                counterAmounts.netAmount(),
+                counterAmounts.realizedProfit(),
                 executedAt
         );
     }

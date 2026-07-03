@@ -1,19 +1,31 @@
 package stock.batch.service.scheduler;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "stock.batch.auto-market", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AutoMarketScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
+    private final SimulationMarketSessionService simulationMarketSessionService;
+
+    @Value("${stock.batch.auto-market.enabled:true}")
+    private boolean autoMarketSchedulerConfigured = true;
+
+    @Value("${stock.batch.auto-market-order-expiry.enabled:true}")
+    private boolean autoMarketOrderExpirySchedulerConfigured = true;
+
+    @Value("${stock.batch.listing-auto-market.enabled:true}")
+    private boolean listingAutoMarketSchedulerConfigured = true;
 
     @Scheduled(
             scheduler = StockBatchSchedulerNames.AUTO_MARKET,
@@ -21,6 +33,41 @@ public class AutoMarketScheduler {
             fixedDelayString = "${stock.batch.auto-market.fixed-delay-ms:1000}"
     )
     public void runAutoMarket() {
-        scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, true, stockBatchJobLauncher::runAutoMarket);
+        if (!simulationMarketSessionService.isRegularSession()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, autoMarketSchedulerConfigured, stockBatchJobLauncher::runAutoMarket);
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.auto-market-order-expiry.initial-delay-ms:7000}",
+            fixedDelayString = "${stock.batch.auto-market-order-expiry.fixed-delay-ms:10000}"
+    )
+    public void expireAutoMarketOrders() {
+        if (!simulationMarketSessionService.isRegularSession()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(
+                AutoMarketOrderExpiryJob.JOB_NAME,
+                autoMarketOrderExpirySchedulerConfigured,
+                stockBatchJobLauncher::expireAutoMarketOrders
+        );
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.listing-auto-market.initial-delay-ms:8000}",
+            fixedDelayString = "${stock.batch.listing-auto-market.fixed-delay-ms:10000}"
+    )
+    public void runListingAutoMarket() {
+        if (!simulationMarketSessionService.isRegularSession()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(
+                ListingAutoMarketJob.JOB_NAME,
+                listingAutoMarketSchedulerConfigured,
+                stockBatchJobLauncher::runListingAutoMarket
+        );
     }
 }

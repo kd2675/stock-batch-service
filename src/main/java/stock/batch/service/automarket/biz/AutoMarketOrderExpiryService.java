@@ -7,6 +7,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.automarket.profile.AutoProfileBehavior;
@@ -29,6 +30,9 @@ class AutoMarketOrderExpiryService {
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
 
+    @Value("${stock.batch.auto-market-order-expiry.expiry-chunk-limit:100}")
+    private int expiryChunkLimit;
+
     int expireOldAutoOrders(
             AutoMarketConfig config,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
@@ -40,10 +44,13 @@ class AutoMarketOrderExpiryService {
         LocalDateTime candidateThreshold = thresholdsByProfile.values().stream()
                 .max(LocalDateTime::compareTo)
                 .orElse(now);
-        int candidateLimit = Math.max(
-                EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE,
-                thresholdsByProfile.size() * EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE
-        );
+        int candidateLimit = Math.max(1, Math.min(
+                Math.max(
+                        EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE,
+                        thresholdsByProfile.size() * EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE
+                ),
+                expiryChunkLimit
+        ));
         for (AutoOrder order : autoMarketOrderReader.findExpiredAutoOrders(config, candidateThreshold, candidateLimit)) {
             LocalDateTime threshold = thresholdsByProfile.getOrDefault(order.profileType(), candidateThreshold);
             if (order.createdAt() != null && !order.createdAt().isBefore(threshold)) {

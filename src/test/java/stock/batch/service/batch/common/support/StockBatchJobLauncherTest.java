@@ -4,18 +4,24 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
 import stock.batch.service.automarket.biz.AutoMarketService;
+import stock.batch.service.automarket.biz.AutoMarketOrderExpiryJobService;
+import stock.batch.service.automarket.biz.ListingAutoMarketJobService;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
+import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.corporateaction.biz.CorporateActionService;
 import stock.batch.service.execution.biz.InternalOrderBookExecutionService;
 import stock.batch.service.execution.biz.OrderExecutionService;
+import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
 import stock.batch.service.settlement.biz.PortfolioSettlementService;
@@ -43,8 +49,11 @@ class StockBatchJobLauncherTest {
     private final PortfolioSettlementService portfolioSettlementService = mock(PortfolioSettlementService.class);
     private final AutoParticipantCashFlowService autoParticipantCashFlowService = mock(AutoParticipantCashFlowService.class);
     private final AutoMarketService autoMarketService = mock(AutoMarketService.class);
+    private final AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService = mock(AutoMarketOrderExpiryJobService.class);
+    private final ListingAutoMarketJobService listingAutoMarketJobService = mock(ListingAutoMarketJobService.class);
     private final CorporateActionService corporateActionService = mock(CorporateActionService.class);
     private final MarketCloseRolloverService marketCloseRolloverService = mock(MarketCloseRolloverService.class);
+    private final HoldingCleanupService holdingCleanupService = mock(HoldingCleanupService.class);
     private final StockBatchJobExecutionRecord executionRecord = mock(StockBatchJobExecutionRecord.class);
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder = mock(StockBatchJobRepositoryRecorder.class);
 
@@ -54,10 +63,13 @@ class StockBatchJobLauncherTest {
             new VirtualPriceExecutionJob(orderExecutionService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
-            new AutoMarketJob(autoMarketService, internalOrderBookExecutionService),
+            new AutoMarketJob(autoMarketService),
+            new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
+            new ListingAutoMarketJob(listingAutoMarketJobService),
             new PortfolioSettlementJob(portfolioSettlementService),
             new MarketCloseRolloverJob(marketCloseRolloverService),
-            new CorporateActionJob(corporateActionService)
+            new CorporateActionJob(corporateActionService),
+            new HoldingCleanupJob(holdingCleanupService)
     );
 
     StockBatchJobLauncherTest() {
@@ -139,6 +151,18 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
+    void cancelOpenOrderBookOrders_symbolManualRun_invokesOpenOrderCancellationForSymbol() {
+        when(marketCloseRolloverService.cancelOpenOrderBookOrders("MC001")).thenReturn(2);
+
+        var response = stockBatchJobLauncher.cancelOpenOrderBookOrders("MC001");
+
+        assertThat(response.job()).isEqualTo("market-close-rollover");
+        assertThat(response.executionMode()).isEqualTo("halt-open-order-cancel:MC001");
+        assertThat(response.processedCount()).isEqualTo(2);
+        verify(marketCloseRolloverService).cancelOpenOrderBookOrders("MC001");
+    }
+
+    @Test
     void applyCorporateActions_manualRun_invokesCorporateActionService() {
         when(corporateActionService.applyDueCorporateActions()).thenReturn(3);
 
@@ -148,6 +172,18 @@ class StockBatchJobLauncherTest {
         assertThat(response.executionMode()).isEqualTo("order-book");
         assertThat(response.processedCount()).isEqualTo(3);
         verify(corporateActionService).applyDueCorporateActions();
+    }
+
+    @Test
+    void cleanupEmptyHoldings_manualRun_invokesHoldingCleanup() {
+        when(holdingCleanupService.cleanupEmptyHoldings()).thenReturn(9);
+
+        var response = stockBatchJobLauncher.cleanupEmptyHoldings();
+
+        assertThat(response.job()).isEqualTo("holding-cleanup");
+        assertThat(response.executionMode()).isEqualTo("maintenance");
+        assertThat(response.processedCount()).isEqualTo(9);
+        verify(holdingCleanupService).cleanupEmptyHoldings();
     }
 
     @Test
@@ -180,17 +216,44 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
-    void runAutoMarket_generatesOrdersAndRunsInternalOrderBook() {
+    void runAutoMarket_generatesOrdersWithoutInlineExecution() {
         when(autoMarketService.runAutoMarketStep()).thenReturn(7);
-        when(internalOrderBookExecutionService.executeEligibleOrders()).thenReturn(3);
 
         var response = stockBatchJobLauncher.runAutoMarket();
 
         assertThat(response.job()).isEqualTo("auto-market");
         assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(10);
+        assertThat(response.processedCount()).isEqualTo(7);
         verify(autoMarketService).runAutoMarketStep();
-        verify(internalOrderBookExecutionService).executeEligibleOrders();
+        verify(autoMarketOrderExpiryJobService, never()).expireAutoMarketOrders();
+        verify(listingAutoMarketJobService, never()).runListingAutoMarket();
+        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
+    }
+
+    @Test
+    void expireAutoMarketOrders_manualRun_invokesExpiryJob() {
+        when(autoMarketOrderExpiryJobService.expireAutoMarketOrders()).thenReturn(4);
+
+        var response = stockBatchJobLauncher.expireAutoMarketOrders();
+
+        assertThat(response.job()).isEqualTo("auto-market-order-expiry");
+        assertThat(response.executionMode()).isEqualTo("order-book");
+        assertThat(response.processedCount()).isEqualTo(4);
+        verify(autoMarketOrderExpiryJobService).expireAutoMarketOrders();
+        verify(autoMarketService, never()).runAutoMarketStep();
+    }
+
+    @Test
+    void runListingAutoMarket_manualRun_invokesListingAutoMarketJob() {
+        when(listingAutoMarketJobService.runListingAutoMarket()).thenReturn(5);
+
+        var response = stockBatchJobLauncher.runListingAutoMarket();
+
+        assertThat(response.job()).isEqualTo("listing-auto-market");
+        assertThat(response.executionMode()).isEqualTo("order-book");
+        assertThat(response.processedCount()).isEqualTo(5);
+        verify(listingAutoMarketJobService).runListingAutoMarket();
+        verify(autoMarketService, never()).runAutoMarketStep();
     }
 
     @Test
@@ -274,10 +337,13 @@ class StockBatchJobLauncherTest {
                 new VirtualPriceExecutionJob(orderExecutionService),
                 new OrderBookExecutionJob(internalOrderBookExecutionService),
                 new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
-                new AutoMarketJob(autoMarketService, internalOrderBookExecutionService),
+                new AutoMarketJob(autoMarketService),
+                new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
+                new ListingAutoMarketJob(listingAutoMarketJobService),
                 new PortfolioSettlementJob(portfolioSettlementService),
                 new MarketCloseRolloverJob(marketCloseRolloverService),
-                new CorporateActionJob(corporateActionService)
+                new CorporateActionJob(corporateActionService),
+                new HoldingCleanupJob(holdingCleanupService)
         );
     }
 

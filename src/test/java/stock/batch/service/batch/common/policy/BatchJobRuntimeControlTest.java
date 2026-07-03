@@ -51,6 +51,19 @@ class BatchJobRuntimeControlTest {
         assertThat(status.runtimeEnabled()).isTrue();
         assertThat(status.effectiveEnabled()).isFalse();
         assertThat(runtimeEnabled(jdbcTemplate, "market-close-rollover")).isTrue();
+        assertThat(schedulerConfigured(jdbcTemplate, "market-close-rollover")).isFalse();
+    }
+
+    @Test
+    void status_schedulerConfiguredValueChanges_synchronizesStoredConfiguredFlag() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        BatchJobRuntimeControl runtimeControl = new BatchJobRuntimeControl(jdbcTemplate);
+
+        assertThat(runtimeControl.status("auto-market", false).schedulerConfigured()).isFalse();
+        assertThat(schedulerConfigured(jdbcTemplate, "auto-market")).isFalse();
+
+        assertThat(runtimeControl.status("auto-market", true).schedulerConfigured()).isTrue();
+        assertThat(schedulerConfigured(jdbcTemplate, "auto-market")).isTrue();
     }
 
     @Test
@@ -80,6 +93,14 @@ class BatchJobRuntimeControlTest {
     private Boolean runtimeEnabled(JdbcTemplate jdbcTemplate, String jobName) {
         return jdbcTemplate.queryForObject(
                 "select runtime_enabled from stock_batch_job_control where job_name = ?",
+                Boolean.class,
+                jobName
+        );
+    }
+
+    private Boolean schedulerConfigured(JdbcTemplate jdbcTemplate, String jobName) {
+        return jdbcTemplate.queryForObject(
+                "select scheduler_configured from stock_batch_job_control where job_name = ?",
                 Boolean.class,
                 jobName
         );

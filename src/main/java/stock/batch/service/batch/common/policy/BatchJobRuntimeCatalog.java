@@ -3,10 +3,13 @@ package stock.batch.service.batch.common.policy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
+import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
@@ -30,9 +33,12 @@ public class BatchJobRuntimeCatalog {
             @Value("${stock.batch.order-book-execution.enabled:true}") boolean orderBookExecutionConfigured,
             @Value("${stock.batch.corporate-actions.enabled:true}") boolean corporateActionsConfigured,
             @Value("${stock.batch.auto-market.enabled:true}") boolean autoMarketConfigured,
+            @Value("${stock.batch.auto-market-order-expiry.enabled:true}") boolean autoMarketOrderExpiryConfigured,
+            @Value("${stock.batch.listing-auto-market.enabled:true}") boolean listingAutoMarketConfigured,
             @Value("${stock.batch.auto-participant-cash-flow.enabled:true}") boolean autoParticipantCashFlowConfigured,
             @Value("${stock.batch.market-close.enabled:true}") boolean marketCloseConfigured,
-            @Value("${stock.batch.settlement.enabled:true}") boolean settlementConfigured
+            @Value("${stock.batch.settlement.enabled:true}") boolean settlementConfigured,
+            @Value("${stock.batch.holding-cleanup.enabled:true}") boolean holdingCleanupConfigured
     ) {
         this.batchJobRuntimeControl = batchJobRuntimeControl;
         this.definitions = createDefinitions(
@@ -41,9 +47,12 @@ public class BatchJobRuntimeCatalog {
                 orderBookExecutionConfigured,
                 corporateActionsConfigured,
                 autoMarketConfigured,
+                autoMarketOrderExpiryConfigured,
+                listingAutoMarketConfigured,
                 autoParticipantCashFlowConfigured,
                 marketCloseConfigured,
-                settlementConfigured
+                settlementConfigured,
+                holdingCleanupConfigured
         );
     }
 
@@ -100,9 +109,12 @@ public class BatchJobRuntimeCatalog {
             boolean orderBookExecutionConfigured,
             boolean corporateActionsConfigured,
             boolean autoMarketConfigured,
+            boolean autoMarketOrderExpiryConfigured,
+            boolean listingAutoMarketConfigured,
             boolean autoParticipantCashFlowConfigured,
             boolean marketCloseConfigured,
-            boolean settlementConfigured
+            boolean settlementConfigured,
+            boolean holdingCleanupConfigured
     ) {
         Map<String, RuntimeDefinition> createdDefinitions = new LinkedHashMap<>();
         put(createdDefinitions, MarketDataRefreshJob.JOB_NAME, marketDataConfigured);
@@ -110,9 +122,12 @@ public class BatchJobRuntimeCatalog {
         put(createdDefinitions, OrderBookExecutionJob.JOB_NAME, orderBookExecutionConfigured);
         put(createdDefinitions, CorporateActionJob.JOB_NAME, corporateActionsConfigured);
         put(createdDefinitions, AutoMarketJob.JOB_NAME, autoMarketConfigured);
+        put(createdDefinitions, AutoMarketOrderExpiryJob.JOB_NAME, autoMarketOrderExpiryConfigured);
+        put(createdDefinitions, ListingAutoMarketJob.JOB_NAME, listingAutoMarketConfigured);
         put(createdDefinitions, AutoParticipantCashFlowJob.JOB_NAME, autoParticipantCashFlowConfigured);
         put(createdDefinitions, MarketCloseRolloverJob.JOB_NAME, marketCloseConfigured);
         put(createdDefinitions, PortfolioSettlementJob.JOB_NAME, settlementConfigured);
+        put(createdDefinitions, HoldingCleanupJob.JOB_NAME, holdingCleanupConfigured);
         return Collections.unmodifiableMap(createdDefinitions);
     }
 

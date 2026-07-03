@@ -4,7 +4,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -14,7 +16,8 @@ import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
-import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 import java.time.LocalDateTime;
 
@@ -29,25 +32,63 @@ class SchedulerRuntimeControlBehaviorTest {
     private StockBatchJobLauncher stockBatchJobLauncher;
     private BatchJobRuntimeControl batchJobRuntimeControl;
     private StockBatchScheduledJobGuard scheduledJobGuard;
-    private SimulationClockService simulationClockService;
+    private SimulationMarketSessionService simulationMarketSessionService;
+    private OrderBookMarketSessionStateService orderBookMarketSessionStateService;
 
     @BeforeEach
     void setUp() {
         stockBatchJobLauncher = mock(StockBatchJobLauncher.class);
         batchJobRuntimeControl = mock(BatchJobRuntimeControl.class);
         scheduledJobGuard = new StockBatchScheduledJobGuard(batchJobRuntimeControl);
-        simulationClockService = mock(SimulationClockService.class);
+        simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        orderBookMarketSessionStateService = mock(OrderBookMarketSessionStateService.class);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(true);
     }
 
     @Test
     void autoMarketScheduler_checksRuntimeControlBeforeLaunching() {
-        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard);
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
 
         assertSimpleSchedulerGate(
                 AutoMarketJob.JOB_NAME,
                 scheduler::runAutoMarket,
                 () -> verify(stockBatchJobLauncher).runAutoMarket()
         );
+    }
+
+    @Test
+    void autoMarketOrderExpiryScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+
+        assertSimpleSchedulerGate(
+                AutoMarketOrderExpiryJob.JOB_NAME,
+                scheduler::expireAutoMarketOrders,
+                () -> verify(stockBatchJobLauncher).expireAutoMarketOrders()
+        );
+    }
+
+    @Test
+    void listingAutoMarketScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+
+        assertSimpleSchedulerGate(
+                ListingAutoMarketJob.JOB_NAME,
+                scheduler::runListingAutoMarket,
+                () -> verify(stockBatchJobLauncher).runListingAutoMarket()
+        );
+    }
+
+    @Test
+    void autoMarketScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        scheduler.runAutoMarket();
+        scheduler.expireAutoMarketOrders();
+        scheduler.runListingAutoMarket();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test
@@ -66,13 +107,23 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void corporateActionScheduler_checksRuntimeControlBeforeLaunching() {
-        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard);
+        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
 
         assertSimpleSchedulerGate(
                 CorporateActionJob.JOB_NAME,
                 scheduler::applyCorporateActions,
                 () -> verify(stockBatchJobLauncher).applyCorporateActions()
         );
+    }
+
+    @Test
+    void corporateActionScheduler_beforeClose_skipsBeforeRuntimeControl() {
+        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
+
+        scheduler.applyCorporateActions();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test
@@ -88,7 +139,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void orderBookExecutionScheduler_checksRuntimeControlBeforeLaunching() {
-        OrderBookExecutionScheduler scheduler = new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard);
+        OrderBookExecutionScheduler scheduler = new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
 
         assertSimpleSchedulerGate(
                 OrderBookExecutionJob.JOB_NAME,
@@ -98,10 +149,21 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void orderBookExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
+        OrderBookExecutionScheduler scheduler = new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        scheduler.executeOrderBookOrders();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
     void virtualPriceExecutionScheduler_checksRuntimeControlBeforeLaunching() {
         VirtualPriceExecutionScheduler scheduler = new VirtualPriceExecutionScheduler(
                 stockBatchJobLauncher,
-                scheduledJobGuard
+                scheduledJobGuard,
+                simulationMarketSessionService
         );
 
         assertSimpleSchedulerGate(
@@ -112,11 +174,26 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void virtualPriceExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
+        VirtualPriceExecutionScheduler scheduler = new VirtualPriceExecutionScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService
+        );
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        scheduler.executeVirtualPriceOrders();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
     void portfolioSettlementScheduler_checksRuntimeControlForEachJobBeforeLaunching() {
         PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
                 stockBatchJobLauncher,
                 scheduledJobGuard,
-                simulationClockService
+                simulationMarketSessionService,
+                orderBookMarketSessionStateService
         );
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
@@ -148,6 +225,21 @@ class SchedulerRuntimeControlBehaviorTest {
         verify(batchJobRuntimeControl).shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true);
         verify(stockBatchJobLauncher).rolloverClosingPrices();
         verify(stockBatchJobLauncher).settlePortfolios();
+    }
+
+    @Test
+    void portfolioSettlementScheduler_beforeClose_skipsPostCloseWork() {
+        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService,
+                orderBookMarketSessionStateService
+        );
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test

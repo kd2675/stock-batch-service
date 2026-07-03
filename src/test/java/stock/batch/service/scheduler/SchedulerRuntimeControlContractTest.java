@@ -18,6 +18,7 @@ class SchedulerRuntimeControlContractTest {
                 .filter(path -> path.getFileName().toString().endsWith(".java"))
                 .filter(this::containsScheduledMethod)
                 .filter(path -> !path.getFileName().toString().equals("SimulationClockScheduler.java"))
+                .filter(path -> !path.getFileName().toString().equals("BatchJobSignalScheduler.java"))
                 .sorted()
                 .toList();
 

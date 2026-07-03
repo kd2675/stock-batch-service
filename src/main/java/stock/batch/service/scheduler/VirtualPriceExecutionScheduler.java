@@ -6,6 +6,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
 @RequiredArgsConstructor
@@ -14,6 +15,7 @@ public class VirtualPriceExecutionScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
+    private final SimulationMarketSessionService simulationMarketSessionService;
 
     @Scheduled(
             scheduler = StockBatchSchedulerNames.EXECUTION,
@@ -21,6 +23,9 @@ public class VirtualPriceExecutionScheduler {
             fixedDelayString = "${stock.batch.virtual-price-execution.fixed-delay-ms:5000}"
     )
     public void executeVirtualPriceOrders() {
+        if (!simulationMarketSessionService.isRegularSession()) {
+            return;
+        }
         scheduledJobGuard.runIfEnabled(
                 VirtualPriceExecutionJob.JOB_NAME,
                 true,

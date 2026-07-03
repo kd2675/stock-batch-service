@@ -7,9 +7,12 @@ import org.springframework.stereotype.Service;
 
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
+import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
@@ -25,9 +28,12 @@ public class StockBatchJobLauncher {
     private final OrderBookExecutionJob orderBookExecutionJob;
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob;
     private final AutoMarketJob autoMarketJob;
+    private final AutoMarketOrderExpiryJob autoMarketOrderExpiryJob;
+    private final ListingAutoMarketJob listingAutoMarketJob;
     private final PortfolioSettlementJob portfolioSettlementJob;
     private final MarketCloseRolloverJob marketCloseRolloverJob;
     private final CorporateActionJob corporateActionJob;
+    private final HoldingCleanupJob holdingCleanupJob;
 
     public StockBatchJobRunResponse refreshMarketData() {
         return stockBatchJobRunner.run(marketDataRefreshJob);
@@ -57,6 +63,14 @@ public class StockBatchJobLauncher {
         return stockBatchJobRunner.run(autoMarketJob);
     }
 
+    public StockBatchJobRunResponse expireAutoMarketOrders() {
+        return stockBatchJobRunner.run(autoMarketOrderExpiryJob);
+    }
+
+    public StockBatchJobRunResponse runListingAutoMarket() {
+        return stockBatchJobRunner.run(listingAutoMarketJob);
+    }
+
     public StockBatchJobRunResponse settlePortfolios() {
         return stockBatchJobRunner.run(portfolioSettlementJob);
     }
@@ -73,8 +87,20 @@ public class StockBatchJobLauncher {
         );
     }
 
+    public StockBatchJobRunResponse cancelOpenOrderBookOrders(String symbol) {
+        return runDelegatingJob(
+                MarketCloseRolloverJob.JOB_NAME,
+                "halt-open-order-cancel:" + symbol,
+                () -> marketCloseRolloverJob.cancelOpenOrders(symbol)
+        );
+    }
+
     public StockBatchJobRunResponse applyCorporateActions() {
         return stockBatchJobRunner.run(corporateActionJob);
+    }
+
+    public StockBatchJobRunResponse cleanupEmptyHoldings() {
+        return stockBatchJobRunner.run(holdingCleanupJob);
     }
 
     private StockBatchJobRunResponse runDelegatingJob(String jobName, String executionMode, IntSupplier runner) {

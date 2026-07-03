@@ -28,6 +28,7 @@ public final class BatchTestDatabaseFactory {
                 create table if not exists stock_batch_job_control (
                   job_name varchar(100) not null primary key,
                   runtime_enabled boolean not null default true,
+                  scheduler_configured boolean not null default true,
                   updated_by varchar(64),
                   created_at timestamp not null,
                   updated_at timestamp not null,

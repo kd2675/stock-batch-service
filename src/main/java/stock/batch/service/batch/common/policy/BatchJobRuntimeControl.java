@@ -35,6 +35,10 @@ public class BatchJobRuntimeControl {
     @Transactional
     public BatchJobRuntimeStatus status(String jobName, boolean schedulerConfigured) {
         ControlRow controlRow = findOrCreateControlRow(jobName);
+        if (controlRow.schedulerConfigured() != schedulerConfigured) {
+            syncSchedulerConfigured(jobName, schedulerConfigured);
+            controlRow = requireControlRow(jobName);
+        }
         return toStatus(controlRow, schedulerConfigured);
     }
 
@@ -51,11 +55,13 @@ public class BatchJobRuntimeControl {
                 """
                 update stock_batch_job_control
                    set runtime_enabled = ?,
+                       scheduler_configured = ?,
                        updated_by = ?,
                        updated_at = ?
                  where job_name = ?
                 """,
                 nextRuntimeEnabled,
+                schedulerConfigured,
                 normalizeUpdatedBy(updatedBy),
                 now,
                 BatchJobNames.normalize(jobName)
@@ -81,7 +87,7 @@ public class BatchJobRuntimeControl {
     private Optional<ControlRow> findControlRow(String jobName) {
         return jdbcClient.sql(
                 """
-                select job_name, runtime_enabled, updated_by, updated_at
+                select job_name, runtime_enabled, scheduler_configured, updated_by, updated_at
                   from stock_batch_job_control
                  where job_name = ?
                 """
@@ -96,11 +102,19 @@ public class BatchJobRuntimeControl {
         try {
             jdbcTemplate.update(
                     """
-                    insert into stock_batch_job_control(job_name, runtime_enabled, updated_by, created_at, updated_at)
-                    values (?, ?, ?, ?, ?)
+                    insert into stock_batch_job_control(
+                        job_name,
+                        runtime_enabled,
+                        scheduler_configured,
+                        updated_by,
+                        created_at,
+                        updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?)
                     """,
                     BatchJobNames.normalize(jobName),
                     DEFAULT_CONTROL_ROW_ENABLED,
+                    true,
                     SYSTEM_UPDATED_BY,
                     now,
                     now
@@ -126,8 +140,21 @@ public class BatchJobRuntimeControl {
         return new ControlRow(
                 rs.getString("job_name"),
                 rs.getBoolean("runtime_enabled"),
+                rs.getBoolean("scheduler_configured"),
                 rs.getString("updated_by"),
                 updatedAt == null ? null : updatedAt.toLocalDateTime()
+        );
+    }
+
+    private void syncSchedulerConfigured(String jobName, boolean schedulerConfigured) {
+        jdbcTemplate.update(
+                """
+                update stock_batch_job_control
+                   set scheduler_configured = ?
+                 where job_name = ?
+                """,
+                schedulerConfigured,
+                BatchJobNames.normalize(jobName)
         );
     }
 
@@ -142,6 +169,7 @@ public class BatchJobRuntimeControl {
     private record ControlRow(
             String jobName,
             boolean runtimeEnabled,
+            boolean schedulerConfigured,
             String updatedBy,
             LocalDateTime updatedAt
     ) {

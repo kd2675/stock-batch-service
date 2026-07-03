@@ -58,7 +58,7 @@ class AutoMarketOrderExecutor {
             }
         }
 
-        autoMarketWriter.insertLimitOrder(
+        boolean inserted = autoMarketWriter.insertLimitOrder(
                 nextClientOrderId(),
                 accountId,
                 symbol,
@@ -68,6 +68,9 @@ class AutoMarketOrderExecutor {
                 reservedCash,
                 now
         );
+        if (!inserted) {
+            throw new IllegalStateException("Order book market is not open for auto order: symbol=" + symbol);
+        }
         return true;
     }
 

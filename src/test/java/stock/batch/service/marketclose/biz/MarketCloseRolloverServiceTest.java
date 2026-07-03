@@ -162,6 +162,37 @@ class MarketCloseRolloverServiceTest {
     }
 
     @Test
+    void cancelOpenOrderBookOrders_cancelsOrdersAndReleasesReservationsWithoutCloseRun() {
+        insertPrice("MC201", "73500.00", "70000.00", "internal-order-book");
+        insertAccount("market-halt-buyer", "1000000.00");
+        insertAccount("market-halt-seller", "500000.00");
+        insertHolding("market-halt-seller", "MC201", 10L, 4L, "70000.00");
+        insertReservedBuyOrder("market-halt-buy-order", "market-halt-buyer", "MC201", "147000.00");
+        insertReservedSellOrder("market-halt-sell-order", "market-halt-seller", "MC201", 4L);
+
+        int processedCount = marketCloseRolloverService.cancelOpenOrderBookOrders("mc201");
+
+        assertThat(processedCount).isEqualTo(2);
+        assertThat(queryLong("select count(*) from stock_order where symbol = 'MC201' and status = 'CANCELLED' and reserved_cash = 0"))
+                .isEqualTo(2L);
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'market-halt-buyer'"))
+                .isEqualByComparingTo(new BigDecimal("1000000.00"));
+        assertThat(queryLong("""
+                select reserved_quantity
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'market-halt-seller'
+                   and h.symbol = 'MC201'
+                """)).isZero();
+        assertThat(queryLong("select count(*) from stock_market_close_run"))
+                .isZero();
+        assertThat(queryLong("select count(*) from stock_holding_snapshot"))
+                .isZero();
+        assertThat(queryDecimal("select previous_close from stock_price where symbol = 'MC201'"))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+    }
+
+    @Test
     void rolloverClosingPrices_sameDayMultipleCloses_createSeparateHoldingSnapshots() {
         LocalDate simulationDate = LocalDate.of(2026, 1, 3);
         setSimulationDate(simulationDate);

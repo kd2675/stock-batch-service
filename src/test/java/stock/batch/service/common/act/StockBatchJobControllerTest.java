@@ -126,10 +126,12 @@ class StockBatchJobControllerTest {
     void getRuntimeControls_getRequest_returnsAllBatchJobRuntimeStatuses() throws Exception {
         mockMvc.perform(get("/internal/stock-batch/v1/jobs/runtime-controls"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(8))
+                .andExpect(jsonPath("$.data.length()").value(11))
                 .andExpect(jsonPath("$.data[0].jobName").value("market-data-refresh"))
-                .andExpect(jsonPath("$.data[5].jobName").value("auto-participant-cash-flow"))
-                .andExpect(jsonPath("$.data[7].jobName").value("portfolio-settlement"));
+                .andExpect(jsonPath("$.data[5].jobName").value("auto-market-order-expiry"))
+                .andExpect(jsonPath("$.data[6].jobName").value("listing-auto-market"))
+                .andExpect(jsonPath("$.data[9].jobName").value("portfolio-settlement"))
+                .andExpect(jsonPath("$.data[10].jobName").value("holding-cleanup"));
     }
 
     @Test
@@ -230,6 +232,32 @@ class StockBatchJobControllerTest {
     }
 
     @Test
+    void expireAutoMarketOrders_postRequest_returnsJobRunResponse() throws Exception {
+        when(stockBatchJobLauncher.expireAutoMarketOrders()).thenReturn(response("auto-market-order-expiry", "order-book"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/auto-market-order-expiry/run"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("auto-market-order-expiry"))
+                .andExpect(jsonPath("$.data.executionMode").value("order-book"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+
+        verify(stockBatchJobLauncher).expireAutoMarketOrders();
+    }
+
+    @Test
+    void runListingAutoMarket_postRequest_returnsJobRunResponse() throws Exception {
+        when(stockBatchJobLauncher.runListingAutoMarket()).thenReturn(response("listing-auto-market", "order-book"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/listing-auto-market/run"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("listing-auto-market"))
+                .andExpect(jsonPath("$.data.executionMode").value("order-book"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+
+        verify(stockBatchJobLauncher).runListingAutoMarket();
+    }
+
+    @Test
     void settlePortfolios_postRequest_returnsJobRunResponse() throws Exception {
         when(stockBatchJobLauncher.settlePortfolios()).thenReturn(response("portfolio-settlement", "n/a"));
 
@@ -266,6 +294,20 @@ class StockBatchJobControllerTest {
     }
 
     @Test
+    void cancelOpenOrderBookOrders_symbolPostRequest_returnsSymbolJobRunResponse() throws Exception {
+        when(stockBatchJobLauncher.cancelOpenOrderBookOrders("MC001"))
+                .thenReturn(response("market-close-rollover", "halt-open-order-cancel:MC001"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/order-book-orders/cancel-open/MC001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("market-close-rollover"))
+                .andExpect(jsonPath("$.data.executionMode").value("halt-open-order-cancel:MC001"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+
+        verify(stockBatchJobLauncher).cancelOpenOrderBookOrders("MC001");
+    }
+
+    @Test
     void applyCorporateActions_postRequest_returnsJobRunResponse() throws Exception {
         when(stockBatchJobLauncher.applyCorporateActions()).thenReturn(response("corporate-actions", "order-book"));
 
@@ -284,6 +326,9 @@ class StockBatchJobControllerTest {
     private BatchJobRuntimeCatalog createRuntimeCatalog() {
         return new BatchJobRuntimeCatalog(
                 batchJobRuntimeControl,
+                true,
+                true,
+                true,
                 true,
                 true,
                 true,

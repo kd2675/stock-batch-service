@@ -12,7 +12,8 @@ import stock.batch.service.batch.common.support.StockBatchJobRunResponses;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
-import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
 @RequiredArgsConstructor
@@ -20,7 +21,8 @@ public class PortfolioSettlementScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
-    private final SimulationClockService simulationClockService;
+    private final SimulationMarketSessionService simulationMarketSessionService;
+    private final OrderBookMarketSessionStateService orderBookMarketSessionStateService;
 
     @Value("${stock.batch.market-close.enabled:true}")
     private boolean marketCloseSchedulerConfigured;
@@ -28,23 +30,23 @@ public class PortfolioSettlementScheduler {
     @Value("${stock.batch.settlement.enabled:true}")
     private boolean settlementSchedulerConfigured;
 
-    private LocalDate lastObservedSimulationDate;
+    private LocalDate lastPostCloseProcessedDate;
 
     @Scheduled(
             scheduler = StockBatchSchedulerNames.MAINTENANCE,
             fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:5000}"
     )
     public void rolloverSimulationDayIfNeeded() {
-        LocalDate currentSimulationDate = simulationClockService.currentDate();
-        if (lastObservedSimulationDate == null) {
-            lastObservedSimulationDate = currentSimulationDate;
+        orderBookMarketSessionStateService.syncCurrentSession();
+        if (!simulationMarketSessionService.isAfterCloseSession()) {
             return;
         }
-        if (!currentSimulationDate.isAfter(lastObservedSimulationDate)) {
+        LocalDate currentSimulationDate = simulationMarketSessionService.currentSimulationDate();
+        if (currentSimulationDate.equals(lastPostCloseProcessedDate)) {
             return;
         }
         if (settlePortfolios()) {
-            lastObservedSimulationDate = currentSimulationDate;
+            lastPostCloseProcessedDate = currentSimulationDate;
         }
     }
 

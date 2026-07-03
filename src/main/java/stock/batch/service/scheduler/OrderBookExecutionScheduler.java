@@ -6,6 +6,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
 @RequiredArgsConstructor
@@ -14,6 +15,7 @@ public class OrderBookExecutionScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
+    private final SimulationMarketSessionService simulationMarketSessionService;
 
     @Scheduled(
             scheduler = StockBatchSchedulerNames.EXECUTION,
@@ -21,6 +23,9 @@ public class OrderBookExecutionScheduler {
             fixedDelayString = "${stock.batch.order-book-execution.fixed-delay-ms:1000}"
     )
     public void executeOrderBookOrders() {
+        if (!simulationMarketSessionService.isRegularSession()) {
+            return;
+        }
         scheduledJobGuard.runIfEnabled(
                 OrderBookExecutionJob.JOB_NAME,
                 true,

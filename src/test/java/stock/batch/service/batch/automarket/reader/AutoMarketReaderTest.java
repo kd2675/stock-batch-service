@@ -18,10 +18,6 @@ import java.util.Map;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class AutoMarketReaderTest {
@@ -34,32 +30,6 @@ class AutoMarketReaderTest {
     @BeforeEach
     void setUp() {
         reader = new AutoMarketReader(jdbcTemplate);
-    }
-
-    @Test
-    void findExistingAccountUserKeys_emptyInput_skipsQuery() {
-        List<String> userKeys = reader.findExistingAccountUserKeys(List.of());
-
-        assertThat(userKeys).isEmpty();
-        verify(jdbcTemplate, never()).queryForList(any(String.class), eq(String.class), any());
-    }
-
-    @Test
-    void findExistingAccountUserKeys_readsAllKeysWithSingleInQuery() {
-        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_account_keys_test");
-        realJdbcTemplate.execute("""
-                create table stock_account (
-                    id bigint auto_increment primary key,
-                    user_key varchar(64) not null
-                )
-                """);
-        realJdbcTemplate.update("insert into stock_account(user_key) values (?)", "stock-auto-001");
-        realJdbcTemplate.update("insert into stock_account(user_key) values (?)", "stock-auto-003");
-        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
-
-        List<String> userKeys = realReader.findExistingAccountUserKeys(List.of("stock-auto-001", "stock-auto-002"));
-
-        assertThat(userKeys).containsExactly("stock-auto-001");
     }
 
     @Test

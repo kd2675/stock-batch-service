@@ -49,6 +49,9 @@ stock:
     real-seconds-per-day: ${STOCK_SIMULATION_REAL_SECONDS_PER_DAY:7200}
     stale-after-seconds: ${STOCK_SIMULATION_STALE_AFTER_SECONDS:30}
     heartbeat-fixed-delay-ms: ${STOCK_SIMULATION_HEARTBEAT_FIXED_DELAY_MS:5000}
+  market-session:
+    open-time: ${STOCK_MARKET_SESSION_OPEN_TIME:06:00}
+    close-time: ${STOCK_MARKET_SESSION_CLOSE_TIME:18:00}
   batch:
     shutdown:
       await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:60}
@@ -68,6 +71,11 @@ stock:
         pool-size: ${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}
       simulation-clock:
         pool-size: ${STOCK_BATCH_SIMULATION_CLOCK_SCHEDULER_POOL_SIZE:1}
+    signal:
+      initial-delay-ms: ${STOCK_BATCH_SIGNAL_INITIAL_DELAY_MS:3000}
+      fixed-delay-ms: ${STOCK_BATCH_SIGNAL_FIXED_DELAY_MS:1000}
+      chunk-limit: ${STOCK_BATCH_SIGNAL_CHUNK_LIMIT:20}
+      processing-timeout-seconds: ${STOCK_BATCH_SIGNAL_PROCESSING_TIMEOUT_SECONDS:1800}
     jdbc:
       query-timeout-seconds: ${STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS:30}
     repository:
@@ -104,8 +112,18 @@ stock:
     execution:
       scan-limit: ${STOCK_BATCH_EXECUTION_SCAN_LIMIT:300}
       buy-candidate-scan-limit: ${STOCK_BATCH_EXECUTION_BUY_CANDIDATE_SCAN_LIMIT:20}
+      symbol-chunk-limit: ${STOCK_BATCH_EXECUTION_SYMBOL_CHUNK_LIMIT:50}
       deadlock-retry-max-attempts: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}
+      slow-symbol-log-threshold-ms: ${STOCK_BATCH_EXECUTION_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
+      thread-pool:
+        core-size: ${STOCK_BATCH_EXECUTION_THREAD_POOL_CORE_SIZE:4}
+        max-size: ${STOCK_BATCH_EXECUTION_THREAD_POOL_MAX_SIZE:4}
+        queue-capacity: ${STOCK_BATCH_EXECUTION_THREAD_POOL_QUEUE_CAPACITY:100}
+      symbol-lock:
+        type: ${STOCK_BATCH_EXECUTION_SYMBOL_LOCK_TYPE:redis}
+        key-prefix: ${STOCK_BATCH_EXECUTION_SYMBOL_LOCK_KEY_PREFIX:stock:orderbook:lock:}
+        ttl-seconds: ${STOCK_BATCH_EXECUTION_SYMBOL_LOCK_TTL_SECONDS:120}
     virtual-price-execution:
       enabled: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_INITIAL_DELAY_MS:35000}
@@ -121,7 +139,32 @@ stock:
     auto-market:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_INITIAL_DELAY_MS:5000}
-      fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:1000}
+      fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:10000}
+      generation-participant-chunk-size: ${STOCK_BATCH_AUTO_MARKET_GENERATION_PARTICIPANT_CHUNK_SIZE:25}
+      generation-base-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_BASE_INTERVAL_SECONDS:10}
+      generation-min-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_MIN_INTERVAL_SECONDS:3}
+      generation-max-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_MAX_INTERVAL_SECONDS:300}
+      generation-spread-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_SPREAD_SECONDS:10}
+      generation-lease-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_LEASE_SECONDS:120}
+      generation-due-limit-per-symbol: ${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}
+      slow-symbol-log-threshold-ms: ${STOCK_BATCH_AUTO_MARKET_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
+      thread-pool:
+        core-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_CORE_SIZE:4}
+        max-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:4}
+        queue-capacity: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:100}
+      profile-lock:
+        type: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_TYPE:redis}
+        key-prefix: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_KEY_PREFIX:stock:automarket:profile:lock:}
+        ttl-seconds: ${STOCK_BATCH_AUTO_MARKET_PROFILE_LOCK_TTL_SECONDS:120}
+    auto-market-order-expiry:
+      enabled: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_INITIAL_DELAY_MS:7000}
+      fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_FIXED_DELAY_MS:10000}
+      expiry-chunk-limit: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_CHUNK_LIMIT:100}
+    listing-auto-market:
+      enabled: ${STOCK_BATCH_LISTING_AUTO_MARKET_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_INITIAL_DELAY_MS:8000}
+      fixed-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}
     auto-participant-cash-flow:
       enabled: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_INITIAL_DELAY_MS:5000}
@@ -131,6 +174,12 @@ stock:
       poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:5000}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
+    holding-cleanup:
+      enabled: ${STOCK_BATCH_HOLDING_CLEANUP_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_HOLDING_CLEANUP_INITIAL_DELAY_MS:45000}
+      fixed-delay-ms: ${STOCK_BATCH_HOLDING_CLEANUP_FIXED_DELAY_MS:300000}
+      retention-simulation-days: ${STOCK_BATCH_HOLDING_CLEANUP_RETENTION_SIMULATION_DAYS:1}
+      delete-limit: ${STOCK_BATCH_HOLDING_CLEANUP_DELETE_LIMIT:1000}
 
 eureka:
   client:

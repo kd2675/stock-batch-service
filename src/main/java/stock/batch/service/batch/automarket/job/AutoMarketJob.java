@@ -5,7 +5,6 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.automarket.biz.AutoMarketService;
 import stock.batch.service.batch.common.support.StockBatchJob;
-import stock.batch.service.execution.biz.InternalOrderBookExecutionService;
 
 @Component
 @RequiredArgsConstructor
@@ -15,7 +14,6 @@ public class AutoMarketJob implements StockBatchJob {
     private static final String EXECUTION_MODE = "order-book";
 
     private final AutoMarketService autoMarketService;
-    private final InternalOrderBookExecutionService internalOrderBookExecutionService;
 
     @Override
     public String jobName() {
@@ -29,8 +27,6 @@ public class AutoMarketJob implements StockBatchJob {
 
     @Override
     public int run() {
-        int generatedOrExpiredOrders = autoMarketService.runAutoMarketStep();
-        int executions = internalOrderBookExecutionService.executeEligibleOrders();
-        return generatedOrExpiredOrders + executions;
+        return autoMarketService.runAutoMarketStep();
     }
 }

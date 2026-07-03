@@ -45,6 +45,15 @@ public class MarketCloseRolloverService {
         return cancelledOrderCount + priceRolloverCount + holdingSnapshotCount;
     }
 
+    @Transactional
+    public int cancelOpenOrderBookOrders(String symbol) {
+        String normalizedSymbol = normalizeSymbol(symbol);
+        if (normalizedSymbol == null) {
+            throw new IllegalArgumentException("symbol is required");
+        }
+        return cancelOpenOrderBookOrders(normalizedSymbol, simulationClockService.currentMarketDateTime());
+    }
+
     private int cancelOpenOrderBookOrders(String symbol, LocalDateTime closedAt) {
         List<MarketCloseOrderRow> orders = writer.findOpenOrderBookOrdersForUpdate(symbol);
         for (MarketCloseOrderRow order : orders) {

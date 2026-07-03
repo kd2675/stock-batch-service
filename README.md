@@ -22,6 +22,8 @@
 - `GET /internal/stock-batch/v1/jobs/runtime-controls`
 - `PATCH /internal/stock-batch/v1/jobs/runtime-controls/{jobName}`
 - `POST /internal/stock-batch/v1/jobs/auto-market/run`
+- `POST /internal/stock-batch/v1/jobs/auto-market-order-expiry/run`
+- `POST /internal/stock-batch/v1/jobs/listing-auto-market/run`
 - `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run`
 - `POST /internal/stock-batch/v1/jobs/market-close/rollover`
 - `POST /internal/stock-batch/v1/jobs/corporate-actions/run`
@@ -41,6 +43,7 @@
   - 양쪽이 모두 시장가이면 가격 기준이 없으므로 체결하지 않고 다음 스캔을 기다립니다.
 - `PortfolioSettlementScheduler`: 시뮬레이션일별 자산/수익률 스냅샷 정산
 - `MarketCloseRolloverService`: 장마감 종가를 다음 장 가격제한폭 기준가로 넘기기 위해 `stock_price.current_price`를 `previous_close`로 복사
+- `HoldingCleanupScheduler`: 체결 hot path에서 즉시 삭제하지 않은 0주/0예약 보유 row를 보존 기간 이후 별도 유지보수 job으로 정리
 
 ## 실행과 검증
 
@@ -95,8 +98,8 @@ scripts/stock-gateway-h2-smoke.sh
 - `prod`는 DB와 Redis 값을 환경 변수로 명시 주입합니다.
 - `prod`의 `STOCK_DB_URL`, `STOCK_BATCH_DB_URL`은 query string 없는 기본 JDBC URL로 넣습니다. 공통 JDBC 옵션은 설정 파일에서 `connectTimeout=5000`, `socketTimeout=30000`, `tcpKeepAlive=true`를 기본으로 붙입니다.
 - batch는 business DB용 `spring.datasource`와 Spring Batch metadata용 `stock.batch.repository.datasource`를 분리합니다. business 원장은 `STOCK_SERVICE`, `JobRepository` metadata는 `STOCK_BATCH_METADATA`를 사용합니다.
-- batch 운영 제어 상태는 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock` 테이블을 기준으로 합니다.
-- `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장하고, `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다.
+- batch 운영 제어 상태와 수동 실행 요청은 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock`, `stock_batch_job_signal` 테이블을 기준으로 합니다.
+- `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장합니다. `runtime_enabled`는 stock-back/어드민이 바꾸는 운영 중지 값이고, `scheduler_configured`는 stock-batch가 실제 서버 설정값을 동기화한 값입니다. `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다. `stock_batch_job_signal`은 stock-back이 적재한 수동 실행/후처리 요청을 batch가 폴링해 처리하는 비동기 신호 큐입니다.
 - 현재 custom scheduler job은 Spring Batch metadata를 고빈도 실행 이력 ledger로 사용합니다. `businessDate`, `jobMode`, `runId`를 identifying parameter로 기록해 같은 업무일/모드의 반복 실행도 서로 다른 `JobInstance`가 되게 합니다. 재시작 가능한 chunk job을 새로 만들 때는 `runId` 방식으로 우회하지 말고 해당 job의 restart contract를 별도로 설계합니다.
 - Hikari 풀은 local/dev 기본 8개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
 - Batch metadata Hikari 풀은 local/dev 기본 4개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
@@ -138,25 +141,42 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
 - `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
+- `stock.batch.auto-market-order-expiry.enabled`: 자동장이 낸 미체결 주문 만료 job 활성화 여부
+- `stock.batch.auto-market-order-expiry.fixed-delay-ms`: 자동장 미체결 주문 만료 검사 주기
+- `stock.batch.auto-market-order-expiry.expiry-chunk-limit`: 한 회차에서 취소할 자동장 만료 주문 후보 최대 수
+- `stock.batch.listing-auto-market.enabled`: 상장주관사 자동계정 주문 공급 job 활성화 여부
+- `stock.batch.listing-auto-market.fixed-delay-ms`: 상장주관사 자동계정 주문 공급 주기
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
 - `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기. 기본값은 60000ms입니다. 지급 여부는 시뮬레이션 시간 기준으로 판단하지만, 이 값은 실제 서버 시간이 기준인 polling 간격입니다. 초 단위 주기 입금을 즉시성 있게 테스트해야 할 때만 환경값으로 더 낮춥니다.
 - `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
 - `stock.batch.market-close.poll-fixed-delay-ms`: 시뮬레이션 날짜 변경 감지 주기. 기본값은 5000ms이며, `stock_simulation_clock` 기준 날짜가 바뀔 때 장마감과 정산을 실행합니다.
 - `stock.batch.settlement.enabled`: 포트폴리오 정산 job 활성화 여부
-- 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버가 최초 조회 시 `runtime_enabled=true`로 생성합니다. 운영 중에는 stock-back이 `/api/stock/v1/markets/batch-jobs/runtime-controls`를 통해 stock-batch 내부 API를 호출해 이 DB 값을 변경합니다.
+- `stock.batch.holding-cleanup.enabled`: 0주/0예약 보유 row 유지보수 정리 job 활성화 여부
+- `stock.batch.holding-cleanup.fixed-delay-ms`: 빈 보유 row 정리 job 실행 간격. 기본값은 300000ms입니다.
+- `stock.batch.holding-cleanup.retention-simulation-days`: 마지막 갱신 이후 보존할 시뮬레이션 일수. 기본값은 1일입니다.
+- `stock.batch.holding-cleanup.delete-limit`: 한 번에 삭제할 최대 row 수. 기본값은 1000건입니다.
+- 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버나 stock-back이 최초 조회 시 `runtime_enabled=true`, `scheduler_configured=true`로 생성하고, batch 서버가 실행 전 자신의 실제 설정값을 `scheduler_configured`에 동기화합니다. 운영 중에는 stock-back이 stock-batch HTTP API를 호출하지 않고 같은 DB row를 직접 변경합니다.
+- stock-back의 수동 월급 지급, 종목 장마감 롤오버, 거래정지/서킷브레이크 미체결 정리 요청은 `stock_batch_job_signal.status='PENDING'` row로 저장되고, `BatchJobSignalScheduler`가 `PROCESSING`으로 claim한 뒤 기존 `StockBatchJobLauncher`를 실행합니다.
+- `stock.batch.signal.fixed-delay-ms`: DB signal 큐 폴링 간격. 기본값은 1000ms입니다.
+- `stock.batch.signal.chunk-limit`: 한 번의 폴링에서 처리할 최대 signal 수. 기본값은 20건입니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
 - `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 1800초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 합니다.
 - `stock.batch.job-lock.heartbeat-interval-seconds`: 실행 중인 batch 서버가 자기 소유 DB 락의 `locked_until`을 연장하는 주기입니다. 기본값은 30초이며 `ttl-seconds`보다 충분히 짧게 둬야 정상 실행 중인 job을 다른 서버가 만료 락으로 가져가지 않습니다.
 - `stock.batch.scheduler-pools.execution.pool-size`: 주문장/현재가 체결 job 전용 scheduler pool 크기. 기본값은 2입니다. 자동장 주문 생성이 오래 걸려도 체결 job이 실행 기회를 잃지 않도록 분리합니다.
-- `stock.batch.scheduler-pools.auto-market.pool-size`: 자동 참여자 주문 생성/TTL 정리 전용 scheduler pool 크기. 기본값은 1입니다. 같은 주문/계좌/보유 테이블을 쓰므로 기본은 단일 실행을 유지합니다.
+- `stock.batch.scheduler-pools.auto-market.pool-size`: 자동 참여자 주문 생성, 자동장 주문 만료, 상장주관사 주문 공급 전용 scheduler pool 크기. 기본값은 1입니다. 같은 주문/계좌/보유 테이블을 쓰므로 기본은 단일 실행을 유지합니다.
 - `stock.batch.scheduler-pools.maintenance.pool-size`: 시세 갱신, 기업 이벤트, 월급 지급, 장마감 감지 등 유지보수성 job scheduler pool 크기. 기본값은 2입니다.
 - `stock.batch.scheduler-pools.simulation-clock.pool-size`: 시뮬레이션 시간 heartbeat 전용 scheduler pool 크기. 기본값은 1입니다. 긴 배치 작업 때문에 시뮬레이션 시간이 늦게 누적되지 않도록 별도 분리합니다.
 - `stock.batch.scheduler-pools.shutdown-await-seconds`: 전용 scheduler pool 종료 대기 시간. 기본값은 60초입니다.
 - `stock.batch.jdbc.query-timeout-seconds`: 업무 DB용 `JdbcTemplate` statement query timeout입니다. 기본값은 30초이며 0 이하 값은 시작 시 거부합니다.
 - `stock.batch.execution.scan-limit`: 한 번의 체결 job 실행에서 처리할 최대 체결 횟수입니다. 기본값은 300입니다.
 - `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 잠글 매수 후보 수입니다. 기본값은 20입니다. `EXISTS ... FOR UPDATE`로 매수/매도 범위를 한 번에 잠그지 않고, 매수 후보를 짧게 잠근 뒤 최우선 매도를 별도로 찾습니다.
+- `stock.batch.execution.symbol-chunk-limit`: 한 종목 lock을 잡고 연속 처리할 최대 체결 횟수입니다. 기본값은 50입니다. lock을 오래 점유하지 않도록 `scan-limit`보다 작게 둡니다.
+- `stock.batch.execution.thread-pool.core-size` / `max-size` / `queue-capacity`: 주문장 체결 대상 종목 task를 처리하는 실제 execution thread pool입니다. scheduler pool과 다르며, 신규 상장 종목이 생기면 별도 thread를 만들지 않고 이 pool에 symbol task가 들어갑니다. DB pool을 모두 점유하지 않도록 기본값은 4입니다.
+- `stock.batch.execution.symbol-lock.type`: 동일 종목 중복 체결 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
+- `stock.batch.execution.symbol-lock.ttl-seconds`: Redis symbol lock TTL입니다. 기본값은 120초입니다. 한 번의 symbol chunk가 이 시간 안에 끝나도록 `symbol-chunk-limit`과 함께 조정합니다.
 - `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
+- `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
 - `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 60초입니다.
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 70초입니다.
@@ -209,6 +229,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 외부 provider 장애는 해당 종목 가격 갱신만 건너뛰고 나머지 종목 처리를 계속합니다.
 - 유실되면 안 되는 주문/체결 결과는 Pub/Sub이 아니라 DB 원장에 기록합니다.
 - 매도 체결은 `stock_holding.quantity`와 `reserved_quantity`를 함께 차감해 미체결 매도 예약과 실제 보유 원장을 맞춥니다.
+- 체결 중에는 0주가 된 `stock_holding`을 즉시 삭제하지 않습니다. 주문장 체결의 lock/write 비용을 줄이기 위해 `holding-cleanup` 유지보수 job이 시뮬레이션 시간 기준 보존 기간이 지난 빈 row만 제한 건수로 삭제합니다.
 - 현재가 기준 체결과 주문장 체결은 더 이상 mode 스위치로 고르지 않고 별도 job으로 동시에 존재합니다.
 - `VIRTUAL_PRICE` 주문은 현재가 기준 체결 job만 처리하고, `ORDER_BOOK` 주문은 주문장 체결 job만 처리합니다.
 - 유상증자 기업 이벤트는 corporate action job이 처리합니다. 권리락일에는 이론권리락가격을 `stock_price`, `stock_price_tick`에 반영하고, 납입일에는 상태를 `PAID`로 바꾸며, 신주상장일에는 `stock_order_book_instrument.issued_shares`, `tradable_shares`를 증가시킵니다.

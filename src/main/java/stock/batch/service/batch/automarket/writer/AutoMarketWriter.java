@@ -8,7 +8,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
-import stock.batch.service.batch.automarket.model.AutoParticipant;
 import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 
 @Component
@@ -17,18 +16,6 @@ public class AutoMarketWriter {
 
     private final JdbcTemplate jdbcTemplate;
     private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
-
-    public void insertAccount(AutoParticipant participant, LocalDateTime createdAt) {
-        jdbcTemplate.update(
-                """
-                insert into stock_account(user_key, cash_balance, created_at, updated_at)
-                values (?, 0.00, ?, ?)
-                """,
-                participant.userKey(),
-                createdAt,
-                createdAt
-        );
-    }
 
     public void creditCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -132,7 +119,7 @@ public class AutoMarketWriter {
         return updatedRows > 0;
     }
 
-    public void insertLimitOrder(
+    public boolean insertLimitOrder(
             String clientOrderId,
             long accountId,
             String symbol,
@@ -142,14 +129,22 @@ public class AutoMarketWriter {
             BigDecimal reservedCash,
             LocalDateTime createdAt
     ) {
-        jdbcTemplate.update(
+        int updatedRows = jdbcTemplate.update(
                 """
                 insert into stock_order(
                     client_order_id, account_id, symbol, market_type, side, order_type, status,
                     limit_price, quantity, filled_quantity, average_fill_price,
                     reserved_cash, created_at, updated_at
                 )
-                values (?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)
+                select ?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?
+                  from dual
+                 where exists (
+                       select 1
+                         from stock_order_book_market_config m
+                        where m.symbol = ?
+                          and m.enabled = true
+                          and m.market_status = 'OPEN'
+                 )
                 """,
                 clientOrderId,
                 accountId,
@@ -159,7 +154,9 @@ public class AutoMarketWriter {
                 quantity,
                 reservedCash,
                 createdAt,
-                createdAt
+                createdAt,
+                symbol
         );
+        return updatedRows > 0;
     }
 }

@@ -102,6 +102,16 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.runAutoMarket());
     }
 
+    @PostMapping("/auto-market-order-expiry/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> expireAutoMarketOrders() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.expireAutoMarketOrders());
+    }
+
+    @PostMapping("/listing-auto-market/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> runListingAutoMarket() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.runListingAutoMarket());
+    }
+
     @PostMapping("/portfolio-settlement/run")
     public ResponseDataDTO<StockBatchJobRunResponse> settlePortfolios() {
         return ResponseDataDTO.of(stockBatchJobLauncher.settlePortfolios());
@@ -119,6 +129,15 @@ public class StockBatchJobController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "symbol is required");
         }
         return ResponseDataDTO.of(stockBatchJobLauncher.rolloverClosingPrices(decodedSymbol));
+    }
+
+    @PostMapping("/order-book-orders/cancel-open/{symbol}")
+    public ResponseDataDTO<StockBatchJobRunResponse> cancelOpenOrderBookOrders(@PathVariable String symbol) {
+        String decodedSymbol = URLDecoder.decode(symbol, StandardCharsets.UTF_8);
+        if (!StringUtils.hasText(decodedSymbol)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "symbol is required");
+        }
+        return ResponseDataDTO.of(stockBatchJobLauncher.cancelOpenOrderBookOrders(decodedSymbol));
     }
 
     @PostMapping("/corporate-actions/run")

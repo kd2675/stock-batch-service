@@ -160,6 +160,31 @@ class InternalOrderBookExecutionServiceTest {
     }
 
     @Test
+    void executeEligibleOrders_multipleSymbols_matchesEachSymbolThroughExecutionPool() {
+        upsertOrderBookSymbol("000660");
+        insertAccount("first-symbol-buyer", "9930000.00", "10000000.00");
+        insertAccount("first-symbol-seller", "100000.00", "10000000.00");
+        insertAccount("second-symbol-buyer", "9930000.00", "10000000.00");
+        insertAccount("second-symbol-seller", "100000.00", "10000000.00");
+        insertHolding("first-symbol-seller", "005930", 1, 1, "50000.00");
+        insertHolding("second-symbol-seller", "000660", 1, 1, "50000.00");
+        insertOrder("first-symbol-buy", "first-symbol-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("first-symbol-sell", "first-symbol-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 2);
+        insertOrder("second-symbol-buy", "second-symbol-buyer", "000660", "BUY", "LIMIT", "PENDING", "80000.00", 1, 0, null, "80000.00", 1);
+        insertOrder("second-symbol-sell", "second-symbol-seller", "000660", "SELL", "LIMIT", "PENDING", "79000.00", 1, 0, null, "0.00", 2);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(2);
+        assertThat(queryString("select status from stock_order where client_order_id = 'first-symbol-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'second-symbol-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
+                .isEqualTo(4L);
+    }
+
+    @Test
     void executeEligibleOrders_sameUserCrossedOrders_doesNotSelfTrade() {
         insertAccount("same-user", "9790000.00", "10000000.00");
         insertHolding("same-user", "005930", 5, 2, "50000.00");
@@ -358,6 +383,26 @@ class InternalOrderBookExecutionServiceTest {
                 LocalDateTime.now()
         );
         insertCashFlow(userKey, openingGrantAmount);
+    }
+
+    private void upsertOrderBookSymbol(String symbol) {
+        jdbcTemplate.update(
+                """
+                merge into stock_order_book_instrument(symbol, name, market, initial_price, issued_shares, tradable_shares, enabled, created_at, updated_at)
+                key(symbol)
+                values (?, ?, 'ORDERBOOK', 70000.00, 100000, 100000, true, current_timestamp, current_timestamp)
+                """,
+                symbol,
+                symbol + " 주문장"
+        );
+        jdbcTemplate.update(
+                """
+                merge into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                key(symbol)
+                values (?, true, 'OPEN', current_timestamp)
+                """,
+                symbol
+        );
     }
 
     private void insertCashFlow(String userKey, String amount) {

@@ -3,7 +3,9 @@ package stock.batch.service.batch.automarket.reader;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -17,9 +19,11 @@ import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 public class AutoMarketOrderReader {
 
     private final JdbcClient jdbcClient;
+    private final String lockClause;
 
     public AutoMarketOrderReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
+        this.lockClause = resolveLockClause(jdbcTemplate);
     }
 
     public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime candidateThreshold, int limit) {
@@ -40,11 +44,12 @@ public class AutoMarketOrderReader {
                 where o.symbol = :symbol
                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
                   and o.market_type = 'ORDER_BOOK'
+                  and o.quantity > o.filled_quantity
                   and o.created_at < :candidateThreshold
-                order by o.created_at asc
+                order by o.created_at asc, o.id asc
                 limit :limit
-                for update
-                """
+                %s
+                """.formatted(lockClause)
         )
                 .param("symbol", config.symbol())
                 .param("candidateThreshold", candidateThreshold)
@@ -62,11 +67,12 @@ public class AutoMarketOrderReader {
                   and o.account_id = :accountId
                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
                   and o.market_type = 'ORDER_BOOK'
+                  and o.quantity > o.filled_quantity
                   and o.created_at < :threshold
-                order by o.created_at asc
+                order by o.created_at asc, o.id asc
                 limit 200
-                for update
-                """
+                %s
+                """.formatted(lockClause)
         )
                 .param("symbol", config.symbol())
                 .param("accountId", config.accountId())
@@ -164,5 +170,15 @@ public class AutoMarketOrderReader {
                 .query(Long.class)
                 .single();
         return quantity == null ? 0L : Math.max(0L, quantity);
+    }
+
+    private String resolveLockClause(JdbcTemplate jdbcTemplate) {
+        String productName = jdbcTemplate.execute(
+                (ConnectionCallback<String>) connection -> connection.getMetaData().getDatabaseProductName()
+        );
+        if (productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql")) {
+            return "for update skip locked";
+        }
+        return "for update";
     }
 }

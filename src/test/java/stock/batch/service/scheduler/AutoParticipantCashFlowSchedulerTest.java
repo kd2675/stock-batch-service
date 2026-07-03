@@ -14,7 +14,8 @@ import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
-import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.time.LocalDate;
@@ -31,13 +32,19 @@ class AutoParticipantCashFlowSchedulerTest {
 
     private final StockBatchJobLauncher stockBatchJobLauncher = mock(StockBatchJobLauncher.class);
     private final JdbcTemplate jdbcTemplate = createJdbcTemplate();
-    private final SimulationClockService simulationClockService = mock(SimulationClockService.class);
+    private final SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+    private final OrderBookMarketSessionStateService orderBookMarketSessionStateService = mock(OrderBookMarketSessionStateService.class);
     private final BatchJobRuntimeControl batchJobRuntimeControl = new BatchJobRuntimeControl(jdbcTemplate);
     private final StockBatchScheduledJobGuard scheduledJobGuard = new StockBatchScheduledJobGuard(batchJobRuntimeControl);
     private final AutoParticipantCashFlowRuntimeControl runtimeControl =
             new AutoParticipantCashFlowRuntimeControl(batchJobRuntimeControl, true);
     private final AutoParticipantCashFlowScheduler scheduler =
             createAutoParticipantCashFlowScheduler();
+
+    AutoParticipantCashFlowSchedulerTest() {
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(true);
+    }
 
     @Test
     void fundAutoParticipants_runtimeEnabled_runsJob() {
@@ -69,7 +76,7 @@ class AutoParticipantCashFlowSchedulerTest {
 
     @Test
     void autoMarketScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
-        AutoMarketScheduler autoMarketScheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard);
+        AutoMarketScheduler autoMarketScheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
         batchJobRuntimeControl.update(AutoMarketJob.JOB_NAME, true, false, "stock-admin");
 
         autoMarketScheduler.runAutoMarket();
@@ -91,8 +98,19 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void virtualPriceExecutionScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
         VirtualPriceExecutionScheduler virtualPriceExecutionScheduler =
-                new VirtualPriceExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard);
+                new VirtualPriceExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
         batchJobRuntimeControl.update(VirtualPriceExecutionJob.JOB_NAME, true, false, "stock-admin");
+
+        virtualPriceExecutionScheduler.executeVirtualPriceOrders();
+
+        verify(stockBatchJobLauncher, never()).executeVirtualPriceOrders();
+    }
+
+    @Test
+    void virtualPriceExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
+        VirtualPriceExecutionScheduler virtualPriceExecutionScheduler =
+                new VirtualPriceExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
 
         virtualPriceExecutionScheduler.executeVirtualPriceOrders();
 
@@ -102,7 +120,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void orderBookExecutionScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
         OrderBookExecutionScheduler orderBookExecutionScheduler =
-                new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard);
+                new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
         batchJobRuntimeControl.update(OrderBookExecutionJob.JOB_NAME, true, false, "stock-admin");
 
         orderBookExecutionScheduler.executeOrderBookOrders();
@@ -113,7 +131,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void corporateActionScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
         CorporateActionScheduler corporateActionScheduler =
-                new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard);
+                new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
         batchJobRuntimeControl.update(CorporateActionJob.JOB_NAME, true, false, "stock-admin");
 
         corporateActionScheduler.applyCorporateActions();
@@ -124,7 +142,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_marketCloseDisabled_stillRunsSettlementOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
         batchJobRuntimeControl.update(MarketCloseRolloverJob.JOB_NAME, true, false, "stock-admin");
@@ -138,7 +156,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_settlementDisabled_stillRunsMarketCloseOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
         batchJobRuntimeControl.update(PortfolioSettlementJob.JOB_NAME, true, false, "stock-admin");
@@ -152,7 +170,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_marketCloseScheduleRunsRolloverOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
 
@@ -165,7 +183,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_marketCloseConfiguredOff_stillRunsSettlementOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", false);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
 
@@ -178,7 +196,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_settlementConfiguredOff_stillRunsMarketCloseOnly() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", false);
 
@@ -191,7 +209,7 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_bothConfiguredOff_skipsBothJobs() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", false);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", false);
 
@@ -204,8 +222,9 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_simulationDateUnchanged_skipsRolloverAndSettlement() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
-        when(simulationClockService.currentDate())
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
+        when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(LocalDate.of(2026, 7, 1))
                 .thenReturn(LocalDate.of(2026, 7, 1));
 
@@ -219,12 +238,12 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_simulationDateChanged_runsRolloverAndSettlement() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
-        when(simulationClockService.currentDate())
+        when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(LocalDate.of(2026, 7, 1))
-                .thenReturn(LocalDate.of(2026, 7, 2));
+                .thenReturn(LocalDate.of(2026, 7, 1));
         when(stockBatchJobLauncher.rolloverClosingPrices())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
         when(stockBatchJobLauncher.settlePortfolios())
@@ -240,13 +259,13 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void portfolioSettlementScheduler_failedSettlementRetriesSameSimulationDate() {
         PortfolioSettlementScheduler portfolioSettlementScheduler =
-                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationClockService);
+                new PortfolioSettlementScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService, orderBookMarketSessionStateService);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(portfolioSettlementScheduler, "settlementSchedulerConfigured", true);
-        when(simulationClockService.currentDate())
+        when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(LocalDate.of(2026, 7, 1))
-                .thenReturn(LocalDate.of(2026, 7, 2))
-                .thenReturn(LocalDate.of(2026, 7, 2));
+                .thenReturn(LocalDate.of(2026, 7, 1))
+                .thenReturn(LocalDate.of(2026, 7, 1));
         when(stockBatchJobLauncher.rolloverClosingPrices())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME))
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));

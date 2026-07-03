@@ -7,6 +7,7 @@ USE STOCK_SERVICE;
 CREATE TABLE IF NOT EXISTS stock_batch_job_control (
   job_name VARCHAR(100) NOT NULL,
   runtime_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  scheduler_configured BOOLEAN NOT NULL DEFAULT TRUE,
   updated_by VARCHAR(64) NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
@@ -24,6 +25,40 @@ CREATE TABLE IF NOT EXISTS stock_batch_job_lock (
   KEY idx_stock_batch_job_lock_until (locked_until),
   CONSTRAINT chk_stock_batch_job_lock_name CHECK (job_name <> ''),
   CONSTRAINT chk_stock_batch_job_lock_owner CHECK (lock_owner <> '')
+);
+
+CREATE TABLE IF NOT EXISTS stock_batch_job_signal (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  signal_type VARCHAR(60) NOT NULL,
+  job_name VARCHAR(100) NOT NULL,
+  execution_mode VARCHAR(120) NOT NULL,
+  symbol VARCHAR(20) NULL,
+  payload_json TEXT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  requested_by VARCHAR(64) NULL,
+  requested_at DATETIME NOT NULL,
+  picked_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  processed_count INT NULL,
+  message VARCHAR(500) NULL,
+  error_message VARCHAR(1000) NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_stock_batch_job_signal_status_time (status, requested_at, id),
+  KEY idx_stock_batch_job_signal_job_status (job_name, status, requested_at),
+  CONSTRAINT chk_stock_batch_job_signal_type CHECK (signal_type <> ''),
+  CONSTRAINT chk_stock_batch_job_signal_job CHECK (job_name <> ''),
+  CONSTRAINT chk_stock_batch_job_signal_mode CHECK (execution_mode <> ''),
+  CONSTRAINT chk_stock_batch_job_signal_status CHECK (
+    CASE `status`
+      WHEN 'PENDING' THEN 1
+      WHEN 'PROCESSING' THEN 1
+      WHEN 'COMPLETED' THEN 1
+      WHEN 'FAILED' THEN 1
+      ELSE 0
+    END = 1
+  )
 );
 
 CREATE TABLE IF NOT EXISTS stock_simulation_clock (
@@ -323,7 +358,8 @@ CREATE TABLE IF NOT EXISTS stock_order (
   KEY idx_stock_order_market_created_status (market_type, created_at, status),
   KEY idx_stock_order_side_status_account (side, status, account_id),
   KEY idx_stock_order_execution_scan (status, order_type, created_at, symbol),
-  KEY idx_stock_order_order_book_match (symbol, side, order_type, status, limit_price, created_at),
+  KEY idx_stock_order_order_book_match (market_type, symbol, side, status, order_type, limit_price, created_at, id),
+  KEY idx_stock_order_order_book_expiry (market_type, symbol, created_at, id, status, account_id),
   CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_side_valid CHECK (CASE `side` WHEN 'BUY' THEN 1 WHEN 'SELL' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_type_valid CHECK (CASE `order_type` WHEN 'LIMIT' THEN 1 WHEN 'MARKET' THEN 1 ELSE 0 END = 1),
@@ -382,6 +418,7 @@ CREATE TABLE IF NOT EXISTS stock_holding (
   PRIMARY KEY (id),
   UNIQUE KEY uk_stock_holding_account_symbol (account_id, symbol),
   KEY idx_stock_holding_symbol_account (symbol, account_id),
+  KEY idx_stock_holding_empty_cleanup (quantity, reserved_quantity, updated_at),
   CONSTRAINT chk_stock_holding_quantity_non_negative CHECK (quantity >= 0),
   CONSTRAINT chk_stock_holding_reserved_quantity_valid CHECK (reserved_quantity >= 0 AND reserved_quantity <= quantity),
   CONSTRAINT chk_stock_holding_average_price_positive CHECK (average_price > 0)
@@ -593,7 +630,7 @@ CREATE TABLE IF NOT EXISTS stock_virtual_market_config (
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (symbol),
   KEY idx_stock_virtual_market_enabled (enabled, market_status, symbol),
-  CONSTRAINT chk_stock_virtual_market_status CHECK (CASE `market_status` WHEN 'OPEN' THEN 1 WHEN 'CLOSED' THEN 1 WHEN 'HALTED' THEN 1 ELSE 0 END = 1)
+  CONSTRAINT chk_stock_virtual_market_status CHECK (CASE `market_status` WHEN 'OPEN' THEN 1 WHEN 'CLOSED' THEN 1 WHEN 'HALTED' THEN 1 WHEN 'CIRCUIT_BREAKER' THEN 1 ELSE 0 END = 1)
 );
 
 CREATE TABLE IF NOT EXISTS stock_order_book_market_config (
@@ -603,7 +640,7 @@ CREATE TABLE IF NOT EXISTS stock_order_book_market_config (
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (symbol),
   KEY idx_stock_order_book_market_enabled (enabled, market_status, symbol),
-  CONSTRAINT chk_stock_order_book_market_status CHECK (CASE `market_status` WHEN 'OPEN' THEN 1 WHEN 'CLOSED' THEN 1 WHEN 'HALTED' THEN 1 ELSE 0 END = 1)
+  CONSTRAINT chk_stock_order_book_market_status CHECK (CASE `market_status` WHEN 'OPEN' THEN 1 WHEN 'CLOSED' THEN 1 WHEN 'HALTED' THEN 1 WHEN 'CIRCUIT_BREAKER' THEN 1 ELSE 0 END = 1)
 );
 
 CREATE TABLE IF NOT EXISTS stock_auto_market_config (
@@ -651,6 +688,25 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
   KEY idx_stock_auto_participant_symbol_lookup (symbol, user_key),
   KEY idx_stock_auto_participant_symbol_user_enabled (user_key, enabled, symbol),
   CONSTRAINT chk_stock_auto_participant_symbol_intensity CHECK (intensity between 1 and 10)
+);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule (
+  user_key VARCHAR(64) NOT NULL,
+  symbol VARCHAR(20) NOT NULL,
+  profile_type VARCHAR(40) NOT NULL,
+  next_run_at DATETIME NOT NULL,
+  last_run_at DATETIME NULL,
+  lease_until DATETIME NULL,
+  lease_owner VARCHAR(80) NULL,
+  run_interval_seconds INT NOT NULL,
+  priority INT NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (user_key, symbol),
+  KEY idx_stock_auto_order_schedule_due (symbol, next_run_at, lease_until, priority, user_key),
+  KEY idx_stock_auto_order_schedule_profile_due (profile_type, next_run_at, symbol),
+  CONSTRAINT chk_stock_auto_order_schedule_interval CHECK (run_interval_seconds > 0),
+  CONSTRAINT chk_stock_auto_order_schedule_priority CHECK (priority between 1 and 100)
 );
 
 CREATE TABLE IF NOT EXISTS stock_instrument_report_event (

@@ -271,6 +271,7 @@ class StockSchemaConstraintTest {
                 .contains(
                         "idx_stock_order_execution_scan",
                         "idx_stock_order_order_book_match",
+                        "idx_stock_order_order_book_expiry",
                         "idx_stock_order_account_status_created"
                 );
     }

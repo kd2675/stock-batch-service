@@ -33,7 +33,7 @@ public class SimulationClockService {
     @Transactional
     public void start() {
         SimulationClockRow row = findClock().orElseGet(this::createPausedClock);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = maxDateTime(LocalDateTime.now(), row.lastHeartbeatAt());
         long accumulatedRealSeconds = row.accumulatedRealSeconds();
         if (row.running() && row.lastStartedAt() != null && row.lastHeartbeatAt() != null) {
             accumulatedRealSeconds += Math.max(0, Duration.between(row.lastStartedAt(), row.lastHeartbeatAt()).toSeconds());
@@ -65,12 +65,20 @@ public class SimulationClockService {
         jdbcClient.sql(
                         """
                         update stock_simulation_clock
-                           set last_heartbeat_at = ?,
-                               updated_at = ?
+                           set last_heartbeat_at = case
+                                   when last_heartbeat_at is null or last_heartbeat_at < ? then ?
+                                   else last_heartbeat_at
+                               end,
+                               updated_at = case
+                                   when updated_at < ? then ?
+                                   else updated_at
+                               end
                          where clock_id = ?
                            and running = true
                         """
                 )
+                .param(now)
+                .param(now)
                 .param(now)
                 .param(now)
                 .param(DEFAULT_CLOCK_ID)
@@ -83,7 +91,7 @@ public class SimulationClockService {
         if (row == null || !row.running() || row.lastStartedAt() == null) {
             return;
         }
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = maxDateTime(LocalDateTime.now(), row.lastHeartbeatAt());
         LocalDateTime effectiveNow = effectiveRealDateTime(row, now);
         long accumulatedRealSeconds = row.accumulatedRealSeconds()
                 + Math.max(0, Duration.between(row.lastStartedAt(), effectiveNow).toSeconds());
@@ -140,6 +148,13 @@ public class SimulationClockService {
 
     private LocalDateTime effectiveRealDateTime(SimulationClockRow row, LocalDateTime now) {
         return SimulationClockSnapshots.effectiveRealDateTime(row.lastHeartbeatAt(), staleAfterSeconds, now);
+    }
+
+    private LocalDateTime maxDateTime(LocalDateTime first, LocalDateTime second) {
+        if (second == null || first.isAfter(second)) {
+            return first;
+        }
+        return second;
     }
 
     private java.util.Optional<SimulationClockRow> findClock() {

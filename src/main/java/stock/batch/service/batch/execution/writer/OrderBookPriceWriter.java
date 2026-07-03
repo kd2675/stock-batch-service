@@ -40,6 +40,9 @@ public class OrderBookPriceWriter {
                     executedAt
             );
         }
+    }
+
+    public void insertPriceTick(String symbol, BigDecimal executionPrice, LocalDateTime executedAt) {
         jdbcTemplate.update(
                 """
                 insert into stock_price_tick(symbol, price, provider, price_time, created_at)

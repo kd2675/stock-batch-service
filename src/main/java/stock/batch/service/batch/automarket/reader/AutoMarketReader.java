@@ -13,7 +13,6 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
-import stock.batch.service.batch.automarket.model.AutoParticipant;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
@@ -25,32 +24,6 @@ public class AutoMarketReader {
 
     public AutoMarketReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
-    }
-
-    public List<AutoParticipant> findEnabledParticipants() {
-        return jdbcClient.sql(
-                """
-                select user_key,
-                       display_name,
-                       profile_type
-                from stock_auto_participant
-                where enabled = true
-                  and withdrawn_at is null
-                order by user_key asc
-                """
-        )
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toParticipant(rs))
-                .list();
-    }
-
-    public List<String> findExistingAccountUserKeys(List<String> userKeys) {
-        if (userKeys.isEmpty()) {
-            return List.of();
-        }
-        return jdbcClient.sql("select user_key from stock_account where user_key in (:userKeys)")
-                .param("userKeys", userKeys)
-                .query(String.class)
-                .list();
     }
 
     public List<AutoMarketConfig> findEnabledConfigs() {

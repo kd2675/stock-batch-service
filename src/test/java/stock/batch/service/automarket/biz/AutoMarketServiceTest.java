@@ -30,6 +30,12 @@ class AutoMarketServiceTest {
     private AutoMarketService autoMarketService;
 
     @Autowired
+    private AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService;
+
+    @Autowired
+    private ListingAutoMarketJobService listingAutoMarketJobService;
+
+    @Autowired
     private AutoParticipantCashFlowService autoParticipantCashFlowService;
 
     @Autowired
@@ -43,6 +49,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_execution");
         jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_order");
+        jdbcTemplate.update("delete from stock_auto_participant_order_schedule");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account");
         jdbcTemplate.update("delete from stock_instrument_report_event");
@@ -103,15 +110,49 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_enabledConfig_createsAutoAccountsWithoutInitialHoldings() {
+    void runAutoMarketStep_enabledConfigWithoutAccounts_doesNotCreateAccountsOrOrders() {
         autoMarketService.runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_account where user_key like 'stock-auto-%'"))
-                .isEqualTo(3L);
+                .isZero();
         assertThat(queryLong("select count(*) from stock_holding h join stock_account a on a.id = h.account_id where a.user_key like 'stock-auto-%' and symbol = '005930'"))
                 .isZero();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key like 'stock-auto-%' and symbol = '005930'"))
                 .isZero();
+    }
+
+    @Test
+    void runAutoMarketStep_seedsParticipantSchedulesAndSkipsUntilNextRun() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+
+        autoMarketService.runAutoMarketStep();
+
+        long firstRunOrderCount = queryLong("""
+                select count(*)
+                from stock_order o
+                join stock_account a on a.id = o.account_id
+                where o.symbol = '005930'
+                  and a.user_key = 'stock-auto-001'
+                """);
+        assertThat(firstRunOrderCount).isPositive();
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where symbol = '005930' and user_key = 'stock-auto-001'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where symbol = '005930' and user_key = 'stock-auto-001' and last_run_at is not null and next_run_at > last_run_at and lease_owner is null and lease_until is null"))
+                .isEqualTo(1L);
+
+        autoMarketService.runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                from stock_order o
+                join stock_account a on a.id = o.account_id
+                where o.symbol = '005930'
+                  and a.user_key = 'stock-auto-001'
+                """)).isEqualTo(firstRunOrderCount);
     }
 
     @Test
@@ -190,12 +231,12 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_listingSellOnlyAccountCreatesSmallSellOrderWithoutParticipants() {
+    void runListingAutoMarket_listingSellOnlyAccountCreatesSmallSellOrderWithoutParticipants() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_participant");
         insertListingAccount("SELL_ONLY", "0.00", 100L, 0L);
 
-        autoMarketService.runAutoMarketStep();
+        listingAutoMarketJobService.runListingAutoMarket();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'SELL'"))
                 .isEqualTo(1L);
@@ -206,7 +247,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_listingOrdersExpireWithSimulationScaledTtl() {
+    void runListingAutoMarket_listingOrdersExpireWithSimulationScaledTtl() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_participant");
         insertListingAccount("SELL_ONLY", "0.00", 100L, 7L);
@@ -225,7 +266,7 @@ class AutoMarketServiceTest {
                 LocalDateTime.now().toLocalDate().atStartOfDay().minusSeconds(31)
         );
 
-        autoMarketService.runAutoMarketStep();
+        listingAutoMarketJobService.runListingAutoMarket();
 
         assertThat(queryLong("select count(*) from stock_order where client_order_id = 'listing-old-ttl-test' and status = 'CANCELLED'"))
                 .isEqualTo(1L);
@@ -243,12 +284,12 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_listingBuyOnlyAccountCreatesBuyOrderOnlyWithinCash() {
+    void runListingAutoMarket_listingBuyOnlyAccountCreatesBuyOrderOnlyWithinCash() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_participant");
         insertListingAccount("BUY_ONLY", "150000.00", 0L, 0L);
 
-        autoMarketService.runAutoMarketStep();
+        listingAutoMarketJobService.runListingAutoMarket();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'BUY'"))
                 .isEqualTo(1L);
@@ -276,7 +317,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_expiresShortLivedScalperOrdersBeforeLongTermOrders() {
+    void expireAutoMarketOrders_expiresShortLivedScalperOrdersBeforeLongTermOrders() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-003'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key = 'stock-auto-003'");
         jdbcTemplate.update("update stock_auto_market_config set order_ttl_seconds = 60, max_order_quantity = 1 where symbol = '005930'");
@@ -311,7 +352,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        autoMarketOrderExpiryJobService.expireAutoMarketOrders();
 
         assertThat(queryString("select status from stock_order where client_order_id = 'ttl-scalper'"))
                 .isEqualTo("CANCELLED");
@@ -1855,7 +1896,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_noiseTraderWithoutCashOrHoldingCannotCreateOrder() {
+    void runAutoMarketStep_noiseTraderWithoutAccountCannotCreateOrder() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
@@ -1864,8 +1905,8 @@ class AutoMarketServiceTest {
 
         autoMarketService.runAutoMarketStep();
 
-        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-001'"))
-                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(queryLong("select count(*) from stock_account where user_key = 'stock-auto-001'"))
+                .isZero();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isZero();
         assertThat(queryLong("select count(*) from stock_holding h join stock_account a on a.id = h.account_id where h.symbol = '005930' and a.user_key = 'stock-auto-001'"))

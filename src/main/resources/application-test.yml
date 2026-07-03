@@ -49,6 +49,9 @@ stock:
       enabled: false
       initial-delay-ms: 600000
       fixed-delay-ms: 600000
+    execution:
+      symbol-lock:
+        type: none
     virtual-price-execution:
       enabled: false
     order-book-execution:
@@ -57,11 +60,15 @@ stock:
       enabled: false
     auto-market:
       enabled: false
+      profile-lock:
+        type: none
     auto-participant-cash-flow:
       enabled: false
     market-close:
       enabled: false
     settlement:
+      enabled: false
+    holding-cleanup:
       enabled: false
 
 eureka:
