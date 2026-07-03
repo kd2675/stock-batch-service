@@ -113,6 +113,10 @@ public class StockBatchJobRunner {
         }
     }
 
+    public boolean hasActiveJobs() {
+        return activeJobTracker.hasActiveJobs();
+    }
+
     private StockBatchJobRunResponse runEnteredJob(StockBatchJob job) {
         LocalDateTime startedAt = LocalDateTime.now();
         StockBatchJobExecutionRecord executionRecord;

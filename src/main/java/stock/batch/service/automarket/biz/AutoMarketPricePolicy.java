@@ -21,10 +21,25 @@ final class AutoMarketPricePolicy {
         return ticks.multiply(normalizedTick).max(normalizedTick).setScale(2, RoundingMode.UNNECESSARY);
     }
 
+    static BigDecimal normalizePrice(String market, BigDecimal rawPrice) {
+        return KoreanStockTickSizePolicy.nearestValidQuotePrice(market, rawPrice);
+    }
+
+    static BigDecimal moveByTicks(String market, BigDecimal price, int ticks) {
+        BigDecimal currentPrice = normalizePrice(market, price);
+        int steps = Math.abs(ticks);
+        for (int index = 0; index < steps; index++) {
+            currentPrice = ticks >= 0
+                    ? KoreanStockTickSizePolicy.ceilingValidQuotePrice(market, currentPrice.add(BigDecimal.ONE))
+                    : KoreanStockTickSizePolicy.floorValidQuotePrice(market, currentPrice.subtract(BigDecimal.ONE));
+        }
+        return currentPrice;
+    }
+
     static BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, AutoMarketConfig config, BigDecimal tick) {
         return normalizePriceWithinDailyLimit(
+                config.market(),
                 rawPrice,
-                tick,
                 config.currentPrice(),
                 config.previousClose(),
                 config.priceLimitRate()
@@ -33,8 +48,8 @@ final class AutoMarketPricePolicy {
 
     static BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, ListingAutoAccountConfig config, BigDecimal tick) {
         return normalizePriceWithinDailyLimit(
+                config.market(),
                 rawPrice,
-                tick,
                 config.currentPrice(),
                 config.previousClose(),
                 config.priceLimitRate()
@@ -50,24 +65,24 @@ final class AutoMarketPricePolicy {
     }
 
     private static BigDecimal normalizePriceWithinDailyLimit(
+            String market,
             BigDecimal rawPrice,
-            BigDecimal tick,
             BigDecimal currentPrice,
             BigDecimal previousClose,
             BigDecimal priceLimitRate
     ) {
-        BigDecimal normalizedTick = positiveOrDefault(tick, DEFAULT_TICK_SIZE);
         BigDecimal lowerLimit = dailyLowerLimit(currentPrice, previousClose, priceLimitRate);
         BigDecimal upperLimit = dailyUpperLimit(currentPrice, previousClose, priceLimitRate);
         BigDecimal clampedPrice = rawPrice.max(lowerLimit).min(upperLimit);
-        BigDecimal normalizedPrice = normalizePrice(clampedPrice, normalizedTick);
+        BigDecimal normalizedPrice = normalizePrice(market, clampedPrice);
         if (normalizedPrice.compareTo(lowerLimit) < 0) {
-            normalizedPrice = ceilToTick(lowerLimit, normalizedTick);
+            normalizedPrice = KoreanStockTickSizePolicy.ceilingValidQuotePrice(market, lowerLimit);
         }
         if (normalizedPrice.compareTo(upperLimit) > 0) {
-            normalizedPrice = floorToTick(upperLimit, normalizedTick);
+            normalizedPrice = KoreanStockTickSizePolicy.floorValidQuotePrice(market, upperLimit);
         }
-        return normalizedPrice.max(normalizedTick).setScale(2, RoundingMode.UNNECESSARY);
+        BigDecimal minimumTick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(market, normalizedPrice);
+        return normalizedPrice.max(minimumTick).setScale(2, RoundingMode.UNNECESSARY);
     }
 
     private static BigDecimal dailyLowerLimit(BigDecimal currentPrice, BigDecimal previousClose, BigDecimal priceLimitRate) {
@@ -86,15 +101,4 @@ final class AutoMarketPricePolicy {
                 .divide(ONE_HUNDRED, 6, RoundingMode.HALF_UP);
     }
 
-    private static BigDecimal ceilToTick(BigDecimal value, BigDecimal tick) {
-        return value.divide(tick, 0, RoundingMode.CEILING)
-                .multiply(tick)
-                .setScale(2, RoundingMode.UNNECESSARY);
-    }
-
-    private static BigDecimal floorToTick(BigDecimal value, BigDecimal tick) {
-        return value.divide(tick, 0, RoundingMode.FLOOR)
-                .multiply(tick)
-                .setScale(2, RoundingMode.UNNECESSARY);
-    }
 }

@@ -23,6 +23,7 @@ public class ListingAutoAccountReader {
         return jdbcClient.sql(
                 """
                 select c.symbol,
+                       i.market,
                        a.id as account_id,
                        c.user_key,
                        c.position_side,

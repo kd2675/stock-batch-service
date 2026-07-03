@@ -26,6 +26,10 @@ public class BatchJobSignalProcessor {
         int processedCount = 0;
         int boundedLimit = Math.max(1, limit);
         for (int index = 0; index < boundedLimit; index++) {
+            if (stockBatchJobLauncher.hasActiveJobs()) {
+                log.debug("Stock batch signal processing deferred until active jobs complete");
+                break;
+            }
             var signal = signalReader.claimNext();
             if (signal.isEmpty()) {
                 break;

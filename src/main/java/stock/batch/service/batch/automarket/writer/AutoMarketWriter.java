@@ -136,15 +136,7 @@ public class AutoMarketWriter {
                     limit_price, quantity, filled_quantity, average_fill_price,
                     reserved_cash, created_at, updated_at
                 )
-                select ?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?
-                  from dual
-                 where exists (
-                       select 1
-                         from stock_order_book_market_config m
-                        where m.symbol = ?
-                          and m.enabled = true
-                          and m.market_status = 'OPEN'
-                 )
+                values (?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)
                 """,
                 clientOrderId,
                 accountId,
@@ -154,8 +146,7 @@ public class AutoMarketWriter {
                 quantity,
                 reservedCash,
                 createdAt,
-                createdAt,
-                symbol
+                createdAt
         );
         return updatedRows > 0;
     }

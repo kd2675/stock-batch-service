@@ -30,6 +30,7 @@ public class AutoMarketReader {
         return jdbcClient.sql(
                 """
                 select c.symbol,
+                       i.market,
                        c.intensity,
                        c.max_order_quantity,
                        c.order_ttl_seconds,

@@ -102,14 +102,12 @@ public class AutoMarketService {
                                 .toList(),
                         clock.simulationDateTime().minus(PROJECT_SHORT_MOMENTUM_WINDOW)
                 );
-        if (isAutoMarketSessionActive()) {
-            List<ProfileGenerationShard> shards = profileGenerationShards(
-                    configs,
-                    strategiesBySymbol,
-                    momentumReferencePricesBySymbol
-            );
-            totalCount.add(runProfileGenerationShards(shards, profilePolicies, clock.simulationDateTime()));
-        }
+        List<ProfileGenerationShard> shards = profileGenerationShards(
+                configs,
+                strategiesBySymbol,
+                momentumReferencePricesBySymbol
+        );
+        totalCount.add(runProfileGenerationShards(shards, profilePolicies, clock.simulationDateTime()));
         log.info(
                 "Auto market step completed: symbols={}, participants={}, profileShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
                 configs.size(),
@@ -217,9 +215,6 @@ public class AutoMarketService {
         AutoMarketRunCount count = new AutoMarketRunCount();
         count.profileShards++;
         for (SymbolGenerationWork work : shard.works()) {
-            if (!isAutoMarketSessionActive()) {
-                break;
-            }
             AutoMarketRunCount symbolCount = runProfileSymbolGeneration(work, profilePolicies, now);
             count.add(symbolCount);
         }
@@ -241,7 +236,7 @@ public class AutoMarketService {
                 now
         ));
         count.dueStrategies += dueStrategies.size();
-        if (dueStrategies.isEmpty() || !isAutoMarketSessionActive()) {
+        if (dueStrategies.isEmpty()) {
             return count;
         }
 
@@ -249,9 +244,6 @@ public class AutoMarketService {
         int chunkSize = Math.max(1, generationParticipantChunkSize);
         List<AutoParticipantStrategy> completedStrategies = new ArrayList<>();
         for (int start = 0; start < dueStrategies.size(); start += chunkSize) {
-            if (!isAutoMarketSessionActive()) {
-                break;
-            }
             int end = Math.min(dueStrategies.size(), start + chunkSize);
             List<AutoParticipantStrategy> chunk = dueStrategies.subList(start, end);
             AutoParticipantOrderGenerationResult generationResult = runInTransaction(() -> autoParticipantOrderService.placeAutoOrders(

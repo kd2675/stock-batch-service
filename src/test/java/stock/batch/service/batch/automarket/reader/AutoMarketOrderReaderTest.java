@@ -58,7 +58,7 @@ class AutoMarketOrderReaderTest {
     }
 
     @Test
-    void findExpiredAutoOrders_readsCandidateOrdersWithProfileAndCreatedAtInSingleQuery() {
+    void findExpiredAutoOrders_locksCandidateOrderIdsThenReadsProfileAndCreatedAt() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
                 5,

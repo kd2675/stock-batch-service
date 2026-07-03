@@ -369,6 +369,37 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void hasActiveJobs_reportsRunningJobUntilCompletion() throws Exception {
+        StockBatchJobRunner runner = runner();
+        CountDownLatch jobStarted = new CountDownLatch(1);
+        CountDownLatch releaseJob = new CountDownLatch(1);
+        when(batchJobLockRegistry.tryAcquire(eq("active-state-job"), any(LocalDateTime.class))).thenReturn(true);
+        TestStockBatchJob job = new TestStockBatchJob("active-state-job", "test-mode", 5, () -> {
+            jobStarted.countDown();
+            try {
+                releaseJob.await(3, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(ex);
+            }
+        });
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            var runFuture = executor.submit(() -> runner.run(job));
+            assertThat(jobStarted.await(3, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(runner.hasActiveJobs()).isTrue();
+
+            releaseJob.countDown();
+            assertThat(runFuture.get(3, TimeUnit.SECONDS).status()).isEqualTo("COMPLETED");
+            assertThat(runner.hasActiveJobs()).isFalse();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void shutdown_waitsForRunningJobBeforeStoppingHeartbeatExecutor() throws Exception {
         StockBatchJobRunner runner = runner();
         CountDownLatch jobStarted = new CountDownLatch(1);

@@ -16,9 +16,7 @@ import stock.batch.service.batch.automarket.reader.ListingAutoAccountReader;
 import stock.batch.service.simulation.SimulationClockService;
 import web.common.core.simulation.SimulationClockSnapshot;
 
-import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.DEFAULT_TICK_SIZE;
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.normalizePriceWithinDailyLimit;
-import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.positiveOrDefault;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.nextInt;
 
 @Component
@@ -109,23 +107,22 @@ class ListingAutoAccountOrderService {
     }
 
     private BigDecimal orderPrice(ListingAutoAccountConfig config, String side, AutoMarketOrderBookState orderBookState) {
-        BigDecimal tick = positiveOrDefault(config.tickSize(), DEFAULT_TICK_SIZE);
         int offsetTicks = nextInt(0, Math.max(0, config.priceOffsetTicks()));
-        BigDecimal offset = tick.multiply(BigDecimal.valueOf(offsetTicks));
         BigDecimal bestBid = orderBookState.bestBid();
         BigDecimal bestAsk = orderBookState.bestAsk();
         BigDecimal rawPrice;
         if (SELL.equals(side)) {
-            rawPrice = bestAsk == null ? config.currentPrice().add(offset) : bestAsk.add(offset);
+            rawPrice = AutoMarketPricePolicy.moveByTicks(config.market(), bestAsk == null ? config.currentPrice() : bestAsk, offsetTicks);
             if (bestBid != null && rawPrice.compareTo(bestBid) <= 0) {
-                rawPrice = bestBid.add(tick);
+                rawPrice = AutoMarketPricePolicy.moveByTicks(config.market(), bestBid, 1);
             }
         } else {
-            rawPrice = bestBid == null ? config.currentPrice().subtract(offset) : bestBid.subtract(offset);
+            rawPrice = AutoMarketPricePolicy.moveByTicks(config.market(), bestBid == null ? config.currentPrice() : bestBid, -offsetTicks);
             if (bestAsk != null && rawPrice.compareTo(bestAsk) >= 0) {
-                rawPrice = bestAsk.subtract(tick);
+                rawPrice = AutoMarketPricePolicy.moveByTicks(config.market(), bestAsk, -1);
             }
         }
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
         return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 

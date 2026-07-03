@@ -27,6 +27,10 @@ public class AutoMarketOrderReader {
     }
 
     public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime candidateThreshold, int limit) {
+        List<Long> orderIds = findExpiredAutoOrderIds(config.symbol(), candidateThreshold, limit);
+        if (orderIds.isEmpty()) {
+            return List.of();
+        }
         return jdbcClient.sql(
                 """
                 select o.id,
@@ -42,6 +46,50 @@ public class AutoMarketOrderReader {
                 join stock_account a on a.id = o.account_id
                 join stock_auto_participant p on p.user_key = a.user_key
                 where o.symbol = :symbol
+                  and o.id in (:orderIds)
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.quantity > o.filled_quantity
+                order by o.created_at asc, o.id asc
+                """
+        )
+                .param("symbol", config.symbol())
+                .param("orderIds", orderIds)
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
+                .list();
+    }
+
+    public List<AutoOrder> findExpiredListingAutoOrders(ListingAutoAccountConfig config, LocalDateTime threshold) {
+        List<Long> orderIds = findExpiredListingAutoOrderIds(config, threshold);
+        if (orderIds.isEmpty()) {
+            return List.of();
+        }
+        return jdbcClient.sql(
+                """
+                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
+                from stock_order o
+                where o.symbol = :symbol
+                  and o.account_id = :accountId
+                  and o.id in (:orderIds)
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.quantity > o.filled_quantity
+                order by o.created_at asc, o.id asc
+                """
+        )
+                .param("symbol", config.symbol())
+                .param("accountId", config.accountId())
+                .param("orderIds", orderIds)
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
+                .list();
+    }
+
+    private List<Long> findExpiredAutoOrderIds(String symbol, LocalDateTime candidateThreshold, int limit) {
+        return jdbcClient.sql(
+                """
+                select o.id
+                from stock_order o
+                where o.symbol = :symbol
                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
                   and o.market_type = 'ORDER_BOOK'
                   and o.quantity > o.filled_quantity
@@ -51,17 +99,17 @@ public class AutoMarketOrderReader {
                 %s
                 """.formatted(lockClause)
         )
-                .param("symbol", config.symbol())
+                .param("symbol", symbol)
                 .param("candidateThreshold", candidateThreshold)
                 .param("limit", Math.max(1, limit))
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
+                .query(Long.class)
                 .list();
     }
 
-    public List<AutoOrder> findExpiredListingAutoOrders(ListingAutoAccountConfig config, LocalDateTime threshold) {
+    private List<Long> findExpiredListingAutoOrderIds(ListingAutoAccountConfig config, LocalDateTime threshold) {
         return jdbcClient.sql(
                 """
-                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
+                select o.id
                 from stock_order o
                 where o.symbol = :symbol
                   and o.account_id = :accountId
@@ -77,7 +125,7 @@ public class AutoMarketOrderReader {
                 .param("symbol", config.symbol())
                 .param("accountId", config.accountId())
                 .param("threshold", threshold)
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
+                .query(Long.class)
                 .list();
     }
 

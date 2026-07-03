@@ -37,9 +37,6 @@ public class ListingAutoMarketJobService {
 
         int processed = 0;
         for (AutoMarketConfig config : configs) {
-            if (!isRegularSessionActive()) {
-                break;
-            }
             processed += runIntInTransaction(() -> listingAutoAccountOrderService.run(config));
         }
         log.info(

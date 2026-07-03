@@ -35,6 +35,7 @@ final class AutoMarketReaderMapper {
     static AutoMarketConfig toConfig(ResultSet rs) throws SQLException {
         return new AutoMarketConfig(
                 normalizeSymbol(rs.getString("symbol")),
+                rs.getString("market"),
                 Math.clamp(rs.getInt("intensity"), 1, 10),
                 Math.max(1, rs.getInt("max_order_quantity")),
                 Math.max(1, rs.getInt("order_ttl_seconds")),
@@ -115,6 +116,7 @@ final class AutoMarketReaderMapper {
     static ListingAutoAccountConfig toListingAutoAccountConfig(ResultSet rs) throws SQLException {
         return new ListingAutoAccountConfig(
                 normalizeSymbol(rs.getString("symbol")),
+                rs.getString("market"),
                 rs.getLong("account_id"),
                 rs.getString("user_key"),
                 rs.getString("position_side"),

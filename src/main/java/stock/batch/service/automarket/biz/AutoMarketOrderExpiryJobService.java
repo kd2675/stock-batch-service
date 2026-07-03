@@ -6,6 +6,8 @@ import java.util.function.Supplier;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -29,6 +31,12 @@ public class AutoMarketOrderExpiryJobService {
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
 
+    @Value("${stock.batch.auto-market-order-expiry.deadlock-retry-max-attempts:5}")
+    private int deadlockRetryMaxAttempts;
+
+    @Value("${stock.batch.auto-market-order-expiry.deadlock-retry-backoff-ms:50}")
+    private long deadlockRetryBackoffMs;
+
     public int expireAutoMarketOrders() {
         long startedNanos = System.nanoTime();
         if (!isRegularSessionActive()) {
@@ -43,10 +51,10 @@ public class AutoMarketOrderExpiryJobService {
 
         int expiredOrders = 0;
         for (AutoMarketConfig config : configs) {
-            if (!isRegularSessionActive()) {
-                break;
-            }
-            expiredOrders += runIntInTransaction(() -> autoMarketOrderExpiryService.expireOldAutoOrders(config, profilePolicies));
+            expiredOrders += runIntInTransactionWithDeadlockRetry(
+                    config.symbol(),
+                    () -> autoMarketOrderExpiryService.expireOldAutoOrders(config, profilePolicies)
+            );
         }
         log.info(
                 "Auto market order expiry completed: symbols={}, expiredOrders={}, elapsedMs={}",
@@ -65,6 +73,43 @@ public class AutoMarketOrderExpiryJobService {
     private int runIntInTransaction(Supplier<Integer> action) {
         Integer result = transactionTemplate.execute(status -> action.get());
         return result == null ? 0 : result;
+    }
+
+    private int runIntInTransactionWithDeadlockRetry(String symbol, Supplier<Integer> action) {
+        int attempts = Math.max(1, deadlockRetryMaxAttempts);
+        CannotAcquireLockException lastException = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return runIntInTransaction(action);
+            } catch (CannotAcquireLockException ex) {
+                lastException = ex;
+                if (attempt >= attempts) {
+                    break;
+                }
+                sleepBeforeRetry(symbol, attempt, ex);
+            }
+        }
+        throw lastException;
+    }
+
+    private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
+        long backoffMillis = Math.max(0, deadlockRetryBackoffMs) * attempt;
+        log.warn(
+                "Auto market order expiry deadlock retry: symbol={}, attempt={}, backoffMs={}, reason={}",
+                symbol,
+                attempt,
+                backoffMillis,
+                ex.getMessage()
+        );
+        if (backoffMillis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(backoffMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted during auto market order expiry deadlock retry", interrupted);
+        }
     }
 
     private long elapsedMillis(long startedNanos) {

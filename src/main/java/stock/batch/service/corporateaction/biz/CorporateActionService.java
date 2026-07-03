@@ -21,6 +21,7 @@ import stock.batch.service.batch.corporateaction.writer.CorporateActionAccountWr
 import stock.batch.service.batch.corporateaction.writer.CorporateActionPriceWriter;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
 import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Service
 @RequiredArgsConstructor
@@ -48,10 +49,17 @@ public class CorporateActionService {
     private final CorporateActionWriter corporateActionWriter;
     private final CorporateActionAccountWriter corporateActionAccountWriter;
     private final SimulationClockService simulationClockService;
+    private final SimulationMarketSessionService simulationMarketSessionService;
 
     @Transactional
     public int applyDueCorporateActions() {
-        LocalDate today = simulationClockService.currentDate();
+        if (!simulationMarketSessionService.isAfterCloseSession()) {
+            return 0;
+        }
+        LocalDate today = simulationMarketSessionService.currentSimulationDate();
+        if (!corporateActionReader.existsCompletedMarketCloseRun(today)) {
+            return 0;
+        }
         int exRightsCount = applyDueExRights(today);
         int rightsPaymentCount = markDueRightsPayments(today);
         int dividendPaymentCount = payDueCashDividends(today);

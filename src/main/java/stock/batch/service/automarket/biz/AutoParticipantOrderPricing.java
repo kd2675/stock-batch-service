@@ -8,6 +8,7 @@ import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.normalizePriceWithinDailyLimit;
+import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.moveByTicks;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.chance;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.nextInt;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.noise;
@@ -27,9 +28,9 @@ class AutoParticipantOrderPricing {
     ) {
         BigDecimal bestBid = orderBookState.bestBid();
         BigDecimal bestAsk = orderBookState.bestAsk();
-        BigDecimal tick = config.tickSize();
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
         if (policy.marketMakingWeight() >= 0.8) {
-            return createMarketMakingPrice(config, side, bestBid, bestAsk, tick);
+            return createMarketMakingPrice(config, side, bestBid, bestAsk);
         }
         double pressure = Math.clamp(pricePressure(intensity) + noise(policy.noiseWeight(), 0.12), -1, 1);
         double pressureStrength = Math.abs(pressure);
@@ -38,10 +39,10 @@ class AutoParticipantOrderPricing {
         boolean downwardAggressive = pressure < 0 && chance(aggressiveChance);
 
         if (BUY.equals(side) && upwardAggressive && bestAsk != null) {
-            return normalizePriceWithinDailyLimit(bestAsk.add(tick.multiply(BigDecimal.valueOf(nextInt(0, 1)))), config, tick);
+            return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestAsk, nextInt(0, 1)), config, tick);
         }
         if (SELL.equals(side) && downwardAggressive && bestBid != null) {
-            return normalizePriceWithinDailyLimit(bestBid.subtract(tick.multiply(BigDecimal.valueOf(nextInt(0, 1)))).max(tick), config, tick);
+            return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestBid, -nextInt(0, 1)), config, tick);
         }
 
         int maxSpreadTicks = 2 + (int) Math.ceil(pressureStrength * 6);
@@ -60,21 +61,21 @@ class AutoParticipantOrderPricing {
             AutoMarketConfig config,
             String side,
             BigDecimal bestBid,
-            BigDecimal bestAsk,
-            BigDecimal tick
+            BigDecimal bestAsk
     ) {
         BigDecimal rawPrice;
         if (BUY.equals(side)) {
-            rawPrice = bestBid == null ? config.currentPrice().subtract(tick) : bestBid;
+            rawPrice = bestBid == null ? moveByTicks(config.market(), config.currentPrice(), -1) : bestBid;
             if (bestAsk != null && rawPrice.compareTo(bestAsk) >= 0) {
-                rawPrice = bestAsk.subtract(tick);
+                rawPrice = moveByTicks(config.market(), bestAsk, -1);
             }
         } else {
-            rawPrice = bestAsk == null ? config.currentPrice().add(tick) : bestAsk;
+            rawPrice = bestAsk == null ? moveByTicks(config.market(), config.currentPrice(), 1) : bestAsk;
             if (bestBid != null && rawPrice.compareTo(bestBid) <= 0) {
-                rawPrice = bestBid.add(tick);
+                rawPrice = moveByTicks(config.market(), bestBid, 1);
             }
         }
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
         return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 

@@ -9,8 +9,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,10 +49,12 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_order_book_market_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order_book_instrument where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_simulation_clock");
+        setPausedSimulationClock(LocalDate.now(), LocalDateTime.now(), LocalTime.of(19, 0));
     }
 
     @Test
     void applyDueCorporateActions_additionalIssueOnListingDate_increasesSharesWithoutPriceReset() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ003", 100000L, 100000L);
         insertPrice("ZQ003", "70000.00");
         insertAdditionalIssue("ZQ003", 30000L, "60000.00", LocalDate.now().minusDays(1));
@@ -72,8 +76,9 @@ class CorporateActionServiceTest {
     void applyDueCorporateActions_pausedSimulationClock_usesSimulationClockForTimestamps() {
         LocalDateTime lastHeartbeatAt = LocalDateTime.of(2026, 1, 2, 3, 4, 5);
         LocalDate simulationDate = LocalDate.now();
-        LocalDateTime expectedSimulationTime = simulationDate.atStartOfDay();
-        insertPausedSimulationClock(simulationDate, lastHeartbeatAt);
+        LocalDateTime expectedSimulationTime = simulationDate.atTime(19, 0);
+        setPausedSimulationClock(simulationDate, lastHeartbeatAt, LocalTime.of(19, 0));
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ020", 100000L, 100000L);
         insertPrice("ZQ020", "70000.00");
         insertAdditionalIssue("ZQ020", 30000L, "60000.00", LocalDate.now().minusDays(1));
@@ -85,6 +90,38 @@ class CorporateActionServiceTest {
                 .isEqualTo(expectedSimulationTime);
         assertThat(queryDateTime("select updated_at from stock_order_book_instrument where symbol = 'ZQ020'"))
                 .isEqualTo(expectedSimulationTime);
+    }
+
+    @Test
+    void applyDueCorporateActions_regularSession_waitsUntilAfterClose() {
+        setPausedSimulationClock(LocalDate.now(), LocalDateTime.now(), LocalTime.of(10, 0));
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ021", 100000L, 100000L);
+        insertPrice("ZQ021", "70000.00");
+        insertAdditionalIssue("ZQ021", 30000L, "60000.00", LocalDate.now().minusDays(1));
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isZero();
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ021'"))
+                .isEqualTo("ANNOUNCED");
+        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ021'"))
+                .isEqualTo(100000L);
+    }
+
+    @Test
+    void applyDueCorporateActions_afterCloseWithoutCompletedMarketCloseRun_waits() {
+        insertOrderBookInstrument("ZQ022", 100000L, 100000L);
+        insertPrice("ZQ022", "70000.00");
+        insertAdditionalIssue("ZQ022", 30000L, "60000.00", LocalDate.now().minusDays(1));
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isZero();
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ022'"))
+                .isEqualTo("ANNOUNCED");
+        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ022'"))
+                .isEqualTo(100000L);
     }
 
     @Test
@@ -248,6 +285,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_stockSplitOnEffectiveDate_adjustsSharesHoldingsAndPrice() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ004", 100000L, 100000L);
         insertPrice("ZQ004", "70000.00");
         insertAccount("split-holder");
@@ -294,6 +332,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_exRightsPaymentAndListing_updatesPriceThenShares() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ001", 100000L, 100000L);
         insertPrice("ZQ001", "70000.00");
         insertPaidInCapitalIncrease(
@@ -326,6 +365,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_beforeListingDate_keepsShareCountsPending() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ002", 100000L, 100000L);
         insertPrice("ZQ002", "70000.00");
         insertPaidInCapitalIncrease(
@@ -550,6 +590,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_zeroValueDelisting_cancelsOrdersAndDisablesTrading() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ015", 100000L, 100000L);
         insertPrice("ZQ015", "70000.00");
         insertOrderBookMarketConfig("ZQ015");
@@ -614,7 +655,9 @@ class CorporateActionServiceTest {
         );
     }
 
-    private void insertPausedSimulationClock(LocalDate baseDate, LocalDateTime lastHeartbeatAt) {
+    private void setPausedSimulationClock(LocalDate baseDate, LocalDateTime lastHeartbeatAt, LocalTime simulationTime) {
+        jdbcTemplate.update("delete from stock_simulation_clock");
+        long accumulatedRealSeconds = simulationTime.toSecondOfDay() * 7200L / Duration.ofDays(1).toSeconds();
         jdbcTemplate.update(
                 """
                 insert into stock_simulation_clock(
@@ -629,13 +672,18 @@ class CorporateActionServiceTest {
                     created_at,
                     updated_at
                 )
-                values ('DEFAULT', ?, 7200, 0, false, null, ?, 'Asia/Seoul', ?, ?)
+                values ('DEFAULT', ?, 7200, ?, false, null, ?, 'Asia/Seoul', ?, ?)
                 """,
                 baseDate,
+                accumulatedRealSeconds,
                 lastHeartbeatAt,
                 lastHeartbeatAt,
                 lastHeartbeatAt
         );
+    }
+
+    private void insertCompletedMarketCloseForToday() {
+        insertMarketCloseRun(LocalDate.now().atTime(18, 0));
     }
 
     private void insertPrice(String symbol, String price) {
@@ -828,7 +876,7 @@ class CorporateActionServiceTest {
                 )
                 values (?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
                 """,
-                snapshotAt.toLocalDate(),
+                LocalDate.now(),
                 snapshotAt,
                 snapshotAt,
                 snapshotAt

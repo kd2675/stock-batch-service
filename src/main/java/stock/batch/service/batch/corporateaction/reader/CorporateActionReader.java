@@ -178,6 +178,21 @@ public class CorporateActionReader {
                 .optional();
     }
 
+    public boolean existsCompletedMarketCloseRun(LocalDate businessDate) {
+        Long count = jdbcClient.sql(
+                """
+                select count(*)
+                  from stock_market_close_run
+                 where status = 'COMPLETED'
+                   and business_date = :businessDate
+                """
+        )
+                .param("businessDate", businessDate)
+                .query(Long.class)
+                .single();
+        return count != null && count > 0;
+    }
+
     public List<ShareEntitlementRow> findAnnouncedShareEntitlements(long actionId, String status) {
         return jdbcClient.sql(
                 """

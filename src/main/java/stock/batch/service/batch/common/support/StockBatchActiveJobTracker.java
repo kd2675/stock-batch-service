@@ -28,6 +28,12 @@ final class StockBatchActiveJobTracker {
         }
     }
 
+    boolean hasActiveJobs() {
+        synchronized (monitor) {
+            return activeJobCount > 0;
+        }
+    }
+
     void markShuttingDown() {
         synchronized (monitor) {
             shuttingDown = true;
