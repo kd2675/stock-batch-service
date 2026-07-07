@@ -96,6 +96,22 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void run_jobWithoutJobLock_runsWithoutBatchJobLockOrHeartbeat() {
+        TestStockBatchJob job = new TestStockBatchJob("unlocked-job", "test-mode", 7, () -> {
+        }, false);
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("COMPLETED");
+        assertThat(response.processedCount()).isEqualTo(7);
+        assertThat(job.runCount()).isEqualTo(1);
+        verify(batchJobLockRegistry, never()).tryAcquire(any(), any());
+        verify(batchJobLockRegistry, never()).release(any());
+        verify(stockBatchJobRepositoryRecorder).complete(eq(executionRecord), eq(7), any(LocalDateTime.class));
+        verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
+    }
+
+    @Test
     void run_lockAcquireThrows_whenFailRecordingThrows_preservesOriginalFailureResponse() {
         TestStockBatchJob job = new TestStockBatchJob("lock-fail-recording-fail-job", "test-mode", 7);
         RuntimeException lockFailure = new IllegalStateException("lock table unavailable");
@@ -456,6 +472,7 @@ class StockBatchJobRunnerTest {
         private final String executionMode;
         private final int processedCount;
         private final Runnable onRun;
+        private final boolean requiresJobLock;
         private int runCount;
 
         private TestStockBatchJob(String jobName, String executionMode, int processedCount) {
@@ -464,10 +481,21 @@ class StockBatchJobRunnerTest {
         }
 
         private TestStockBatchJob(String jobName, String executionMode, int processedCount, Runnable onRun) {
+            this(jobName, executionMode, processedCount, onRun, true);
+        }
+
+        private TestStockBatchJob(
+                String jobName,
+                String executionMode,
+                int processedCount,
+                Runnable onRun,
+                boolean requiresJobLock
+        ) {
             this.jobName = jobName;
             this.executionMode = executionMode;
             this.processedCount = processedCount;
             this.onRun = onRun;
+            this.requiresJobLock = requiresJobLock;
         }
 
         @Override
@@ -478,6 +506,11 @@ class StockBatchJobRunnerTest {
         @Override
         public String executionMode() {
             return executionMode;
+        }
+
+        @Override
+        public boolean requiresJobLock() {
+            return requiresJobLock;
         }
 
         @Override

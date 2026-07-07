@@ -4,10 +4,14 @@ import org.junit.jupiter.api.Test;
 import stock.batch.service.automarket.biz.AutoMarketOrderExpiryJobService;
 import stock.batch.service.automarket.biz.AutoMarketService;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
+import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
+import stock.batch.service.automarket.biz.AutoMarketProfileQueueReconcileService;
 import stock.batch.service.automarket.biz.ListingAutoMarketJobService;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -44,6 +48,10 @@ class StockBatchJobLauncherRoutingTest {
             mock(InternalOrderBookExecutionService.class);
     private final AutoParticipantCashFlowService autoParticipantCashFlowService =
             mock(AutoParticipantCashFlowService.class);
+    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService =
+            mock(AutoMarketDailyRegimePreCreateService.class);
+    private final AutoMarketProfileQueueReconcileService autoMarketProfileQueueReconcileService =
+            mock(AutoMarketProfileQueueReconcileService.class);
     private final AutoMarketService autoMarketService = mock(AutoMarketService.class);
     private final AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService =
             mock(AutoMarketOrderExpiryJobService.class);
@@ -59,6 +67,10 @@ class StockBatchJobLauncherRoutingTest {
     private final OrderBookExecutionJob orderBookExecutionJob = new OrderBookExecutionJob(internalOrderBookExecutionService);
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob =
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService);
+    private final AutoMarketDailyRegimePreCreateJob autoMarketDailyRegimePreCreateJob =
+            new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService);
+    private final AutoMarketProfileQueueReconcileJob autoMarketProfileQueueReconcileJob =
+            new AutoMarketProfileQueueReconcileJob(autoMarketProfileQueueReconcileService);
     private final AutoMarketJob autoMarketJob = new AutoMarketJob(autoMarketService);
     private final AutoMarketOrderExpiryJob autoMarketOrderExpiryJob =
             new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService);
@@ -74,6 +86,8 @@ class StockBatchJobLauncherRoutingTest {
             virtualPriceExecutionJob,
             orderBookExecutionJob,
             autoParticipantCashFlowJob,
+            autoMarketDailyRegimePreCreateJob,
+            autoMarketProfileQueueReconcileJob,
             autoMarketJob,
             autoMarketOrderExpiryJob,
             listingAutoMarketJob,
@@ -89,6 +103,8 @@ class StockBatchJobLauncherRoutingTest {
         assertRoutesThroughRunner(virtualPriceExecutionJob, stockBatchJobLauncher::executeVirtualPriceOrders);
         assertRoutesThroughRunner(orderBookExecutionJob, stockBatchJobLauncher::executeOrderBookOrders);
         assertRoutesThroughRunner(autoParticipantCashFlowJob, stockBatchJobLauncher::fundAutoParticipants);
+        assertRoutesThroughRunner(autoMarketDailyRegimePreCreateJob, stockBatchJobLauncher::preCreateAutoMarketDailyRegimes);
+        assertRoutesThroughRunner(autoMarketProfileQueueReconcileJob, stockBatchJobLauncher::reconcileAutoMarketProfileQueue);
         assertRoutesThroughRunner(autoMarketJob, stockBatchJobLauncher::runAutoMarket);
         assertRoutesThroughRunner(autoMarketOrderExpiryJob, stockBatchJobLauncher::expireAutoMarketOrders);
         assertRoutesThroughRunner(listingAutoMarketJob, stockBatchJobLauncher::runListingAutoMarket);
@@ -103,6 +119,7 @@ class StockBatchJobLauncherRoutingTest {
                 orderExecutionService,
                 internalOrderBookExecutionService,
                 autoParticipantCashFlowService,
+                autoMarketDailyRegimePreCreateService,
                 autoMarketService,
                 autoMarketOrderExpiryJobService,
                 listingAutoMarketJobService,

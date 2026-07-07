@@ -11,7 +11,9 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.batch.automarket.model.AutoMarketAssetPreference;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketPriceDirection;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
@@ -31,7 +33,13 @@ class AutoMarketServiceTest {
     private AutoMarketService autoMarketService;
 
     @Autowired
+    private AutoMarketProfileQueueReconcileService autoMarketProfileQueueReconcileService;
+
+    @Autowired
     private AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService;
+
+    @Autowired
+    private AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
 
     @Autowired
     private ListingAutoMarketJobService listingAutoMarketJobService;
@@ -67,6 +75,8 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_order_book_market_config");
         jdbcTemplate.update("delete from stock_listing_auto_account_config");
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
+        jdbcTemplate.update("delete from stock_order_book_regime_modifier");
+        jdbcTemplate.update("delete from stock_order_book_daily_regime");
         jdbcTemplate.update("delete from stock_auto_market_config");
         jdbcTemplate.update("delete from stock_auto_participant_profile_config");
         jdbcTemplate.update("delete from stock_auto_participant");
@@ -106,6 +116,7 @@ class AutoMarketServiceTest {
                 values ('005930', true, 5, 3, 15, current_timestamp)
                 """
         );
+        insertDailyRegime("005930", "UP", "STOCK", 10, 5, 5, 1001L);
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_symbol_config(user_key, symbol, enabled, intensity, updated_at)
@@ -119,7 +130,7 @@ class AutoMarketServiceTest {
 
     @Test
     void runAutoMarketStep_enabledConfigWithoutAccounts_doesNotCreateAccountsOrOrders() {
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_account where user_key like 'stock-auto-%'"))
                 .isZero();
@@ -130,6 +141,143 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void runAutoMarketStep_createsStableDailyRegimeForSimulationDay() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(1L);
+        Long firstSeed = queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
+        String firstDirection = queryString("select price_direction from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
+        String firstPreference = queryString("select asset_preference from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(firstSeed);
+        assertThat(queryString("select price_direction from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(firstDirection);
+        assertThat(queryString("select asset_preference from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(firstPreference);
+    }
+
+    @Test
+    void runAutoMarketStep_createsStableThirtyMinuteRegimeModifier() {
+        jdbcTemplate.update("delete from stock_order_book_regime_modifier where symbol = '005930'");
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                from stock_order_book_regime_modifier
+                where symbol = '005930'
+                  and simulation_trade_date = DATE '2026-01-01'
+                  and regime_phase = 'OPENING'
+                  and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
+                """))
+                .isEqualTo(1L);
+        Long firstSeed = queryLong("""
+                select seed
+                from stock_order_book_regime_modifier
+                where symbol = '005930'
+                  and simulation_trade_date = DATE '2026-01-01'
+                  and regime_phase = 'OPENING'
+                  and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
+                """);
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select seed
+                from stock_order_book_regime_modifier
+                where symbol = '005930'
+                  and simulation_trade_date = DATE '2026-01-01'
+                  and regime_phase = 'OPENING'
+                  and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
+                """))
+                .isEqualTo(firstSeed);
+
+        insertSimulationClockAtSecondOfDay(7200, 9 * 3600 + 35 * 60);
+        runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                from stock_order_book_regime_modifier
+                where symbol = '005930'
+                  and simulation_trade_date = DATE '2026-01-01'
+                  and regime_phase = 'OPENING'
+                """))
+                .isEqualTo(2L);
+        assertThat(queryLong("""
+                select count(*)
+                from stock_order_book_regime_modifier
+                where symbol = '005930'
+                  and simulation_trade_date = DATE '2026-01-01'
+                  and regime_phase = 'OPENING'
+                  and modifier_window_start_at = TIMESTAMP '2026-01-01 09:30:00'
+                """))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void runAutoMarketStep_afterMidSession_createsSeparateMiddayRegime() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+
+        runAutoMarketStep();
+        insertSimulationClockAtSecondOfDay(7200, 12 * 3600 + 5 * 60);
+        runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01'"))
+                .isEqualTo(2L);
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'MIDDAY'"))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void preCreateDailyRegimes_thirtyMinutesBeforeOpen_createsSimulationDayRegime() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+        jdbcTemplate.update("update stock_order_book_market_config set market_status = 'CLOSED' where symbol = '005930'");
+        insertSimulationClockAtSecondOfDay(7200, 5 * 3600 + 30 * 60);
+
+        int createdCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+
+        assertThat(createdCount).isEqualTo(1);
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void preCreateDailyRegimes_outsidePreOpenWindow_skips() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+        insertSimulationClockAtSecondOfDay(7200, 5 * 3600 + 20 * 60);
+
+        int createdCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+
+        assertThat(createdCount).isZero();
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930'"))
+                .isZero();
+    }
+
+    @Test
+    void preCreateDailyRegimes_existingRegime_doesNotDuplicate() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+        insertSimulationClockAtSecondOfDay(7200, 5 * 3600 + 45 * 60);
+
+        int firstCreatedCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+        int secondCreatedCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+
+        assertThat(firstCreatedCount).isEqualTo(1);
+        assertThat(secondCreatedCount).isZero();
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+                .isEqualTo(1L);
+    }
+
+    @Test
     void runAutoMarketStep_seedsParticipantSchedulesAndSkipsUntilNextRun() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
@@ -137,7 +285,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long firstRunOrderCount = queryLong("""
                 select count(*)
@@ -152,7 +300,7 @@ class AutoMarketServiceTest {
         assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key = 'stock-auto-001' and last_run_at is not null and next_run_at > last_run_at and lease_owner is null and lease_until is null"))
                 .isEqualTo(1L);
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("""
                 select count(*)
@@ -183,7 +331,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_auto_participant_order_schedule where user_key in ('stock-auto-001', 'stock-auto-002')"))
                 .isEqualTo(2L);
@@ -203,7 +351,7 @@ class AutoMarketServiceTest {
         LocalDateTime dueAt = LocalDateTime.of(2025, 12, 31, 23, 58);
         insertDueSchedule("stock-auto-001", dueAt);
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("""
                 select count(*)
@@ -241,7 +389,7 @@ class AutoMarketServiceTest {
         LocalDateTime dueAt = LocalDateTime.of(2025, 12, 31, 23, 59);
         insertDueSchedule("stock-auto-001", dueAt);
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("""
                 select count(*)
@@ -263,6 +411,65 @@ class AutoMarketServiceTest {
                  where a.user_key = 'stock-auto-001'
                    and o.symbol = '005930'
                 """)).isZero();
+    }
+
+    @Test
+    void runAutoMarketStep_profileShardSpreadsParticipantsAcrossSymbols() {
+        insertSimulationClock(7200);
+        insertSecondOrderBookSymbol();
+        insertLaterOrderBookSymbol();
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
+        jdbcTemplate.update("delete from stock_auto_participant");
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant(user_key, display_name, enabled, profile_type, created_at, updated_at)
+                values
+                  ('stock-auto-001', '자동 참여자 1', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp),
+                  ('stock-auto-002', '자동 참여자 2', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp),
+                  ('stock-auto-003', '자동 참여자 3', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp),
+                  ('stock-auto-004', '자동 참여자 4', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp),
+                  ('stock-auto-005', '자동 참여자 5', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp),
+                  ('stock-auto-006', '자동 참여자 6', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp)
+                """
+        );
+        jdbcTemplate.update("update stock_auto_market_config set intensity = 8, max_order_quantity = 1 where symbol in ('005930', '999999')");
+        jdbcTemplate.update("update stock_auto_market_config set intensity = 10, max_order_quantity = 1 where symbol = '000660'");
+        jdbcTemplate.update("update stock_price set current_price = 73500.00, previous_close = 70000.00 where symbol = '005930'");
+        jdbcTemplate.update("update stock_price set current_price = 132000.00, previous_close = 120000.00 where symbol = '000660'");
+        jdbcTemplate.update("update stock_price set current_price = 126000.00, previous_close = 120000.00 where symbol = '999999'");
+        for (int index = 1; index <= 6; index++) {
+            String userKey = "stock-auto-%03d".formatted(index);
+            insertFundedAutoAccount(userKey, "50000000.00");
+            insertDueSchedule(userKey, LocalDateTime.of(2025, 12, 31, 23, 59));
+        }
+
+        runAutoMarketStep();
+
+        Long tradedSymbolCount = queryLong("""
+                select count(distinct o.symbol)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key like 'stock-auto-%'
+                   and o.symbol in ('005930', '000660', '999999')
+                """);
+        Long totalOrderCount = queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key like 'stock-auto-%'
+                   and o.symbol in ('005930', '000660', '999999')
+                """);
+        Long strongestSymbolOrderCount = queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key like 'stock-auto-%'
+                   and o.symbol = '000660'
+                """);
+
+        assertThat(totalOrderCount).isPositive();
+        assertThat(tradedSymbolCount).isGreaterThanOrEqualTo(2L);
+        assertThat(strongestSymbolOrderCount).isLessThan(totalOrderCount);
     }
 
     @Test
@@ -333,7 +540,7 @@ class AutoMarketServiceTest {
     void runAutoMarketStep_doesNotGrantIssuedSharesAsAutoHoldings() {
         jdbcTemplate.update("update stock_order_book_instrument set issued_shares = 150, tradable_shares = 150 where symbol = '005930'");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select coalesce(sum(quantity), 0) from stock_holding where symbol = '005930'"))
                 .isZero();
@@ -352,7 +559,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_account where user_key = 'stock-auto-001'"))
                 .isEqualTo(1L);
@@ -480,7 +687,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and side = 'BUY'"))
                 .isPositive();
@@ -592,7 +799,7 @@ class AutoMarketServiceTest {
         );
         insertReportScore(10);
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'"))
                 .isPositive();
@@ -615,8 +822,9 @@ class AutoMarketServiceTest {
                 """
         );
         insertReportScore(1);
+        insertDailyRegime("005930", "NEUTRAL", "CASH", 10, 5, 5, 1002L);
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -766,6 +974,81 @@ class AutoMarketServiceTest {
 
         assertThat(behavior.chooseSide(firstOrder)).isEqualTo("BUY");
         assertThat(behavior.chooseSide(followUpOrder)).isEqualTo("SELL");
+    }
+
+    @Test
+    void profileSignalContext_usesDailyDirectionForPricePressureAndIntensityOnlyAsStrength() {
+        PaydayAccumulatorBehavior behavior = new PaydayAccumulatorBehavior();
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(1L, 1, AutoParticipantProfileType.PAYDAY_ACCUMULATOR);
+        AutoMarketConfig upwardConfig = new AutoMarketConfig(
+                "005930",
+                "ORDERBOOK",
+                1,
+                3,
+                15,
+                300L,
+                new BigDecimal("100.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("30.00"),
+                null,
+                AutoMarketPriceDirection.UP,
+                AutoMarketAssetPreference.STOCK,
+                10,
+                5,
+                5
+        );
+        AutoMarketConfig downwardConfig = new AutoMarketConfig(
+                "005930",
+                "ORDERBOOK",
+                10,
+                3,
+                15,
+                300L,
+                new BigDecimal("100.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("70000.00"),
+                new BigDecimal("30.00"),
+                null,
+                AutoMarketPriceDirection.DOWN,
+                AutoMarketAssetPreference.CASH,
+                10,
+                5,
+                5
+        );
+        ProfileSignalContext lowIntensityUpwardContext = new ProfileSignalContext(
+                strategy,
+                upwardConfig,
+                behavior.defaultPolicy(),
+                1,
+                0,
+                0,
+                0,
+                0L,
+                new BigDecimal("100000.00"),
+                false,
+                0,
+                0
+        );
+        ProfileSignalContext highIntensityDownwardContext = new ProfileSignalContext(
+                strategy,
+                downwardConfig,
+                behavior.defaultPolicy(),
+                10,
+                0,
+                0,
+                0,
+                10L,
+                new BigDecimal("100000.00"),
+                false,
+                0,
+                0
+        );
+
+        assertThat(lowIntensityUpwardContext.pricePressure()).isGreaterThan(0.55);
+        assertThat(highIntensityDownwardContext.pricePressure()).isLessThan(-0.55);
+        assertThat(lowIntensityUpwardContext.assetPreferencePressure()).isGreaterThan(0.55);
+        assertThat(highIntensityDownwardContext.assetPreferencePressure()).isLessThan(-0.55);
     }
 
     @Test
@@ -1187,7 +1470,7 @@ class AutoMarketServiceTest {
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         insertFundedAutoAccount("stock-auto-002", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select min(quantity) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isGreaterThanOrEqualTo(50L);
@@ -1204,7 +1487,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 10 where symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "100000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
@@ -1234,7 +1517,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -1249,6 +1532,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 100 where symbol = '005930'");
+        insertDailyRegime("005930", "UP", "STOCK", 10, 5, 3, 1005L);
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
@@ -1261,7 +1545,7 @@ class AutoMarketServiceTest {
         );
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isEqualTo(6L);
@@ -1296,7 +1580,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -1330,7 +1614,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'");
         assertThat(buyCount).isPositive();
@@ -1374,7 +1658,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
@@ -1524,7 +1808,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002'"))
                 .isZero();
@@ -1551,7 +1835,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
                 .isZero();
@@ -1582,7 +1866,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
                 .isZero();
@@ -1607,7 +1891,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'BUY'"))
                 .isPositive();
@@ -1635,7 +1919,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key in ('stock-auto-001', 'stock-auto-002') and o.side = 'SELL'"))
                 .isPositive();
@@ -1652,7 +1936,7 @@ class AutoMarketServiceTest {
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         insertFundedAutoAccount("stock-auto-002", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long longTermOrderCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'");
         long dayTraderOrderCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002'");
@@ -1679,7 +1963,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isGreaterThanOrEqualTo(6L);
@@ -1703,7 +1987,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
         assertThat(buyCount).isPositive();
@@ -1727,7 +2011,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
         assertThat(buyCount).isPositive();
@@ -1751,7 +2035,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'");
         assertThat(sellCount).isPositive();
@@ -1767,7 +2051,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_price set current_price = 91000.00, previous_close = 70000.00 where symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
@@ -1793,7 +2077,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
                 .isPositive();
@@ -1819,7 +2103,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long sellCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'");
         assertThat(sellCount).isPositive();
@@ -1843,7 +2127,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
         assertThat(buyCount).isPositive();
@@ -1867,7 +2151,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -1891,7 +2175,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'SELL'"))
                 .isPositive();
@@ -1928,7 +2212,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'BUY'"))
                 .isPositive();
@@ -1965,7 +2249,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'SELL'"))
                 .isPositive();
@@ -1989,7 +2273,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         long buyCount = queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'");
         assertThat(buyCount).isPositive();
@@ -2013,7 +2297,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'"))
                 .isPositive();
@@ -2037,7 +2321,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -2051,6 +2335,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'LIQUIDITY_AVOIDANT' where user_key = 'stock-auto-002'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'OBSERVER' where user_key = 'stock-auto-003'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where symbol = '005930'");
+        insertDailyRegime("005930", "NEUTRAL", "BALANCED", 5, 5, 5, 1003L);
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         insertFundedAutoAccount("stock-auto-002", "50000000.00");
         insertFundedAutoAccount("stock-auto-003", "50000000.00");
@@ -2063,7 +2348,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key in ('stock-auto-001', 'stock-auto-002', 'stock-auto-003')"))
                 .isZero();
@@ -2077,7 +2362,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_account where user_key = 'stock-auto-001'"))
                 .isZero();
@@ -2094,9 +2379,19 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'OBSERVER' where user_key = 'stock-auto-003'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-003' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 10 where symbol = '005930'");
+        jdbcTemplate.update(
+                """
+                update stock_order_book_regime_modifier
+                   set price_direction_modifier = 10,
+                       asset_preference_modifier = 10
+                 where symbol = '005930'
+                   and simulation_trade_date = DATE '2026-01-01'
+                   and regime_phase = 'OPENING'
+                """
+        );
         insertFundedAutoAccount("stock-auto-003", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-003' and o.side = 'BUY'"))
                 .isEqualTo(1L);
@@ -2115,7 +2410,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 10 where symbol = '005930'");
         insertFundedAutoAccount("stock-auto-002", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and o.side = 'BUY'"))
                 .isBetween(1L, 2L);
@@ -2147,7 +2442,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isZero();
@@ -2173,7 +2468,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isZero();
@@ -2289,7 +2584,7 @@ class AutoMarketServiceTest {
         insertAutoAccount("stock-auto-001", "0.00");
 
         autoParticipantCashFlowService.fundRecurringCash();
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryDecimal("""
                 select cash_balance
@@ -2320,7 +2615,7 @@ class AutoMarketServiceTest {
                 """);
 
         autoParticipantCashFlowService.fundRecurringCash();
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("""
                 select count(*)
@@ -2353,7 +2648,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'BUY'"))
                 .isPositive();
@@ -2377,7 +2672,7 @@ class AutoMarketServiceTest {
                 """
         );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and o.side = 'SELL'"))
                 .isPositive();
@@ -2391,9 +2686,10 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'CASH_DEFENSIVE' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertDailyRegime("005930", "NEUTRAL", "BALANCED", 5, 5, 5, 1004L);
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isZero();
@@ -2529,8 +2825,8 @@ class AutoMarketServiceTest {
                 """)).isEqualTo(2L);
     }
 
-	    @Test
-	    void runAutoMarketStep_participantIntensityOne_createsSellPressureForThatParticipant() {
+    @Test
+    void runAutoMarketStep_participantIntensityOneDoesNotCreateSellPressureByItself() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 1 where user_key = 'stock-auto-002' and symbol = '005930'");
@@ -2548,23 +2844,13 @@ class AutoMarketServiceTest {
                 where user_key = 'stock-auto-002'
                 """
         );
-        jdbcTemplate.update(
-                """
-                insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
-                select id, '005930', 10, 0, 70000.00, current_timestamp
-                from stock_account
-                where user_key = 'stock-auto-002'
-                """
-        );
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and side = 'SELL'"))
-                .isPositive();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and side = 'BUY'"))
+                .isPositive();
+        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and side = 'SELL'"))
                 .isZero();
-        assertThat(queryDecimal("select max(limit_price) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002'"))
-                .isLessThanOrEqualTo(new BigDecimal("70000.00"));
     }
 
     @Test
@@ -2572,7 +2858,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant_symbol_config set enabled = false where user_key = 'stock-auto-002' and symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
 
-        autoMarketService.runAutoMarketStep();
+        runAutoMarketStep();
 
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isPositive();
@@ -2617,6 +2903,7 @@ class AutoMarketServiceTest {
                 values ('000660', true, 5, 1, 15, current_timestamp)
                 """
         );
+        insertDailyRegime("000660", "UP", "STOCK", 10, 5, 5, 2001L);
     }
 
     private void insertLaterOrderBookSymbol() {
@@ -2643,6 +2930,57 @@ class AutoMarketServiceTest {
                 insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
                 values ('999999', true, 5, 1, 15, current_timestamp)
                 """
+        );
+        insertDailyRegime("999999", "UP", "STOCK", 10, 5, 5, 3001L);
+    }
+
+    private void insertDailyRegime(
+            String symbol,
+            String priceDirection,
+            String assetPreference,
+            int directionIntensity,
+            int volatilityLevel,
+            int liquidityLevel,
+            long seed
+    ) {
+        jdbcTemplate.update(
+                "delete from stock_order_book_daily_regime where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'",
+                symbol
+        );
+        jdbcTemplate.update(
+                "delete from stock_order_book_regime_modifier where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING' and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'",
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_daily_regime(
+                    symbol, simulation_trade_date, regime_phase, price_direction, asset_preference,
+                    direction_intensity, volatility_level, liquidity_level, execution_aggression_level, seed,
+                    created_at, updated_at
+                )
+                values (?, DATE '2026-01-01', 'OPENING', ?, ?, ?, ?, ?, 5, ?, current_timestamp, current_timestamp)
+                """,
+                symbol,
+                priceDirection,
+                assetPreference,
+                directionIntensity,
+                volatilityLevel,
+                liquidityLevel,
+                seed
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_regime_modifier(
+                    symbol, simulation_trade_date, regime_phase, modifier_window_start_at,
+                    price_direction_modifier, asset_preference_modifier, direction_intensity_modifier,
+                    volatility_modifier, liquidity_modifier, execution_aggression_modifier,
+                    seed, created_at, updated_at
+                )
+                values (?, DATE '2026-01-01', 'OPENING', TIMESTAMP '2026-01-01 09:00:00',
+                        0, 0, 0, 0, 0, 0, ?, current_timestamp, current_timestamp)
+                """,
+                symbol,
+                seed
         );
     }
 
@@ -2737,7 +3075,14 @@ class AutoMarketServiceTest {
     }
 
     private void insertSimulationClock(int realSecondsPerSimulationDay) {
+        insertSimulationClockAtSecondOfDay(realSecondsPerSimulationDay, 9 * 3600);
+    }
+
+    private void insertSimulationClockAtSecondOfDay(int realSecondsPerSimulationDay, int simulationSecondOfDay) {
         jdbcTemplate.update("delete from stock_simulation_clock");
+        long accumulatedRealSeconds = Math.max(1, realSecondsPerSimulationDay)
+                * Math.max(0, simulationSecondOfDay)
+                / 86_400L;
         jdbcTemplate.update(
                 """
                 insert into stock_simulation_clock(
@@ -2748,11 +3093,16 @@ class AutoMarketServiceTest {
                 values ('DEFAULT', DATE '2026-01-01', ?, ?, true, current_timestamp, current_timestamp, 'Asia/Seoul', current_timestamp, current_timestamp)
                 """,
                 realSecondsPerSimulationDay,
-                Math.max(1, realSecondsPerSimulationDay) * 3L / 8L
+                accumulatedRealSeconds
         );
     }
 
     private BigDecimal queryDecimal(String sql) {
         return jdbcTemplate.queryForObject(sql, BigDecimal.class);
+    }
+
+    private int runAutoMarketStep() {
+        autoMarketProfileQueueReconcileService.reconcileReadyProfiles();
+        return autoMarketService.runAutoMarketStep();
     }
 }

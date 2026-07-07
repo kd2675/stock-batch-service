@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -22,14 +23,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.automarket.config.AutoMarketGenerationExecutorConfig;
+import stock.batch.service.automarket.lock.AutoMarketProfileLock;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
-import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
@@ -43,13 +45,15 @@ public class AutoMarketService {
     private static final Duration PROJECT_SHORT_MOMENTUM_WINDOW = Duration.ofHours(1);
 
     private final AutoMarketReader autoMarketReader;
+    private final AutoMarketDailyRegimeService autoMarketDailyRegimeService;
     private final AutoParticipantOrderService autoParticipantOrderService;
     private final AutoParticipantOrderScheduleService autoParticipantOrderScheduleService;
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
-    private final OrderBookSymbolLock orderBookSymbolLock;
+    private final AutoMarketProfileLock autoMarketProfileLock;
+    private final AutoMarketReadyProfileQueue readyProfileQueue;
     private final Executor autoMarketGenerationTaskExecutor;
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
@@ -57,6 +61,9 @@ public class AutoMarketService {
 
     @Value("${stock.batch.auto-market.generation-due-limit-per-symbol:100}")
     private int generationDueLimitPerSymbol;
+
+    @Value("${stock.batch.auto-market.generation-profile-worker-count:4}")
+    private int generationProfileWorkerCount;
 
     @Value("${stock.batch.auto-market.slow-symbol-log-threshold-ms:1000}")
     private long slowSymbolLogThresholdMs;
@@ -67,25 +74,38 @@ public class AutoMarketService {
     @Value("${stock.batch.auto-market.deadlock-retry-backoff-ms:50}")
     private long deadlockRetryBackoffMs = 50;
 
+    @Value("${stock.batch.auto-market.symbol-selection.diversity-penalty:3.0}")
+    private double symbolSelectionDiversityPenalty;
+
+    @Value("${stock.batch.auto-market.symbol-selection.participant-affinity-weight:0.75}")
+    private double symbolSelectionParticipantAffinityWeight;
+
+    @Value("${stock.batch.auto-market.symbol-selection.max-share-per-profile:0.55}")
+    private double symbolSelectionMaxSharePerProfile;
+
     public AutoMarketService(
             AutoMarketReader autoMarketReader,
+            AutoMarketDailyRegimeService autoMarketDailyRegimeService,
             AutoParticipantOrderService autoParticipantOrderService,
             AutoParticipantOrderScheduleService autoParticipantOrderScheduleService,
             AutoProfileBehaviorSupport autoProfileBehaviorSupport,
             SimulationClockService simulationClockService,
             SimulationMarketSessionService simulationMarketSessionService,
             TransactionTemplate transactionTemplate,
-            OrderBookSymbolLock orderBookSymbolLock,
+            AutoMarketProfileLock autoMarketProfileLock,
+            AutoMarketReadyProfileQueue readyProfileQueue,
             @Qualifier(AutoMarketGenerationExecutorConfig.AUTO_MARKET_GENERATION_TASK_EXECUTOR) Executor autoMarketGenerationTaskExecutor
     ) {
         this.autoMarketReader = autoMarketReader;
+        this.autoMarketDailyRegimeService = autoMarketDailyRegimeService;
         this.autoParticipantOrderService = autoParticipantOrderService;
         this.autoParticipantOrderScheduleService = autoParticipantOrderScheduleService;
         this.autoProfileBehaviorSupport = autoProfileBehaviorSupport;
         this.simulationClockService = simulationClockService;
         this.simulationMarketSessionService = simulationMarketSessionService;
         this.transactionTemplate = transactionTemplate;
-        this.orderBookSymbolLock = orderBookSymbolLock;
+        this.autoMarketProfileLock = autoMarketProfileLock;
+        this.readyProfileQueue = readyProfileQueue;
         this.autoMarketGenerationTaskExecutor = autoMarketGenerationTaskExecutor;
     }
 
@@ -102,6 +122,11 @@ public class AutoMarketService {
         AutoMarketRunCount totalCount = new AutoMarketRunCount();
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
+        configs = autoMarketDailyRegimeService.applyDailyRegimes(
+                configs,
+                clock.simulationDateTime().toLocalDate(),
+                clock.simulationDateTime()
+        );
         Map<String, AutoMarketConfig> configBySymbol = configs.stream()
                 .collect(Collectors.toMap(
                         AutoMarketConfig::symbol,
@@ -109,26 +134,18 @@ public class AutoMarketService {
                         (left, right) -> left,
                         LinkedHashMap::new
                 ));
-        if (autoMarketReader.hasMissingParticipantSchedules(configs)) {
-            Map<String, List<AutoParticipantStrategy>> enabledStrategiesBySymbol = autoMarketReader.findEnabledParticipantStrategiesBySymbol(configs);
-            runInTransactionWithDeadlockRetry("auto-market-schedule", () -> autoParticipantOrderScheduleService.ensureSchedules(
-                    uniqueParticipantStrategies(enabledStrategiesBySymbol),
-                    profilePolicies,
-                    clock.simulationDateTime()
-            ));
+        List<AutoParticipantProfileType> readyProfiles = claimReadyProfiles(clock.simulationDateTime());
+        if (readyProfiles.isEmpty()) {
+            return 0;
         }
-        List<AutoParticipantSymbolStrategy> candidates = autoMarketReader.findDueParticipantSymbolStrategies(
+        Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = findDueCandidatesByProfile(
+                readyProfiles,
                 configs,
-                clock.simulationDateTime(),
-                generationDueParticipantLimit(configs.size())
-        );
-        Map<String, List<AutoParticipantStrategy>> strategiesBySymbol = selectedStrategiesBySymbol(
-                candidates,
                 configBySymbol,
-                profilePolicies,
                 clock.simulationDateTime()
         );
-        int activeParticipantCount = activeParticipantCount(strategiesBySymbol);
+        requeueProfilesWithoutCandidates(readyProfiles, candidatesByProfile, clock.simulationDateTime());
+        int activeParticipantCount = activeParticipantCount(candidatesByProfile);
         Map<String, BigDecimal> momentumReferencePricesBySymbol = activeParticipantCount == 0
                 ? Map.of()
                 : autoMarketReader.findLatestPricesAtOrBefore(
@@ -137,16 +154,17 @@ public class AutoMarketService {
                                 .toList(),
                         clock.simulationDateTime().minus(PROJECT_SHORT_MOMENTUM_WINDOW)
                 );
-        List<SymbolGenerationWork> works = symbolGenerationWorks(
-                configs,
-                strategiesBySymbol,
+        List<ProfileGenerationWork> works = profileGenerationWorks(
+                candidatesByProfile,
+                configBySymbol,
                 momentumReferencePricesBySymbol
         );
-        totalCount.add(runSymbolGenerationWorks(works, profilePolicies, clock.simulationDateTime()));
+        totalCount.add(runProfileGenerationWorks(works, profilePolicies, clock.simulationDateTime()));
         log.info(
-                "Auto market step completed: symbols={}, participants={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
+                "Auto market step completed: symbols={}, participants={}, profileShards={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
                 configs.size(),
                 activeParticipantCount,
+                totalCount.profileShards,
                 totalCount.symbolShards,
                 totalCount.scheduledStrategies,
                 totalCount.dueStrategies,
@@ -161,11 +179,12 @@ public class AutoMarketService {
         return totalCount.processedCount();
     }
 
-    private int activeParticipantCount(Map<String, List<AutoParticipantStrategy>> strategiesBySymbol) {
-        return (int) strategiesBySymbol.values()
+    private int activeParticipantCount(Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile) {
+        return (int) candidatesByProfile.values()
                 .stream()
                 .flatMap(List::stream)
-                .map(AutoParticipantStrategy::accountId)
+                .map(AutoParticipantSymbolStrategy::strategy)
+                .map(AutoParticipantStrategy::userKey)
                 .distinct()
                 .count();
     }
@@ -174,14 +193,96 @@ public class AutoMarketService {
         return Math.max(1, generationDueLimitPerSymbol) * Math.max(1, symbolCount);
     }
 
-    private List<AutoParticipantStrategy> uniqueParticipantStrategies(Map<String, List<AutoParticipantStrategy>> strategiesBySymbol) {
-        Map<String, AutoParticipantStrategy> strategiesByUserKey = new LinkedHashMap<>();
-        strategiesBySymbol.values()
+    private List<AutoParticipantProfileType> claimReadyProfiles(LocalDateTime now) {
+        int workerCount = Math.max(1, generationProfileWorkerCount);
+        List<AutoParticipantProfileType> profiles = new ArrayList<>();
+        while (profiles.size() < workerCount) {
+            int previousSize = profiles.size();
+            AutoParticipantProfileType claimedProfile = readyProfileQueue.claimDueProfile(now)
+                    .orElse(null);
+            if (claimedProfile != null) {
+                if (!addDistinctProfile(profiles, claimedProfile)) {
+                    break;
+                }
+                continue;
+            }
+            if (profiles.size() == previousSize) {
+                break;
+            }
+        }
+        return List.copyOf(profiles);
+    }
+
+    private void requeueProfilesWithoutCandidates(
+            List<AutoParticipantProfileType> claimedProfiles,
+            Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile,
+            LocalDateTime now
+    ) {
+        List<AutoParticipantProfileType> emptyProfiles = claimedProfiles.stream()
+                .filter(profileType -> !candidatesByProfile.containsKey(profileType))
+                .toList();
+        if (!emptyProfiles.isEmpty()) {
+            requeueProfiles(emptyProfiles, now.plusSeconds(1));
+        }
+    }
+
+    private boolean addDistinctProfile(List<AutoParticipantProfileType> profiles, AutoParticipantProfileType profileType) {
+        if (profileType == null || profiles.contains(profileType)) {
+            return false;
+        }
+        profiles.add(profileType);
+        return true;
+    }
+
+    private Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> findDueCandidatesByProfile(
+            List<AutoParticipantProfileType> readyProfiles,
+            List<AutoMarketConfig> configs,
+            Map<String, AutoMarketConfig> configBySymbol,
+            LocalDateTime now
+    ) {
+        Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = new LinkedHashMap<>();
+        int participantLimit = generationDueParticipantLimit(configs.size());
+        for (AutoParticipantProfileType profileType : readyProfiles) {
+            List<AutoParticipantSymbolStrategy> candidates = autoMarketReader.findDueParticipantSymbolStrategies(
+                    configs,
+                    profileType,
+                    now,
+                    participantLimit
+            );
+            List<AutoParticipantSymbolStrategy> scopedCandidates = candidatesByProfile(candidates, configBySymbol)
+                    .getOrDefault(profileType, List.of());
+            if (!scopedCandidates.isEmpty()) {
+                candidatesByProfile.put(profileType, scopedCandidates);
+            }
+        }
+        return candidatesByProfile;
+    }
+
+    private Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile(
+            List<AutoParticipantSymbolStrategy> candidates,
+            Map<String, AutoMarketConfig> configBySymbol
+    ) {
+        Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = new LinkedHashMap<>();
+        for (AutoParticipantSymbolStrategy candidate : candidates) {
+            AutoParticipantStrategy strategy = candidate.strategy();
+            if (strategy.userKey() == null || strategy.userKey().isBlank()) {
+                continue;
+            }
+            if (!configBySymbol.containsKey(candidate.symbol())) {
+                continue;
+            }
+            candidatesByProfile
+                    .computeIfAbsent(strategy.profileType(), ignored -> new ArrayList<>())
+                    .add(candidate);
+        }
+        return candidatesByProfile.entrySet()
                 .stream()
-                .flatMap(List::stream)
-                .filter(strategy -> strategy.userKey() != null && !strategy.userKey().isBlank())
-                .forEach(strategy -> strategiesByUserKey.putIfAbsent(strategy.userKey(), strategy));
-        return List.copyOf(strategiesByUserKey.values());
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        entry -> List.copyOf(entry.getValue()),
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
     }
 
     private Map<String, List<AutoParticipantStrategy>> selectedStrategiesBySymbol(
@@ -190,7 +291,40 @@ public class AutoMarketService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        Map<String, AutoParticipantSymbolStrategy> selectedByUserKey = new LinkedHashMap<>();
+        Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = candidatesByProfile(candidates, configBySymbol);
+        Map<String, List<AutoParticipantStrategy>> strategiesBySymbol = new LinkedHashMap<>();
+        for (Map.Entry<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> entry : candidatesByProfile.entrySet()) {
+            List<AutoParticipantSymbolStrategy> selectedCandidates = selectProfileSymbols(
+                    entry.getKey(),
+                    entry.getValue(),
+                    configBySymbol,
+                    profilePolicies,
+                    now
+            );
+            for (AutoParticipantSymbolStrategy selected : selectedCandidates) {
+                strategiesBySymbol
+                        .computeIfAbsent(selected.symbol(), ignored -> new ArrayList<>())
+                        .add(selected.strategy());
+            }
+        }
+        return strategiesBySymbol.entrySet()
+                .stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        entry -> List.copyOf(entry.getValue()),
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+    }
+
+    private List<AutoParticipantSymbolStrategy> selectProfileSymbols(
+            AutoParticipantProfileType profileType,
+            List<AutoParticipantSymbolStrategy> candidates,
+            Map<String, AutoMarketConfig> configBySymbol,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
+    ) {
+        Map<String, List<AutoParticipantSymbolStrategy>> candidatesByUserKey = new LinkedHashMap<>();
         for (AutoParticipantSymbolStrategy candidate : candidates) {
             AutoParticipantStrategy strategy = candidate.strategy();
             if (strategy.userKey() == null || strategy.userKey().isBlank()) {
@@ -200,32 +334,47 @@ public class AutoMarketService {
             if (config == null) {
                 continue;
             }
-            AutoParticipantSymbolStrategy current = selectedByUserKey.get(strategy.userKey());
-            if (current == null || symbolSelectionScore(candidate, config, profilePolicies, now) > symbolSelectionScore(current, configBySymbol.get(current.symbol()), profilePolicies, now)) {
-                selectedByUserKey.put(strategy.userKey(), candidate);
-            }
+            candidatesByUserKey
+                    .computeIfAbsent(strategy.userKey(), ignored -> new ArrayList<>())
+                    .add(candidate);
         }
-        Map<String, List<AutoParticipantStrategy>> strategiesBySymbol = new LinkedHashMap<>();
-        selectedByUserKey.values()
-                .stream()
-                .sorted((left, right) -> {
-                    int symbolComparison = left.symbol().compareTo(right.symbol());
-                    if (symbolComparison != 0) {
-                        return symbolComparison;
-                    }
-                    return left.strategy().userKey().compareTo(right.strategy().userKey());
-                })
-                .forEach(selected -> strategiesBySymbol
-                        .computeIfAbsent(selected.symbol(), ignored -> new ArrayList<>())
-                        .add(selected.strategy()));
-        return strategiesBySymbol.entrySet()
-                .stream()
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        entry -> List.copyOf(entry.getValue()),
-                        (left, right) -> left,
-                        LinkedHashMap::new
-                ));
+        if (candidatesByUserKey.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, Double> targetCountsBySymbol = targetCountsBySymbol(
+                profileType,
+                candidates,
+                configBySymbol,
+                profilePolicies,
+                now,
+                candidatesByUserKey.size()
+        );
+        Map<String, Integer> selectedCountsBySymbol = new LinkedHashMap<>();
+        List<AutoParticipantSymbolStrategy> selected = new ArrayList<>();
+        for (Map.Entry<String, List<AutoParticipantSymbolStrategy>> entry : candidatesByUserKey.entrySet()) {
+            AutoParticipantSymbolStrategy best = null;
+            double bestScore = Double.NEGATIVE_INFINITY;
+            for (AutoParticipantSymbolStrategy candidate : entry.getValue()) {
+                AutoMarketConfig config = configBySymbol.get(candidate.symbol());
+                double targetCount = Math.max(1.0, targetCountsBySymbol.getOrDefault(candidate.symbol(), 1.0));
+                int selectedCount = selectedCountsBySymbol.getOrDefault(candidate.symbol(), 0);
+                double diversityPenalty = selectedCount / targetCount * Math.max(0.0, symbolSelectionDiversityPenalty);
+                double adjustedScore = symbolSelectionScore(candidate, config, profilePolicies, now)
+                        + participantSymbolAffinity(entry.getKey(), candidate.symbol())
+                        - diversityPenalty;
+                if (best == null || adjustedScore > bestScore) {
+                    best = candidate;
+                    bestScore = adjustedScore;
+                }
+            }
+            if (best == null) {
+                continue;
+            }
+            selected.add(best);
+            selectedCountsBySymbol.merge(best.symbol(), 1, Integer::sum);
+        }
+        return List.copyOf(selected);
     }
 
     private double symbolSelectionScore(
@@ -251,12 +400,117 @@ public class AutoMarketService {
                 + policy.dipBuyWeight() * Math.max(0, -momentum)
                 - policy.panicSellWeight() * Math.max(0, -momentum) * 0.25
                 + policy.marketMakingWeight() * (1.0 - Math.min(1.0, Math.abs(momentum)));
-        double deterministicSpread = Math.floorMod((strategy.userKey() + "\n" + candidate.symbol()).hashCode(), 1000) / 10000.0;
+        double profileTendency = profileSymbolTendency(strategy.profileType(), momentum, reportScore);
         return overdueScore * 2.0
                 + priorityScore
-                + intensityScore
+                + intensityScore * 0.65
                 + profileSignal
-                + deterministicSpread;
+                + profileTendency;
+    }
+
+    private Map<String, Double> targetCountsBySymbol(
+            AutoParticipantProfileType profileType,
+            List<AutoParticipantSymbolStrategy> candidates,
+            Map<String, AutoMarketConfig> configBySymbol,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now,
+            int participantCount
+    ) {
+        Map<String, List<Double>> scoresBySymbol = new LinkedHashMap<>();
+        for (AutoParticipantSymbolStrategy candidate : candidates) {
+            AutoMarketConfig config = configBySymbol.get(candidate.symbol());
+            if (config == null) {
+                continue;
+            }
+            double score = symbolSelectionScore(candidate, config, profilePolicies, now);
+            scoresBySymbol.computeIfAbsent(candidate.symbol(), ignored -> new ArrayList<>()).add(score);
+        }
+        if (scoresBySymbol.isEmpty()) {
+            return Map.of();
+        }
+        double maxAverageScore = scoresBySymbol.values()
+                .stream()
+                .mapToDouble(this::average)
+                .max()
+                .orElse(0);
+        Map<String, Double> rawWeightsBySymbol = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Double>> entry : scoresBySymbol.entrySet()) {
+            double normalizedScore = Math.clamp(average(entry.getValue()) - maxAverageScore, -4.0, 0.0);
+            rawWeightsBySymbol.put(entry.getKey(), Math.exp(normalizedScore));
+        }
+        double rawTotalWeight = rawWeightsBySymbol.values()
+                .stream()
+                .mapToDouble(Double::doubleValue)
+                .sum();
+        if (rawTotalWeight <= 0) {
+            return Map.of();
+        }
+        double maxShare = Math.clamp(symbolSelectionMaxSharePerProfile, 0.25, 1.0);
+        Map<String, Double> cappedSharesBySymbol = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> entry : rawWeightsBySymbol.entrySet()) {
+            cappedSharesBySymbol.put(entry.getKey(), Math.min(maxShare, entry.getValue() / rawTotalWeight));
+        }
+        double cappedTotalShare = cappedSharesBySymbol.values()
+                .stream()
+                .mapToDouble(Double::doubleValue)
+                .sum();
+        if (cappedTotalShare <= 0) {
+            return Map.of();
+        }
+        Map<String, Double> targetCountsBySymbol = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> entry : cappedSharesBySymbol.entrySet()) {
+            double normalizedShare = entry.getValue() / cappedTotalShare;
+            targetCountsBySymbol.put(entry.getKey(), Math.max(1.0, participantCount * normalizedShare));
+        }
+        return targetCountsBySymbol;
+    }
+
+    private double average(List<Double> values) {
+        if (values.isEmpty()) {
+            return 0;
+        }
+        return values.stream()
+                .mapToDouble(Double::doubleValue)
+                .average()
+                .orElse(0);
+    }
+
+    private double participantSymbolAffinity(String userKey, String symbol) {
+        double normalized = Math.floorMod((userKey + "\n" + symbol).hashCode(), 10_000) / 10_000.0;
+        return (normalized - 0.5) * Math.max(0.0, symbolSelectionParticipantAffinityWeight);
+    }
+
+    private double profileSymbolTendency(
+            AutoParticipantProfileType profileType,
+            double momentum,
+            double reportScore
+    ) {
+        double positiveMomentum = Math.max(0, momentum);
+        double negativeMomentum = Math.max(0, -momentum);
+        double quietMarket = 1.0 - Math.min(1.0, Math.abs(momentum));
+        return switch (profileType) {
+            case NEWS_REACTIVE -> reportScore * 0.35;
+            case MOMENTUM_FOLLOWER, FOMO_BUYER, HERD_FOLLOWER, OVERCONFIDENT ->
+                    positiveMomentum * 0.55 - negativeMomentum * 0.12;
+            case CONTRARIAN, DIP_BUYER, AVERAGE_DOWN_BUYER, VALUE_ANCHOR, LIMIT_DOWN_TRAPPED ->
+                    negativeMomentum * 0.55 - positiveMomentum * 0.10;
+            case MARKET_MAKER, LIQUIDITY_AVOIDANT, CASH_DEFENSIVE, OBSERVER ->
+                    quietMarket * 0.35;
+            case SCALPER, DAY_TRADER, SWING_TRADER ->
+                    Math.abs(momentum) * 0.25 + positiveMomentum * 0.10;
+            case PANIC_SELLER, STOP_LOSS_TRADER ->
+                    negativeMomentum * 0.35;
+            case PROFIT_LOCKER ->
+                    positiveMomentum * 0.30;
+            case LONG_TERM_HOLDER, PAYDAY_ACCUMULATOR, DIVIDEND_REINVESTOR, LOSS_AVERSE ->
+                    quietMarket * 0.20 + negativeMomentum * 0.12;
+            case SMALL_DIVERSIFIER ->
+                    quietMarket * 0.15;
+            case WHALE ->
+                    Math.abs(momentum) * 0.15;
+            case NOISE_TRADER ->
+                    0.0;
+        };
     }
 
     private double priceChangeRate(AutoMarketConfig config) {
@@ -274,28 +528,28 @@ public class AutoMarketService {
         );
     }
 
-    private List<SymbolGenerationWork> symbolGenerationWorks(
-            List<AutoMarketConfig> configs,
-            Map<String, List<AutoParticipantStrategy>> strategiesBySymbol,
+    private List<ProfileGenerationWork> profileGenerationWorks(
+            Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile,
+            Map<String, AutoMarketConfig> configBySymbol,
             Map<String, BigDecimal> momentumReferencePricesBySymbol
     ) {
-        List<SymbolGenerationWork> works = new ArrayList<>();
-        for (AutoMarketConfig config : configs) {
-            List<AutoParticipantStrategy> strategies = strategiesBySymbol.getOrDefault(config.symbol(), List.of());
-            if (strategies.isEmpty()) {
+        List<ProfileGenerationWork> works = new ArrayList<>();
+        for (Map.Entry<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> entry : candidatesByProfile.entrySet()) {
+            if (entry.getValue().isEmpty()) {
                 continue;
             }
-            works.add(new SymbolGenerationWork(
-                    config,
-                    strategies,
-                    momentumReferencePricesBySymbol.get(config.symbol())
+            works.add(new ProfileGenerationWork(
+                    entry.getKey(),
+                    entry.getValue(),
+                    configBySymbol,
+                    momentumReferencePricesBySymbol
             ));
         }
         return works;
     }
 
-    private AutoMarketRunCount runSymbolGenerationWorks(
-            List<SymbolGenerationWork> works,
+    private AutoMarketRunCount runProfileGenerationWorks(
+            List<ProfileGenerationWork> works,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
@@ -304,61 +558,75 @@ public class AutoMarketService {
         }
         List<CompletableFuture<AutoMarketRunCount>> futures = works.stream()
                 .map(work -> CompletableFuture.supplyAsync(
-                        () -> runSymbolGenerationWork(work, profilePolicies, now),
+                        () -> runProfileGenerationWork(work, profilePolicies, now),
                         autoMarketGenerationTaskExecutor
                 ))
                 .toList();
         AutoMarketRunCount total = new AutoMarketRunCount();
         for (CompletableFuture<AutoMarketRunCount> future : futures) {
-            total.add(joinSymbolGenerationResult(future));
+            total.add(joinProfileGenerationResult(future));
         }
         return total;
     }
 
-    private AutoMarketRunCount joinSymbolGenerationResult(CompletableFuture<AutoMarketRunCount> future) {
+    private AutoMarketRunCount joinProfileGenerationResult(CompletableFuture<AutoMarketRunCount> future) {
         try {
             return future.join();
         } catch (CompletionException ex) {
-            log.warn("Auto market symbol generation shard failed: reason={}", ex.getMessage(), ex);
+            log.warn("Auto market profile generation shard failed: reason={}", ex.getMessage(), ex);
             return new AutoMarketRunCount();
         }
     }
 
-    private AutoMarketRunCount runSymbolGenerationWork(
-            SymbolGenerationWork work,
+    private AutoMarketRunCount runProfileGenerationWork(
+            ProfileGenerationWork work,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        return orderBookSymbolLock.tryLock(work.config().symbol())
+        return autoMarketProfileLock.tryLock(work.profileType())
                 .map(lock -> {
                     try (lock) {
-                        return runLockedSymbolGenerationWork(work, profilePolicies, now);
+                        return runLockedProfileGenerationWork(work, profilePolicies, now);
+                    } finally {
+                        requeueProfiles(List.of(work.profileType()), now.plusSeconds(1));
                     }
                 })
-                .orElseGet(AutoMarketRunCount::new);
+                .orElseGet(() -> {
+                    readyProfileQueue.enqueue(work.profileType(), now.plusSeconds(1));
+                    return new AutoMarketRunCount();
+                });
     }
 
-    private AutoMarketRunCount runLockedSymbolGenerationWork(
-            SymbolGenerationWork work,
+    private void requeueProfiles(List<AutoParticipantProfileType> profileTypes, LocalDateTime fallbackReadyAt) {
+        try {
+            readyProfileQueue.enqueueAll(autoParticipantOrderScheduleService.findNextProfileSchedules(profileTypes, fallbackReadyAt));
+        } catch (RuntimeException ex) {
+            log.warn("Auto market ready profile requeue failed: profileTypes={}, reason={}", profileTypes, ex.getMessage());
+        }
+    }
+
+    private AutoMarketRunCount runLockedProfileGenerationWork(
+            ProfileGenerationWork work,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
         long startedNanos = System.nanoTime();
-        AutoMarketRunCount count = runSymbolGeneration(work, profilePolicies, now);
-        count.symbolShards++;
-        logSlowSymbolShard(work.config().symbol(), count, startedNanos);
+        AutoMarketRunCount count = runProfileGeneration(work, profilePolicies, now);
+        count.profileShards++;
+        logSlowProfileShard(work.profileType(), count, startedNanos);
         return count;
     }
 
-    private AutoMarketRunCount runSymbolGeneration(
-            SymbolGenerationWork work,
+    private AutoMarketRunCount runProfileGeneration(
+            ProfileGenerationWork work,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
         AutoMarketRunCount count = new AutoMarketRunCount();
-        count.scheduledStrategies += work.strategies().size();
-        List<AutoParticipantStrategy> dueStrategies = runInTransactionWithDeadlockRetry(work.config().symbol(), () -> autoParticipantOrderScheduleService.claimDueStrategies(
-                work.strategies(),
+        List<AutoParticipantStrategy> profileStrategies = uniqueParticipantStrategies(work.candidates());
+        count.scheduledStrategies += profileStrategies.size();
+        List<AutoParticipantStrategy> dueStrategies = runInTransactionWithDeadlockRetry(work.profileType().name(), () -> autoParticipantOrderScheduleService.claimDueStrategies(
+                profileStrategies,
                 profilePolicies,
                 now,
                 false
@@ -368,15 +636,69 @@ public class AutoMarketService {
             return count;
         }
 
-        double momentumPressure = priceMomentum(work.config(), work.momentumReferencePrice());
+        Set<String> dueUserKeys = dueStrategies.stream()
+                .map(AutoParticipantStrategy::userKey)
+                .collect(Collectors.toSet());
+        List<AutoParticipantSymbolStrategy> dueCandidates = work.candidates()
+                .stream()
+                .filter(candidate -> dueUserKeys.contains(candidate.strategy().userKey()))
+                .toList();
+        Map<String, List<AutoParticipantStrategy>> strategiesBySymbol = selectedStrategiesBySymbol(
+                dueCandidates,
+                work.configBySymbol(),
+                profilePolicies,
+                now
+        );
+        for (Map.Entry<String, List<AutoParticipantStrategy>> entry : strategiesBySymbol.entrySet()) {
+            AutoMarketConfig config = work.configBySymbol().get(entry.getKey());
+            if (config == null) {
+                continue;
+            }
+            count.add(runProfileSymbolGeneration(
+                    work.profileType(),
+                    config,
+                    entry.getValue(),
+                    work.momentumReferencePricesBySymbol().get(config.symbol()),
+                    profilePolicies,
+                    now
+            ));
+        }
+        return count;
+    }
+
+    private List<AutoParticipantStrategy> uniqueParticipantStrategies(List<AutoParticipantSymbolStrategy> candidates) {
+        Map<String, AutoParticipantStrategy> strategiesByUserKey = new LinkedHashMap<>();
+        for (AutoParticipantSymbolStrategy candidate : candidates) {
+            AutoParticipantStrategy strategy = candidate.strategy();
+            if (strategy.userKey() == null || strategy.userKey().isBlank()) {
+                continue;
+            }
+            strategiesByUserKey.putIfAbsent(strategy.userKey(), strategy);
+        }
+        return List.copyOf(strategiesByUserKey.values());
+    }
+
+    private AutoMarketRunCount runProfileSymbolGeneration(
+            AutoParticipantProfileType profileType,
+            AutoMarketConfig config,
+            List<AutoParticipantStrategy> dueStrategies,
+            BigDecimal momentumReferencePrice,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
+    ) {
+        AutoMarketRunCount count = new AutoMarketRunCount();
+        if (dueStrategies.isEmpty()) {
+            return count;
+        }
+        double momentumPressure = priceMomentum(config, momentumReferencePrice);
         int chunkSize = Math.max(1, generationParticipantChunkSize);
         for (int start = 0; start < dueStrategies.size(); start += chunkSize) {
             int end = Math.min(dueStrategies.size(), start + chunkSize);
             List<AutoParticipantStrategy> chunk = dueStrategies.subList(start, end);
-            AutoParticipantOrderGenerationResult generationResult = runInTransactionWithDeadlockRetry(work.config().symbol(), () -> {
+            AutoParticipantOrderGenerationResult generationResult = runInTransactionWithDeadlockRetry(profileType.name() + ":" + config.symbol(), () -> {
                 AutoParticipantOrderGenerationResult result = autoParticipantOrderService.placeAutoOrders(
                         chunk,
-                        work.config(),
+                        config,
                         profilePolicies,
                         momentumPressure
                 );
@@ -390,6 +712,7 @@ public class AutoMarketService {
             count.addGeneration(generationResult);
             count.generationChunks++;
         }
+        count.symbolShards++;
         return count;
     }
 
@@ -486,11 +809,11 @@ public class AutoMarketService {
         throw lastException;
     }
 
-    private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
+    private void sleepBeforeRetry(String label, int attempt, CannotAcquireLockException ex) {
         long backoffMillis = Math.max(0, deadlockRetryBackoffMs) * attempt;
         log.warn(
-                "Auto market generation deadlock retry: symbol={}, attempt={}, backoffMs={}, reason={}",
-                symbol,
+                "Auto market generation deadlock retry: shard={}, attempt={}, backoffMs={}, reason={}",
+                label,
                 attempt,
                 backoffMillis,
                 ex.getMessage()
@@ -506,14 +829,15 @@ public class AutoMarketService {
         }
     }
 
-    private void logSlowSymbolShard(String symbol, AutoMarketRunCount count, long startedNanos) {
+    private void logSlowProfileShard(AutoParticipantProfileType profileType, AutoMarketRunCount count, long startedNanos) {
         long elapsedMillis = elapsedMillis(startedNanos);
         if (elapsedMillis < Math.max(0, slowSymbolLogThresholdMs)) {
             return;
         }
         log.info(
-                "Auto market symbol generation shard completed: symbol={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
-                symbol,
+                "Auto market profile generation shard completed: profileType={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
+                profileType,
+                count.symbolShards,
                 count.scheduledStrategies,
                 count.dueStrategies,
                 count.generatedOrders,
@@ -531,6 +855,7 @@ public class AutoMarketService {
     }
 
     private static final class AutoMarketRunCount {
+        private int profileShards;
         private int symbolShards;
         private int scheduledStrategies;
         private int dueStrategies;
@@ -545,6 +870,7 @@ public class AutoMarketService {
         }
 
         private void add(AutoMarketRunCount other) {
+            profileShards += other.profileShards;
             symbolShards += other.symbolShards;
             scheduledStrategies += other.scheduledStrategies;
             dueStrategies += other.dueStrategies;
@@ -566,10 +892,11 @@ public class AutoMarketService {
         }
     }
 
-    private record SymbolGenerationWork(
-            AutoMarketConfig config,
-            List<AutoParticipantStrategy> strategies,
-            BigDecimal momentumReferencePrice
+    private record ProfileGenerationWork(
+            AutoParticipantProfileType profileType,
+            List<AutoParticipantSymbolStrategy> candidates,
+            Map<String, AutoMarketConfig> configBySymbol,
+            Map<String, BigDecimal> momentumReferencePricesBySymbol
     ) {
     }
 

@@ -27,6 +27,10 @@ public class OrderBookExecutionReader {
     }
 
     public List<String> findExecutableSymbols() {
+        return findExecutableSymbolCandidates(Integer.MAX_VALUE);
+    }
+
+    public List<String> findExecutableSymbolCandidates(int limit) {
         return jdbcClient.sql(
                 """
                 select distinct o.symbol
@@ -37,10 +41,55 @@ public class OrderBookExecutionReader {
                   and o.market_type = 'ORDER_BOOK'
                   and o.order_type in ('LIMIT', 'MARKET')
                 order by o.symbol asc
+                limit :limit
                 """
         )
+                .param("limit", Math.max(1, limit))
                 .query(String.class)
                 .list();
+    }
+
+    public boolean hasExecutablePair(String symbol) {
+        Long executableOrderId = jdbcClient.sql(
+                """
+                select b.id
+                  from stock_order b
+                  join stock_order_book_market_config c on c.symbol = b.symbol and c.enabled = true and c.market_status = 'OPEN'
+                  join stock_order_book_instrument i on i.symbol = b.symbol and i.enabled = true
+                 where b.symbol = :symbol
+                   and b.side = 'BUY'
+                   and b.market_type = 'ORDER_BOOK'
+                   and b.order_type in ('LIMIT', 'MARKET')
+                   and b.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and b.quantity > b.filled_quantity
+                   and (b.order_type = 'MARKET' or b.limit_price is not null)
+                   and exists (
+                       select 1
+                         from stock_order s
+                        where s.symbol = b.symbol
+                          and s.side = 'SELL'
+                          and s.market_type = 'ORDER_BOOK'
+                          and s.order_type in ('LIMIT', 'MARKET')
+                          and s.status in ('PENDING', 'PARTIALLY_FILLED')
+                          and s.quantity > s.filled_quantity
+                          and s.account_id <> b.account_id
+                          and (
+                              (b.order_type = 'MARKET' and s.order_type = 'LIMIT' and s.limit_price is not null)
+                              or
+                              (b.order_type = 'LIMIT' and b.limit_price is not null and (
+                                  (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
+                                  or s.order_type = 'MARKET'
+                              ))
+                          )
+                   )
+                 limit 1
+                """
+        )
+                .param("symbol", symbol)
+                .query(Long.class)
+                .optional()
+                .orElse(null);
+        return executableOrderId != null;
     }
 
     public List<Long> findBestBuyCandidateIds(String symbol, int scanLimit) {

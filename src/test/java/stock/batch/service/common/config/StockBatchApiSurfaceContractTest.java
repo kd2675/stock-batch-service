@@ -29,6 +29,7 @@ class StockBatchApiSurfaceContractTest {
             "GET /internal/stock-batch/v1/jobs/runtime-controls",
             "PATCH /internal/stock-batch/v1/jobs/runtime-controls/{jobName}",
             "POST /internal/stock-batch/v1/jobs/auto-market/run",
+            "POST /internal/stock-batch/v1/jobs/auto-market-profile-queue/reconcile",
             "POST /internal/stock-batch/v1/jobs/auto-market-order-expiry/run",
             "POST /internal/stock-batch/v1/jobs/listing-auto-market/run",
             "POST /internal/stock-batch/v1/jobs/portfolio-settlement/run",

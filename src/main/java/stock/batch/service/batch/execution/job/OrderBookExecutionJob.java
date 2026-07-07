@@ -26,6 +26,11 @@ public class OrderBookExecutionJob implements StockBatchJob {
     }
 
     @Override
+    public boolean requiresJobLock() {
+        return false;
+    }
+
+    @Override
     public int run() {
         return internalOrderBookExecutionService.executeEligibleOrders();
     }

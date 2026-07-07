@@ -133,6 +133,9 @@ public class StockBatchJobRunner {
             );
             return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
         }
+        if (!job.requiresJobLock()) {
+            return runWithoutJobLock(job, executionRecord, startedAt);
+        }
         boolean lockAcquired;
         try {
             lockAcquired = batchJobLockRegistry.tryAcquire(job.jobName(), startedAt);
@@ -183,6 +186,34 @@ public class StockBatchJobRunner {
         } finally {
             lockHeartbeatFuture.cancel(false);
             lockHeartbeat.release(job);
+        }
+    }
+
+    private StockBatchJobRunResponse runWithoutJobLock(
+            StockBatchJob job,
+            StockBatchJobExecutionRecord executionRecord,
+            LocalDateTime startedAt
+    ) {
+        try {
+            int processedCount = job.run();
+            requireNonNegativeProcessedCount(job, processedCount);
+            LocalDateTime endedAt = LocalDateTime.now();
+            RuntimeException completeFailure = recordComplete(job, executionRecord, processedCount, endedAt);
+            if (completeFailure != null) {
+                return StockBatchJobRunResponses.failed(job, completeFailure, startedAt, endedAt);
+            }
+            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
+        } catch (RuntimeException ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            recordFailure(job, executionRecord, ex, endedAt, "job failure");
+            log.warn(
+                    "Stock batch job failed: job={}, mode={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
         }
     }
 

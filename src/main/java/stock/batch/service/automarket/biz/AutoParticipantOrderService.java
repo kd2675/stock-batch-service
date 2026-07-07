@@ -69,7 +69,7 @@ class AutoParticipantOrderService {
                     tradingState,
                     orderBookState
             );
-            int orderCount = behavior.orderCount(baseContext);
+            int orderCount = scaledOrderCount(behavior.orderCount(baseContext), config);
             for (int index = 0; index < orderCount; index++) {
                 ProfileSignalContext context = baseContext.withOrderIndex(index);
                 String side = behavior.chooseSide(context);
@@ -168,6 +168,13 @@ class AutoParticipantOrderService {
             return Math.min(profileQuantity, affordableQuantity);
         }
         return Math.min(profileQuantity, tradingState.availableQuantity());
+    }
+
+    private int scaledOrderCount(int baseOrderCount, AutoMarketConfig config) {
+        if (baseOrderCount <= 0) {
+            return 0;
+        }
+        return Math.clamp((int) Math.round(baseOrderCount * config.liquidityMultiplier()), 1, 8);
     }
 
     private boolean isAtLowerPriceLimit(AutoMarketConfig config) {

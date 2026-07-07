@@ -65,6 +65,41 @@ public class AutoMarketReader {
                 .list();
     }
 
+    public List<AutoMarketConfig> findDailyRegimePreCreateConfigs() {
+        return jdbcClient.sql(
+                """
+                select c.symbol,
+                       i.market,
+                       c.intensity,
+                       c.max_order_quantity,
+                       c.order_ttl_seconds,
+                       i.tradable_shares,
+                       i.tick_size,
+                       i.price_limit_rate,
+                       p.current_price,
+                       p.previous_close,
+                       r.score as report_score
+                from stock_auto_market_config c
+                join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
+                join stock_order_book_market_config m on m.symbol = c.symbol and m.enabled = true
+                join stock_price p on p.symbol = c.symbol
+                left join stock_instrument_report_event r
+                  on r.id = (
+                      select re.id
+                      from stock_instrument_report_event re
+                      where re.symbol = c.symbol
+                      order by re.created_at desc, re.id desc
+                      limit 1
+                  )
+                 and r.event_type <> 'DELETE'
+                where c.enabled = true
+                order by c.symbol asc
+                """
+        )
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toConfig(rs))
+                .list();
+    }
+
     public List<AutoParticipantProfileConfig> findParticipantProfileConfigs() {
         return jdbcClient.sql(
                 """
@@ -117,6 +152,15 @@ public class AutoMarketReader {
             LocalDateTime now,
             int participantLimit
     ) {
+        return findDueParticipantSymbolStrategies(configs, null, now, participantLimit);
+    }
+
+    public List<AutoParticipantSymbolStrategy> findDueParticipantSymbolStrategies(
+            List<AutoMarketConfig> configs,
+            AutoParticipantProfileType profileType,
+            LocalDateTime now,
+            int participantLimit
+    ) {
         if (configs.isEmpty()) {
             return List.of();
         }
@@ -129,7 +173,8 @@ public class AutoMarketReader {
                 ));
         List<String> symbols = configIntensityBySymbol.keySet().stream().toList();
         int normalizedLimit = Math.max(1, participantLimit);
-        return jdbcClient.sql(
+        String profileFilter = profileType == null ? "" : "and p.profile_type = :profileType";
+        JdbcClient.StatementSpec statement = jdbcClient.sql(
                 """
                 with due_participants as (
                     select p.user_key,
@@ -150,6 +195,7 @@ public class AutoMarketReader {
                      and a.status = 'ACTIVE'
                     where s.next_run_at <= :now
                       and (s.lease_until is null or s.lease_until <= :now)
+                      %s
                     order by s.next_run_at asc, s.priority desc, s.user_key asc
                     limit :limit
                 )
@@ -172,12 +218,15 @@ public class AutoMarketReader {
                  and sc.symbol = c.symbol
                 where (sc.enabled is null or sc.enabled = true)
                 order by d.user_key asc, d.next_run_at asc, d.priority desc, c.symbol asc
-                """
+                """.formatted(profileFilter)
         )
                 .param("symbols", symbols)
                 .param("now", now)
-                .param("limit", normalizedLimit)
-                .query((rs, rowNum) -> {
+                .param("limit", normalizedLimit);
+        if (profileType != null) {
+            statement = statement.param("profileType", profileType.name());
+        }
+        return statement.query((rs, rowNum) -> {
                     String symbol = AutoMarketReaderMapper.normalizeSymbol(rs.getString("symbol"));
                     int symbolIntensity = rs.getInt("symbol_intensity");
                     if (rs.wasNull()) {

@@ -1,5 +1,17 @@
 package stock.batch.service.execution.biz;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDateTime;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,23 +21,15 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
 import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.batch.execution.reader.OrderBookExecutionReader;
 import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
-import stock.batch.service.execution.config.OrderBookExecutionExecutorConfig;
+import stock.batch.service.execution.config.OrderBookExecutionWorkerExecutorConfig;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
+import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
 import stock.batch.service.simulation.SimulationClockService;
 
 @Slf4j
@@ -40,7 +44,8 @@ public class InternalOrderBookExecutionService {
     private final SimulationClockService simulationClockService;
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
-    private final Executor orderBookExecutionTaskExecutor;
+    private final OrderBookReadySymbolQueue readySymbolQueue;
+    private final Executor orderBookExecutionWorkerTaskExecutor;
 
     public InternalOrderBookExecutionService(
             ExecutionCostCalculator executionCostCalculator,
@@ -51,7 +56,8 @@ public class InternalOrderBookExecutionService {
             SimulationClockService simulationClockService,
             TransactionTemplate transactionTemplate,
             OrderBookSymbolLock orderBookSymbolLock,
-            @Qualifier(OrderBookExecutionExecutorConfig.ORDER_BOOK_EXECUTION_TASK_EXECUTOR) Executor orderBookExecutionTaskExecutor
+            OrderBookReadySymbolQueue readySymbolQueue,
+            @Qualifier(OrderBookExecutionWorkerExecutorConfig.ORDER_BOOK_EXECUTION_WORKER_TASK_EXECUTOR) Executor orderBookExecutionWorkerTaskExecutor
     ) {
         this.executionCostCalculator = executionCostCalculator;
         this.orderBookExecutionReader = orderBookExecutionReader;
@@ -61,7 +67,8 @@ public class InternalOrderBookExecutionService {
         this.simulationClockService = simulationClockService;
         this.transactionTemplate = transactionTemplate;
         this.orderBookSymbolLock = orderBookSymbolLock;
-        this.orderBookExecutionTaskExecutor = orderBookExecutionTaskExecutor;
+        this.readySymbolQueue = readySymbolQueue;
+        this.orderBookExecutionWorkerTaskExecutor = orderBookExecutionWorkerTaskExecutor;
     }
 
     @Value("${stock.batch.execution.scan-limit:300}")
@@ -73,6 +80,9 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.symbol-chunk-limit:50}")
     private int symbolChunkLimit;
 
+    @Value("${stock.batch.execution.ready-symbol-fallback-scan-limit:8}")
+    private int readySymbolFallbackScanLimit;
+
     @Value("${stock.batch.execution.deadlock-retry-max-attempts:3}")
     private int deadlockRetryMaxAttempts;
 
@@ -82,56 +92,109 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.slow-symbol-log-threshold-ms:1000}")
     private long slowSymbolLogThresholdMillis;
 
+    @Value("${stock.batch.execution.worker-count:3}")
+    private int executionWorkerCount;
+
     public int executeEligibleOrders() {
         int maxMatches = Math.max(0, scanLimit);
         if (maxMatches <= 0) {
             return 0;
         }
-        List<String> symbols = orderBookExecutionReader.findExecutableSymbols();
-        if (symbols.isEmpty()) {
-            return 0;
-        }
+        int workerCount = Math.min(Math.max(1, executionWorkerCount), maxMatches);
         AtomicInteger remainingMatches = new AtomicInteger(maxMatches);
-        if (symbols.size() == 1) {
-            return executeSymbolChunk(symbols.getFirst(), remainingMatches);
+        if (workerCount == 1) {
+            return executeNextReadySymbol(remainingMatches);
         }
-        List<CompletableFuture<Integer>> futures = symbols.stream()
-                .map(symbol -> CompletableFuture.supplyAsync(
-                        () -> executeSymbolChunk(symbol, remainingMatches),
-                        orderBookExecutionTaskExecutor
+        List<CompletableFuture<Integer>> futures = java.util.stream.IntStream.range(0, workerCount)
+                .mapToObj(workerIndex -> CompletableFuture.supplyAsync(
+                        () -> executeNextReadySymbol(remainingMatches),
+                        orderBookExecutionWorkerTaskExecutor
                 ))
                 .toList();
-        return futures.stream()
-                .mapToInt(this::joinSymbolResult)
-                .sum();
+        int totalMatchCount = 0;
+        for (CompletableFuture<Integer> future : futures) {
+            totalMatchCount += joinExecutionWorkerResult(future);
+        }
+        return totalMatchCount;
     }
 
-    private int joinSymbolResult(CompletableFuture<Integer> future) {
+    private int executeNextReadySymbol(AtomicInteger remainingMatches) {
+        Set<String> attemptedSymbols = new LinkedHashSet<>();
+        while (remainingMatches.get() > 0) {
+            String symbol = findNextReadySymbol();
+            if (symbol == null || !attemptedSymbols.add(symbol)) {
+                return 0;
+            }
+            int matchCount = executePolledSymbol(symbol, remainingMatches);
+            if (matchCount > 0) {
+                return matchCount;
+            }
+        }
+        return 0;
+    }
+
+    private int joinExecutionWorkerResult(CompletableFuture<Integer> future) {
         try {
             return future.join();
         } catch (CompletionException ex) {
-            if (ex.getCause() instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            throw ex;
+            log.warn("Order book execution worker failed: reason={}", ex.getMessage(), ex);
+            return 0;
         }
     }
 
-    private int executeSymbolChunk(String symbol, AtomicInteger remainingMatches) {
+    private String findNextReadySymbol() {
+        return readySymbolQueue.poll()
+                .or(() -> {
+                    List<String> candidates = orderBookExecutionReader.findExecutableSymbolCandidates(
+                            Math.max(1, readySymbolFallbackScanLimit)
+                    );
+                    if (candidates.isEmpty()) {
+                        return Optional.empty();
+                    }
+                    readySymbolQueue.enqueueAll(candidates);
+                    return readySymbolQueue.poll().or(() -> Optional.of(candidates.getFirst()));
+                })
+                .orElse(null);
+    }
+
+    private int executePolledSymbol(String symbol, AtomicInteger remainingMatches) {
         return orderBookSymbolLock.tryLock(symbol)
                 .map(lock -> {
                     try (lock) {
-                        return executeLockedSymbolChunk(symbol, remainingMatches);
+                        int matchCount = executeLockedSymbolChunk(symbol, remainingMatches);
+                        requeueIfStillExecutable(symbol);
+                        return matchCount;
                     } catch (CannotAcquireLockException ex) {
+                        readySymbolQueue.enqueue(symbol);
                         log.warn(
                                 "Order book symbol execution skipped after lock retry exhaustion: symbol={}, reason={}",
                                 symbol,
                                 ex.getMessage()
                         );
                         return 0;
+                    } catch (RuntimeException ex) {
+                        readySymbolQueue.enqueue(symbol);
+                        throw ex;
                     }
                 })
-                .orElse(0);
+                .orElseGet(() -> {
+                    readySymbolQueue.enqueue(symbol);
+                    return 0;
+                });
+    }
+
+    private void requeueIfStillExecutable(String symbol) {
+        try {
+            if (orderBookExecutionReader.hasExecutablePair(symbol)) {
+                readySymbolQueue.enqueue(symbol);
+            }
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Order book ready symbol requeue check failed: symbol={}, reason={}",
+                    symbol,
+                    ex.getMessage()
+            );
+        }
     }
 
     private int executeLockedSymbolChunk(String symbol, AtomicInteger remainingMatches) {

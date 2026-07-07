@@ -50,8 +50,11 @@ stock:
       initial-delay-ms: 600000
       fixed-delay-ms: 600000
     execution:
+      worker-count: 1
       symbol-lock:
         type: none
+      ready-symbol-queue:
+        type: memory
     virtual-price-execution:
       enabled: false
     order-book-execution:
@@ -60,6 +63,10 @@ stock:
       enabled: false
     auto-market:
       enabled: false
+      profile-lock:
+        type: none
+      profile-queue:
+        type: memory
     auto-participant-cash-flow:
       enabled: false
     market-close:

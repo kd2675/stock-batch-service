@@ -3,7 +3,9 @@ package stock.batch.service.batch.common.policy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -33,6 +35,8 @@ public class BatchJobRuntimeCatalog {
             @Value("${stock.batch.order-book-execution.enabled:true}") boolean orderBookExecutionConfigured,
             @Value("${stock.batch.corporate-actions.enabled:true}") boolean corporateActionsConfigured,
             @Value("${stock.batch.auto-market.enabled:true}") boolean autoMarketConfigured,
+            @Value("${stock.batch.auto-market.daily-regime.enabled:true}") boolean autoMarketDailyRegimeConfigured,
+            @Value("${stock.batch.auto-market.profile-queue.reconcile-enabled:true}") boolean autoMarketProfileQueueReconcileConfigured,
             @Value("${stock.batch.auto-market-order-expiry.enabled:true}") boolean autoMarketOrderExpiryConfigured,
             @Value("${stock.batch.listing-auto-market.enabled:true}") boolean listingAutoMarketConfigured,
             @Value("${stock.batch.auto-participant-cash-flow.enabled:true}") boolean autoParticipantCashFlowConfigured,
@@ -47,6 +51,8 @@ public class BatchJobRuntimeCatalog {
                 orderBookExecutionConfigured,
                 corporateActionsConfigured,
                 autoMarketConfigured,
+                autoMarketDailyRegimeConfigured,
+                autoMarketProfileQueueReconcileConfigured,
                 autoMarketOrderExpiryConfigured,
                 listingAutoMarketConfigured,
                 autoParticipantCashFlowConfigured,
@@ -109,6 +115,8 @@ public class BatchJobRuntimeCatalog {
             boolean orderBookExecutionConfigured,
             boolean corporateActionsConfigured,
             boolean autoMarketConfigured,
+            boolean autoMarketDailyRegimeConfigured,
+            boolean autoMarketProfileQueueReconcileConfigured,
             boolean autoMarketOrderExpiryConfigured,
             boolean listingAutoMarketConfigured,
             boolean autoParticipantCashFlowConfigured,
@@ -122,6 +130,8 @@ public class BatchJobRuntimeCatalog {
         put(createdDefinitions, OrderBookExecutionJob.JOB_NAME, orderBookExecutionConfigured);
         put(createdDefinitions, CorporateActionJob.JOB_NAME, corporateActionsConfigured);
         put(createdDefinitions, AutoMarketJob.JOB_NAME, autoMarketConfigured);
+        put(createdDefinitions, AutoMarketDailyRegimePreCreateJob.JOB_NAME, autoMarketDailyRegimeConfigured);
+        put(createdDefinitions, AutoMarketProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
         put(createdDefinitions, AutoMarketOrderExpiryJob.JOB_NAME, autoMarketOrderExpiryConfigured);
         put(createdDefinitions, ListingAutoMarketJob.JOB_NAME, listingAutoMarketConfigured);
         put(createdDefinitions, AutoParticipantCashFlowJob.JOB_NAME, autoParticipantCashFlowConfigured);

@@ -628,6 +628,57 @@ CREATE TABLE IF NOT EXISTS stock_auto_market_config (
 
 CREATE INDEX IF NOT EXISTS idx_stock_auto_market_enabled ON stock_auto_market_config(enabled, symbol);
 
+CREATE TABLE IF NOT EXISTS stock_order_book_daily_regime (
+  symbol VARCHAR(20) NOT NULL,
+  simulation_trade_date DATE NOT NULL,
+  regime_phase VARCHAR(20) NOT NULL,
+  price_direction VARCHAR(10) NOT NULL,
+  asset_preference VARCHAR(10) NOT NULL,
+  direction_intensity INT NOT NULL,
+  volatility_level INT NOT NULL,
+  liquidity_level INT NOT NULL,
+  execution_aggression_level INT NOT NULL DEFAULT 5,
+  seed BIGINT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (symbol, simulation_trade_date, regime_phase),
+  CONSTRAINT chk_stock_order_book_daily_regime_phase CHECK (CASE regime_phase WHEN 'OPENING' THEN 1 WHEN 'MIDDAY' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_book_daily_regime_price_direction CHECK (CASE price_direction WHEN 'UP' THEN 1 WHEN 'DOWN' THEN 1 WHEN 'NEUTRAL' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_book_daily_regime_asset_preference CHECK (CASE asset_preference WHEN 'STOCK' THEN 1 WHEN 'CASH' THEN 1 WHEN 'BALANCED' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_book_daily_regime_intensity CHECK (direction_intensity between 1 and 10),
+  CONSTRAINT chk_stock_order_book_daily_regime_volatility CHECK (volatility_level between 1 and 10),
+  CONSTRAINT chk_stock_order_book_daily_regime_liquidity CHECK (liquidity_level between 1 and 10),
+  CONSTRAINT chk_stock_order_book_daily_regime_execution_aggression CHECK (execution_aggression_level between 1 and 10)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_order_book_daily_regime_date ON stock_order_book_daily_regime(simulation_trade_date, regime_phase, symbol);
+
+CREATE TABLE IF NOT EXISTS stock_order_book_regime_modifier (
+  symbol VARCHAR(20) NOT NULL,
+  simulation_trade_date DATE NOT NULL,
+  regime_phase VARCHAR(20) NOT NULL,
+  modifier_window_start_at TIMESTAMP NOT NULL,
+  price_direction_modifier INT NOT NULL,
+  asset_preference_modifier INT NOT NULL,
+  direction_intensity_modifier INT NOT NULL,
+  volatility_modifier INT NOT NULL,
+  liquidity_modifier INT NOT NULL,
+  execution_aggression_modifier INT NOT NULL,
+  seed BIGINT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (symbol, simulation_trade_date, regime_phase, modifier_window_start_at),
+  CONSTRAINT chk_stock_order_book_regime_modifier_phase CHECK (CASE regime_phase WHEN 'OPENING' THEN 1 WHEN 'MIDDAY' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_book_regime_modifier_price_direction CHECK (price_direction_modifier between -10 and 10),
+  CONSTRAINT chk_stock_order_book_regime_modifier_asset_preference CHECK (asset_preference_modifier between -10 and 10),
+  CONSTRAINT chk_stock_order_book_regime_modifier_intensity CHECK (direction_intensity_modifier between -10 and 10),
+  CONSTRAINT chk_stock_order_book_regime_modifier_volatility CHECK (volatility_modifier between -10 and 10),
+  CONSTRAINT chk_stock_order_book_regime_modifier_liquidity CHECK (liquidity_modifier between -10 and 10),
+  CONSTRAINT chk_stock_order_book_regime_modifier_execution_aggression CHECK (execution_aggression_modifier between -10 and 10)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_order_book_regime_modifier_window ON stock_order_book_regime_modifier(simulation_trade_date, regime_phase, modifier_window_start_at, symbol);
+
 CREATE TABLE IF NOT EXISTS stock_listing_auto_account_config (
   symbol VARCHAR(20) NOT NULL PRIMARY KEY,
   user_key VARCHAR(64) NOT NULL UNIQUE,

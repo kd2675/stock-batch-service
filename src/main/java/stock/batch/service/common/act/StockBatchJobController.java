@@ -102,6 +102,11 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.runAutoMarket());
     }
 
+    @PostMapping("/auto-market-profile-queue/reconcile")
+    public ResponseDataDTO<StockBatchJobRunResponse> reconcileAutoMarketProfileQueue() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.reconcileAutoMarketProfileQueue());
+    }
+
     @PostMapping("/auto-market-order-expiry/run")
     public ResponseDataDTO<StockBatchJobRunResponse> expireAutoMarketOrders() {
         return ResponseDataDTO.of(stockBatchJobLauncher.expireAutoMarketOrders());

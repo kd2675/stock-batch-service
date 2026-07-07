@@ -3,12 +3,16 @@ package stock.batch.service.batch.common.support;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
+import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
 import stock.batch.service.automarket.biz.AutoMarketService;
 import stock.batch.service.automarket.biz.AutoMarketOrderExpiryJobService;
+import stock.batch.service.automarket.biz.AutoMarketProfileQueueReconcileService;
 import stock.batch.service.automarket.biz.ListingAutoMarketJobService;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -48,6 +52,10 @@ class StockBatchJobLauncherTest {
     private final InternalOrderBookExecutionService internalOrderBookExecutionService = mock(InternalOrderBookExecutionService.class);
     private final PortfolioSettlementService portfolioSettlementService = mock(PortfolioSettlementService.class);
     private final AutoParticipantCashFlowService autoParticipantCashFlowService = mock(AutoParticipantCashFlowService.class);
+    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService =
+            mock(AutoMarketDailyRegimePreCreateService.class);
+    private final AutoMarketProfileQueueReconcileService autoMarketProfileQueueReconcileService =
+            mock(AutoMarketProfileQueueReconcileService.class);
     private final AutoMarketService autoMarketService = mock(AutoMarketService.class);
     private final AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService = mock(AutoMarketOrderExpiryJobService.class);
     private final ListingAutoMarketJobService listingAutoMarketJobService = mock(ListingAutoMarketJobService.class);
@@ -63,6 +71,8 @@ class StockBatchJobLauncherTest {
             new VirtualPriceExecutionJob(orderExecutionService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
+            new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService),
+            new AutoMarketProfileQueueReconcileJob(autoMarketProfileQueueReconcileService),
             new AutoMarketJob(autoMarketService),
             new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
             new ListingAutoMarketJob(listingAutoMarketJobService),
@@ -231,6 +241,19 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
+    void preCreateAutoMarketDailyRegimes_manualRun_invokesDailyRegimePreCreateJob() {
+        when(autoMarketDailyRegimePreCreateService.preCreateDailyRegimes()).thenReturn(3);
+
+        var response = stockBatchJobLauncher.preCreateAutoMarketDailyRegimes();
+
+        assertThat(response.job()).isEqualTo("auto-market-daily-regime-pre-create");
+        assertThat(response.executionMode()).isEqualTo("daily-regime");
+        assertThat(response.processedCount()).isEqualTo(3);
+        verify(autoMarketDailyRegimePreCreateService).preCreateDailyRegimes();
+        verify(autoMarketService, never()).runAutoMarketStep();
+    }
+
+    @Test
     void expireAutoMarketOrders_manualRun_invokesExpiryJob() {
         when(autoMarketOrderExpiryJobService.expireAutoMarketOrders()).thenReturn(4);
 
@@ -337,6 +360,8 @@ class StockBatchJobLauncherTest {
                 new VirtualPriceExecutionJob(orderExecutionService),
                 new OrderBookExecutionJob(internalOrderBookExecutionService),
                 new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
+                new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService),
+                new AutoMarketProfileQueueReconcileJob(autoMarketProfileQueueReconcileService),
                 new AutoMarketJob(autoMarketService),
                 new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
                 new ListingAutoMarketJob(listingAutoMarketJobService),

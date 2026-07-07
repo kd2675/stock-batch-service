@@ -6,8 +6,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -27,6 +29,8 @@ public class StockBatchJobLauncher {
     private final VirtualPriceExecutionJob virtualPriceExecutionJob;
     private final OrderBookExecutionJob orderBookExecutionJob;
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob;
+    private final AutoMarketDailyRegimePreCreateJob autoMarketDailyRegimePreCreateJob;
+    private final AutoMarketProfileQueueReconcileJob autoMarketProfileQueueReconcileJob;
     private final AutoMarketJob autoMarketJob;
     private final AutoMarketOrderExpiryJob autoMarketOrderExpiryJob;
     private final ListingAutoMarketJob listingAutoMarketJob;
@@ -57,6 +61,14 @@ public class StockBatchJobLauncher {
                 "manual-recurring-cash",
                 autoParticipantCashFlowJob::runManually
         );
+    }
+
+    public StockBatchJobRunResponse preCreateAutoMarketDailyRegimes() {
+        return stockBatchJobRunner.run(autoMarketDailyRegimePreCreateJob);
+    }
+
+    public StockBatchJobRunResponse reconcileAutoMarketProfileQueue() {
+        return stockBatchJobRunner.run(autoMarketProfileQueueReconcileJob);
     }
 
     public StockBatchJobRunResponse runAutoMarket() {

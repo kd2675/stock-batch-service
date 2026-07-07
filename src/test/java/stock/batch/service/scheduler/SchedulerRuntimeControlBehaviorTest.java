@@ -3,8 +3,10 @@ package stock.batch.service.scheduler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
@@ -80,6 +82,17 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void autoMarketDailyRegimePreCreateScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+
+        assertSimpleSchedulerGate(
+                AutoMarketDailyRegimePreCreateJob.JOB_NAME,
+                scheduler::preCreateDailyRegimes,
+                () -> verify(stockBatchJobLauncher).preCreateAutoMarketDailyRegimes()
+        );
+    }
+
+    @Test
     void autoMarketScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
         AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
         when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
@@ -89,6 +102,53 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.runListingAutoMarket();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
+    void autoMarketDailyRegimePreCreateScheduler_outsideRegularSession_stillChecksRuntimeControl() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        assertSimpleSchedulerGate(
+                AutoMarketDailyRegimePreCreateJob.JOB_NAME,
+                scheduler::preCreateDailyRegimes,
+                () -> verify(stockBatchJobLauncher).preCreateAutoMarketDailyRegimes()
+        );
+    }
+
+    @Test
+    void autoMarketProfileQueueReconcileScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+
+        assertSimpleSchedulerGate(
+                AutoMarketProfileQueueReconcileJob.JOB_NAME,
+                scheduler::reconcileProfileQueue,
+                () -> verify(stockBatchJobLauncher).reconcileAutoMarketProfileQueue()
+        );
+    }
+
+    @Test
+    void autoMarketProfileQueueReconcileScheduler_outsideRegularSession_stillChecksRuntimeControl() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        assertSimpleSchedulerGate(
+                AutoMarketProfileQueueReconcileJob.JOB_NAME,
+                scheduler::reconcileProfileQueue,
+                () -> verify(stockBatchJobLauncher).reconcileAutoMarketProfileQueue()
+        );
+    }
+
+    @Test
+    void autoMarketProfileQueueReconcileStartupRun_checksRuntimeControlWithoutRegularSessionGate() {
+        AutoMarketScheduler scheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        assertSimpleSchedulerGate(
+                AutoMarketProfileQueueReconcileJob.JOB_NAME,
+                scheduler::reconcileProfileQueueOnStartup,
+                () -> verify(stockBatchJobLauncher).reconcileAutoMarketProfileQueue()
+        );
     }
 
     @Test

@@ -88,7 +88,19 @@ public record ProfileSignalContext(
     }
 
     public double pricePressure() {
-        return (Math.clamp(effectiveIntensity, 1, 10) - 5.5) / 4.5;
+        if (config == null) {
+            return 0.0;
+        }
+        double newsWeight = policy == null ? 0.0 : policy.newsWeight();
+        double pressure = config.dailyPricePressure() + config.reportPricePressure() * newsWeight * 0.55;
+        return Math.clamp(pressure, -1.0, 1.0);
+    }
+
+    public double assetPreferencePressure() {
+        if (config == null) {
+            return 0.0;
+        }
+        return Math.clamp(config.assetPreferencePressure(), -1.0, 1.0);
     }
 
     public ProfileSignalContext withOrderIndex(int nextOrderIndex) {

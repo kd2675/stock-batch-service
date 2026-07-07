@@ -85,6 +85,18 @@ class StockBatchJobControllerTest {
     }
 
     @Test
+    void reconcileAutoMarketProfileQueue_postRequest_returnsExecutionMode() throws Exception {
+        when(stockBatchJobLauncher.reconcileAutoMarketProfileQueue())
+                .thenReturn(response("auto-market-profile-queue-reconcile", "profile-queue"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/auto-market-profile-queue/reconcile"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("auto-market-profile-queue-reconcile"))
+                .andExpect(jsonPath("$.data.executionMode").value("profile-queue"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+    }
+
+    @Test
     void getAutoParticipantCashFlowStatus_getRequest_returnsRuntimeStatus() throws Exception {
         mockMvc.perform(get("/internal/stock-batch/v1/jobs/auto-participant-cash-flow/status"))
                 .andExpect(status().isOk())
@@ -126,12 +138,14 @@ class StockBatchJobControllerTest {
     void getRuntimeControls_getRequest_returnsAllBatchJobRuntimeStatuses() throws Exception {
         mockMvc.perform(get("/internal/stock-batch/v1/jobs/runtime-controls"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(11))
+                .andExpect(jsonPath("$.data.length()").value(13))
                 .andExpect(jsonPath("$.data[0].jobName").value("market-data-refresh"))
-                .andExpect(jsonPath("$.data[5].jobName").value("auto-market-order-expiry"))
-                .andExpect(jsonPath("$.data[6].jobName").value("listing-auto-market"))
-                .andExpect(jsonPath("$.data[9].jobName").value("portfolio-settlement"))
-                .andExpect(jsonPath("$.data[10].jobName").value("holding-cleanup"));
+                .andExpect(jsonPath("$.data[5].jobName").value("auto-market-daily-regime-pre-create"))
+                .andExpect(jsonPath("$.data[6].jobName").value("auto-market-profile-queue-reconcile"))
+                .andExpect(jsonPath("$.data[7].jobName").value("auto-market-order-expiry"))
+                .andExpect(jsonPath("$.data[8].jobName").value("listing-auto-market"))
+                .andExpect(jsonPath("$.data[11].jobName").value("portfolio-settlement"))
+                .andExpect(jsonPath("$.data[12].jobName").value("holding-cleanup"));
     }
 
     @Test
@@ -326,6 +340,8 @@ class StockBatchJobControllerTest {
     private BatchJobRuntimeCatalog createRuntimeCatalog() {
         return new BatchJobRuntimeCatalog(
                 batchJobRuntimeControl,
+                true,
+                true,
                 true,
                 true,
                 true,

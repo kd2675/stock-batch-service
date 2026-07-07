@@ -6,14 +6,19 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
+import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
 
 @Component
 @RequiredArgsConstructor
@@ -21,6 +26,7 @@ public class AutoMarketWriter {
 
     private final JdbcTemplate jdbcTemplate;
     private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
+    private final OrderBookReadySymbolQueue readySymbolQueue;
 
     public void creditCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -186,7 +192,27 @@ public class AutoMarketWriter {
                 insertedCount++;
             }
         }
+        if (insertedCount > 0) {
+            enqueueInsertedSymbolsAfterCommit(orders);
+        }
         return insertedCount;
+    }
+
+    private void enqueueInsertedSymbolsAfterCommit(List<LimitOrderInsert> orders) {
+        Set<String> symbols = orders.stream()
+                .map(LimitOrderInsert::symbol)
+                .collect(Collectors.toSet());
+        Runnable enqueueAction = () -> readySymbolQueue.enqueueAll(symbols);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            enqueueAction.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                enqueueAction.run();
+            }
+        });
     }
 
     public record LimitOrderInsert(

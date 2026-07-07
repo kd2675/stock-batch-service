@@ -26,6 +26,11 @@ public class AutoMarketJob implements StockBatchJob {
     }
 
     @Override
+    public boolean requiresJobLock() {
+        return false;
+    }
+
+    @Override
     public int run() {
         return autoMarketService.runAutoMarketStep();
     }

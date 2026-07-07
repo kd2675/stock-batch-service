@@ -19,6 +19,7 @@ import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
+import stock.batch.service.execution.queue.NoopOrderBookReadySymbolQueue;
 
 class AutoMarketWriterTest {
 
@@ -26,7 +27,7 @@ class AutoMarketWriterTest {
     void insertLimitOrders_successNoInfoCountsAsInserted() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         StockHoldingReservationJdbcSupport holdingReservationJdbcSupport = mock(StockHoldingReservationJdbcSupport.class);
-        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport);
+        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport, new NoopOrderBookReadySymbolQueue());
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         List<AutoMarketWriter.LimitOrderInsert> orders = List.of(
                 new AutoMarketWriter.LimitOrderInsert(
@@ -51,7 +52,7 @@ class AutoMarketWriterTest {
     void insertLimitOrders_emptyOrdersDoesNotCallBatchUpdate() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         StockHoldingReservationJdbcSupport holdingReservationJdbcSupport = mock(StockHoldingReservationJdbcSupport.class);
-        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport);
+        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport, new NoopOrderBookReadySymbolQueue());
 
         int insertedCount = writer.insertLimitOrders(List.of(), LocalDateTime.of(2026, 7, 3, 9, 0));
 
@@ -63,7 +64,7 @@ class AutoMarketWriterTest {
     void reserveSellQuantity_doesNotLockStockAccountAgain() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         StockHoldingReservationJdbcSupport holdingReservationJdbcSupport = mock(StockHoldingReservationJdbcSupport.class);
-        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport);
+        AutoMarketWriter writer = new AutoMarketWriter(jdbcTemplate, holdingReservationJdbcSupport, new NoopOrderBookReadySymbolQueue());
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
         when(jdbcTemplate.update(any(String.class), eq(10L), eq(now), eq(1L), eq("DEMO001"), eq(10L)))

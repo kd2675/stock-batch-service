@@ -103,13 +103,24 @@ class StockBatchSchedulerConfigurationContractTest {
 
         assertThat(applicationProperties.getProperty("stock.batch.execution.scan-limit"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_SCAN_LIMIT:300}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.worker-count"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_WORKER_COUNT:3}");
         assertThat(applicationProperties.getProperty("stock.batch.execution.buy-candidate-scan-limit"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_BUY_CANDIDATE_SCAN_LIMIT:20}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.ready-symbol-fallback-scan-limit"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_READY_SYMBOL_FALLBACK_SCAN_LIMIT:8}");
         assertThat(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-max-attempts"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}");
         assertThat(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-backoff-ms"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.thread-pool.core-size"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_THREAD_POOL_CORE_SIZE:3}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.thread-pool.max-size"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_THREAD_POOL_MAX_SIZE:6}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution.thread-pool.queue-capacity"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_THREAD_POOL_QUEUE_CAPACITY:0}");
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.scan-limit"))).isGreaterThan(0);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.worker-count"))).isBetween(1, 16);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.buy-candidate-scan-limit"))).isBetween(1, 100);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-max-attempts"))).isBetween(1, 10);
     }
@@ -119,19 +130,38 @@ class StockBatchSchedulerConfigurationContractTest {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:10000}");
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:3000}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.fixed-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_FIXED_DELAY_MS:10000}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.pre-create-before-minutes"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_PRE_CREATE_BEFORE_MINUTES:30}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_PROFILE_WORKER_COUNT:12}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-enabled"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_ENABLED:true}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MS:30000}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-limit"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_LIMIT:100}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-backoff-ms"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.core-size"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_CORE_SIZE:12}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.max-size"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:8}");
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:16}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.queue-capacity"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:0}");
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))).isBetween(5_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))).isBetween(2_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.fixed-delay-ms"))).isBetween(5_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.pre-create-before-minutes"))).isEqualTo(30);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))).isBetween(1, 16);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))).isBetween(1, 500);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))).isBetween(10_000, 60_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-limit"))).isBetween(1, 1_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
     }
 
@@ -192,7 +222,7 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:1}");
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:2}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
                 .isEqualTo("${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"))
@@ -203,7 +233,7 @@ class StockBatchSchedulerConfigurationContractTest {
                 + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
                 + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"));
 
-        assertThat(defaultTotalSchedulerThreads).isLessThanOrEqualTo(6);
+        assertThat(defaultTotalSchedulerThreads).isLessThanOrEqualTo(7);
     }
 
     @Test

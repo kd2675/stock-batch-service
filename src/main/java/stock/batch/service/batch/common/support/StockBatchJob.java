@@ -6,5 +6,9 @@ public interface StockBatchJob {
 
     String executionMode();
 
+    default boolean requiresJobLock() {
+        return true;
+    }
+
     int run();
 }

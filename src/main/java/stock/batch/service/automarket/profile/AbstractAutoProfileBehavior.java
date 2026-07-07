@@ -74,7 +74,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         if (canStayIdle && Math.abs(context.pricePressure()) < 0.35 && Math.abs(context.unrealizedReturn()) < 0.05) {
             return 0;
         }
-        int movementStrength = Math.max(context.effectiveIntensity(), 11 - context.effectiveIntensity());
+        int movementStrength = Math.clamp(context.effectiveIntensity(), 1, 10);
         int baseOrderCount = Math.max(1, (int) Math.ceil(movementStrength / 3.5));
         double profitBoost = 1.0;
         if (context.unrealizedReturn() > 0) {
@@ -87,6 +87,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         ProfilePolicy policy = context.policy();
         double inventoryPenalty = Math.min(context.availableQuantity(), 20) * 0.01 * (1.0 - policy.holdingPatienceWeight() * 0.65);
         double buyBias = 0.5 + context.pricePressure() * 0.35 - inventoryPenalty;
+        buyBias += context.assetPreferencePressure() * 0.25;
         buyBias += context.momentumPressure() * policy.momentumWeight() * 0.24;
         buyBias -= context.momentumPressure() * policy.contrarianWeight() * 0.24;
         buyBias += context.herdPressure() * policy.herdingWeight() * 0.22;
@@ -145,10 +146,15 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     protected String chooseByIntensityPressure(ProfileSignalContext context) {
         ProfilePolicy policy = context.policy();
-        if (context.effectiveIntensity() >= 9 && policy.contrarianWeight() < 0.50 && context.canBuyOne()) {
+        double pressure = context.pricePressure() + context.assetPreferencePressure() * 0.5;
+        if (context.effectiveIntensity() >= 9
+                && pressure > 0.35
+                && policy.contrarianWeight() < 0.50
+                && context.canBuyOne()) {
             return BUY;
         }
-        if (context.effectiveIntensity() <= 2
+        if (context.effectiveIntensity() >= 9
+                && pressure < -0.35
                 && context.hasHolding()
                 && policy.contrarianWeight() < 0.35
                 && policy.dipBuyWeight() < 0.50

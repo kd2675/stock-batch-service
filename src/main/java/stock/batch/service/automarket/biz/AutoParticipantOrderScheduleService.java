@@ -16,6 +16,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 
@@ -107,6 +108,110 @@ class AutoParticipantOrderScheduleService {
             }
         }
         return claimedStrategies;
+    }
+
+    List<AutoMarketReadyProfileQueue.ReadyProfile> findDueProfileSchedules(LocalDateTime now, int limit) {
+        return JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                .sql(
+                        """
+                        select p.profile_type, min(s.next_run_at) as ready_at
+                        from stock_auto_participant_order_schedule s
+                        join stock_auto_participant p
+                          on p.user_key = s.user_key
+                         and p.enabled = true
+                         and p.withdrawn_at is null
+                        join stock_account a
+                          on a.user_key = p.user_key
+                         and a.status = 'ACTIVE'
+                        where s.next_run_at <= :now
+                          and (s.lease_until is null or s.lease_until <= :now)
+                        group by p.profile_type
+                        order by ready_at asc, max(s.priority) desc, p.profile_type asc
+                        limit :limit
+                        """
+                )
+                .param("now", now)
+                .param("limit", Math.max(1, limit))
+                .query((rs, rowNum) -> new AutoMarketReadyProfileQueue.ReadyProfile(
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        rs.getTimestamp("ready_at").toLocalDateTime()
+                ))
+                .list();
+    }
+
+    List<AutoMarketReadyProfileQueue.ReadyProfile> findNextProfileSchedules(LocalDateTime now, int limit) {
+        return JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                .sql(
+                        """
+                        select p.profile_type, min(s.next_run_at) as ready_at
+                        from stock_auto_participant_order_schedule s
+                        join stock_auto_participant p
+                          on p.user_key = s.user_key
+                         and p.enabled = true
+                         and p.withdrawn_at is null
+                        join stock_account a
+                          on a.user_key = p.user_key
+                         and a.status = 'ACTIVE'
+                        where s.lease_until is null or s.lease_until <= :now
+                        group by p.profile_type
+                        order by ready_at asc, max(s.priority) desc, p.profile_type asc
+                        limit :limit
+                        """
+                )
+                .param("now", now)
+                .param("limit", Math.max(1, limit))
+                .query((rs, rowNum) -> new AutoMarketReadyProfileQueue.ReadyProfile(
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        rs.getTimestamp("ready_at").toLocalDateTime()
+                ))
+                .list();
+    }
+
+    List<AutoMarketReadyProfileQueue.ReadyProfile> findNextProfileSchedules(
+            List<AutoParticipantProfileType> profileTypes,
+            LocalDateTime fallbackReadyAt
+    ) {
+        if (profileTypes.isEmpty()) {
+            return List.of();
+        }
+        List<String> profileTypeNames = profileTypes.stream()
+                .distinct()
+                .map(AutoParticipantProfileType::name)
+                .toList();
+        Map<AutoParticipantProfileType, LocalDateTime> nextReadyAtByProfile = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                .sql(
+                        """
+                        select p.profile_type, min(s.next_run_at) as ready_at
+                        from stock_auto_participant_order_schedule s
+                        join stock_auto_participant p
+                          on p.user_key = s.user_key
+                         and p.enabled = true
+                         and p.withdrawn_at is null
+                        join stock_account a
+                          on a.user_key = p.user_key
+                         and a.status = 'ACTIVE'
+                        where p.profile_type in (:profileTypes)
+                          and (s.lease_until is null or s.lease_until <= :fallbackReadyAt)
+                        group by p.profile_type
+                        """
+                )
+                .param("profileTypes", profileTypeNames)
+                .param("fallbackReadyAt", fallbackReadyAt)
+                .query((rs, rowNum) -> Map.entry(
+                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        rs.getTimestamp("ready_at").toLocalDateTime()
+                ))
+                .list()
+                .stream()
+                .collect(LinkedHashMap::new, (map, entry) -> map.put(entry.getKey(), entry.getValue()), LinkedHashMap::putAll);
+        List<AutoMarketReadyProfileQueue.ReadyProfile> profiles = new ArrayList<>();
+        for (AutoParticipantProfileType profileType : profileTypes) {
+            profiles.add(new AutoMarketReadyProfileQueue.ReadyProfile(
+                    profileType,
+                    nextReadyAtByProfile.getOrDefault(profileType, fallbackReadyAt)
+            ));
+        }
+        return profiles;
     }
 
     int completeStrategies(

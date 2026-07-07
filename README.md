@@ -141,6 +141,9 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
 - `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
+- `stock.batch.auto-market.daily-regime.enabled`: 자동장 일일 방향/자산 선호 pre-create job 활성화 여부
+- `stock.batch.auto-market.daily-regime.fixed-delay-ms`: 장 시작 전 일일 방향/자산 선호 pre-create 검사 주기
+- `stock.batch.auto-market.daily-regime.pre-create-before-minutes`: 시뮬레이션 장 시작 몇 분 전부터 다음 거래일 방향/자산 선호를 미리 생성할지 결정합니다. 기본값은 30분입니다.
 - `stock.batch.auto-market.generation-participant-chunk-size`: 한 트랜잭션에서 주문 생성까지 처리할 자동 참여자 수입니다. 기본값은 25입니다.
 - `stock.batch.auto-market.generation-lease-seconds`: 주문 생성 대상으로 claim한 참여자-종목 스케줄의 lease 시간입니다. 주문 생성 실패 시 lease 만료 후 재시도할 수 있게 둡니다.
 - `stock.batch.auto-market.generation-due-limit-per-symbol`: 한 회차에서 종목별로 조회할 주문 생성 대상 최대 수입니다. 기본값은 100입니다.
@@ -182,6 +185,8 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
+- `stock.batch.auto-market.profile-lock.type`: 자동 참여자 주문 생성 profile shard 중복 실행 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
+- `stock.batch.auto-market.symbol-selection.*`: 한 프로필 내부 참여자가 같은 종목으로 과도하게 몰리지 않도록 종목 선택 분산 강도, 참여자별 종목 affinity, 프로필별 최대 종목 점유율을 조정합니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
 - `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 120초입니다.
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 130초입니다.

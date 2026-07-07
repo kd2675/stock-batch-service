@@ -9,6 +9,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -164,7 +165,7 @@ class InternalOrderBookExecutionServiceTest {
     }
 
     @Test
-    void executeEligibleOrders_multipleSymbols_matchesEachSymbolThroughExecutionPool() {
+    void executeEligibleOrders_multipleSymbols_matchesOneSymbolPerRun() {
         upsertOrderBookSymbol("000660");
         insertAccount("first-symbol-buyer", "9930000.00", "10000000.00");
         insertAccount("first-symbol-seller", "100000.00", "10000000.00");
@@ -177,9 +178,19 @@ class InternalOrderBookExecutionServiceTest {
         insertOrder("second-symbol-buy", "second-symbol-buyer", "000660", "BUY", "LIMIT", "PENDING", "80000.00", 1, 0, null, "80000.00", 1);
         insertOrder("second-symbol-sell", "second-symbol-seller", "000660", "SELL", "LIMIT", "PENDING", "79000.00", 1, 0, null, "0.00", 2);
 
-        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+        int firstMatchCount = internalOrderBookExecutionService.executeEligibleOrders();
 
-        assertThat(matchCount).isEqualTo(2);
+        assertThat(firstMatchCount).isEqualTo(1);
+        assertThat(List.of(
+                queryString("select status from stock_order where client_order_id = 'first-symbol-buy'"),
+                queryString("select status from stock_order where client_order_id = 'second-symbol-buy'")
+        )).containsExactlyInAnyOrder("FILLED", "PENDING");
+        assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
+                .isEqualTo(2L);
+
+        int secondMatchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(secondMatchCount).isEqualTo(1);
         assertThat(queryString("select status from stock_order where client_order_id = 'first-symbol-buy'"))
                 .isEqualTo("FILLED");
         assertThat(queryString("select status from stock_order where client_order_id = 'second-symbol-buy'"))

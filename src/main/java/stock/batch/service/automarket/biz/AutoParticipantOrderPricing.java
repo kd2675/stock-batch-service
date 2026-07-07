@@ -32,20 +32,38 @@ class AutoParticipantOrderPricing {
         if (policy.marketMakingWeight() >= 0.8) {
             return createMarketMakingPrice(config, side, bestBid, bestAsk);
         }
-        double pressure = Math.clamp(pricePressure(intensity) + noise(policy.noiseWeight(), 0.12), -1, 1);
+        double followStrength = Math.clamp(intensity, 1, 10) / 10.0;
+        double directionalPressure = config.dailyPricePressure()
+                + config.reportPricePressure() * policy.newsWeight() * 0.55;
+        double pressure = Math.clamp(directionalPressure * followStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
         double pressureStrength = Math.abs(pressure);
-        double aggressiveChance = Math.clamp((0.35 + pressureStrength * 0.45) * policy.aggressionMultiplier(), 0.05, 0.95);
+        double volatility = config.volatilityMultiplier();
+        double executionAggression = config.executionAggressionStrength();
+        double aggressiveChance = Math.clamp(
+                (0.18 + pressureStrength * 0.35 * volatility + executionAggression * 0.38)
+                        * config.executionAggressionMultiplier()
+                        * policy.aggressionMultiplier(),
+                0.05,
+                config.effectiveExecutionAggressionLevel() >= 10 ? 1.0 : 0.95
+        );
+        double crossingChance = Math.clamp(
+                (executionAggression * 0.58 + config.effectiveLiquidityLevel() / 10.0 * 0.18 + pressureStrength * 0.10)
+                        * policy.aggressionMultiplier(),
+                0.02,
+                config.effectiveExecutionAggressionLevel() >= 10 ? 1.0 : 0.85
+        );
         boolean upwardAggressive = pressure > 0 && chance(aggressiveChance);
         boolean downwardAggressive = pressure < 0 && chance(aggressiveChance);
+        boolean executionAggressive = chance(crossingChance);
 
-        if (BUY.equals(side) && upwardAggressive && bestAsk != null) {
+        if (BUY.equals(side) && (upwardAggressive || executionAggressive) && bestAsk != null) {
             return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestAsk, nextInt(0, 1)), config, tick);
         }
-        if (SELL.equals(side) && downwardAggressive && bestBid != null) {
+        if (SELL.equals(side) && (downwardAggressive || executionAggressive) && bestBid != null) {
             return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestBid, -nextInt(0, 1)), config, tick);
         }
 
-        int maxSpreadTicks = 2 + (int) Math.ceil(pressureStrength * 6);
+        int maxSpreadTicks = 2 + (int) Math.ceil(pressureStrength * 6 * volatility);
         BigDecimal spread = tick.multiply(BigDecimal.valueOf(nextInt(1, maxSpreadTicks)));
         BigDecimal directionalOffset = tick.multiply(BigDecimal.valueOf(Math.round(pressure * 2)));
         BigDecimal rawPrice;
@@ -77,10 +95,6 @@ class AutoParticipantOrderPricing {
         }
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
         return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
-    }
-
-    private double pricePressure(int intensity) {
-        return (Math.clamp(intensity, 1, 10) - 5.5) / 4.5;
     }
 
 }

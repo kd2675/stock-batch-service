@@ -2,10 +2,14 @@ package stock.batch.service.scheduler;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
+import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.simulation.SimulationMarketSessionService;
@@ -20,6 +24,12 @@ public class AutoMarketScheduler {
 
     @Value("${stock.batch.auto-market.enabled:true}")
     private boolean autoMarketSchedulerConfigured = true;
+
+    @Value("${stock.batch.auto-market.daily-regime.enabled:true}")
+    private boolean autoMarketDailyRegimeSchedulerConfigured = true;
+
+    @Value("${stock.batch.auto-market.profile-queue.reconcile-enabled:true}")
+    private boolean autoMarketProfileQueueReconcileSchedulerConfigured = true;
 
     @Value("${stock.batch.auto-market-order-expiry.enabled:true}")
     private boolean autoMarketOrderExpirySchedulerConfigured = true;
@@ -37,6 +47,41 @@ public class AutoMarketScheduler {
             return;
         }
         scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, autoMarketSchedulerConfigured, stockBatchJobLauncher::runAutoMarket);
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.auto-market.daily-regime.initial-delay-ms:3000}",
+            fixedDelayString = "${stock.batch.auto-market.daily-regime.fixed-delay-ms:10000}"
+    )
+    public void preCreateDailyRegimes() {
+        scheduledJobGuard.runIfEnabled(
+                AutoMarketDailyRegimePreCreateJob.JOB_NAME,
+                autoMarketDailyRegimeSchedulerConfigured,
+                stockBatchJobLauncher::preCreateAutoMarketDailyRegimes
+        );
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms:4000}",
+            fixedDelayString = "${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:30000}"
+    )
+    public void reconcileProfileQueue() {
+        runProfileQueueReconcile();
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void reconcileProfileQueueOnStartup() {
+        runProfileQueueReconcile();
+    }
+
+    private void runProfileQueueReconcile() {
+        scheduledJobGuard.runIfEnabled(
+                AutoMarketProfileQueueReconcileJob.JOB_NAME,
+                autoMarketProfileQueueReconcileSchedulerConfigured,
+                stockBatchJobLauncher::reconcileAutoMarketProfileQueue
+        );
     }
 
     @Scheduled(
