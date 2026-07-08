@@ -2482,6 +2482,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
 
         insertAutoAccount("stock-auto-001", "0.00");
 
@@ -2506,6 +2507,7 @@ class AutoMarketServiceTest {
                 where user_key = 'stock-auto-001'
                 """);
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
 
         insertAutoAccount("stock-auto-001", "0.00");
 
@@ -2548,6 +2550,7 @@ class AutoMarketServiceTest {
                 where user_key = 'stock-auto-001'
                 """);
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         jdbcTemplate.update("""
                 insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
@@ -2581,9 +2584,11 @@ class AutoMarketServiceTest {
                 """);
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
+        insertAfterCloseSimulationClock();
         insertAutoAccount("stock-auto-001", "0.00");
 
         autoParticipantCashFlowService.fundRecurringCash();
+        insertSimulationClock(7200);
         runAutoMarketStep();
 
         assertThat(queryDecimal("""
@@ -2701,6 +2706,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
@@ -2731,6 +2737,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
@@ -2788,6 +2795,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'PAYDAY_ACCUMULATOR' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-001' and symbol = '005930'");
+        insertAfterCloseSimulationClock();
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
@@ -3076,6 +3084,10 @@ class AutoMarketServiceTest {
 
     private void insertSimulationClock(int realSecondsPerSimulationDay) {
         insertSimulationClockAtSecondOfDay(realSecondsPerSimulationDay, 9 * 3600);
+    }
+
+    private void insertAfterCloseSimulationClock() {
+        insertSimulationClockAtSecondOfDay(7200, 18 * 3600 + 30 * 60);
     }
 
     private void insertSimulationClockAtSecondOfDay(int realSecondsPerSimulationDay, int simulationSecondOfDay) {

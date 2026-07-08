@@ -229,7 +229,7 @@ public class InternalOrderBookExecutionService {
 
     private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
         long backoffMillis = Math.max(0L, deadlockRetryBackoffMillis) * attempt;
-        log.debug(
+        log.warn(
                 "Order book match retry after lock acquisition failure: symbol={}, attempt={}, backoffMs={}, reason={}",
                 symbol,
                 attempt,
@@ -262,7 +262,7 @@ public class InternalOrderBookExecutionService {
             }
         }
         if (skippedBuyLockCount > 0) {
-            log.debug(
+            log.warn(
                     "Order book buy candidates skipped because rows were locked or no longer executable: symbol={}, skippedCount={}",
                     symbol,
                     skippedBuyLockCount

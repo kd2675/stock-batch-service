@@ -17,6 +17,7 @@ public class BatchJobSignalProcessor {
     private static final String SIGNAL_MARKET_CLOSE_ROLLOVER_RUN = "MARKET_CLOSE_ROLLOVER_RUN";
     private static final String SIGNAL_MARKET_CLOSE_ROLLOVER_SYMBOL = "MARKET_CLOSE_ROLLOVER_SYMBOL";
     private static final String SIGNAL_ORDER_BOOK_OPEN_ORDER_CANCEL_SYMBOL = "ORDER_BOOK_OPEN_ORDER_CANCEL_SYMBOL";
+    private static final String STATUS_SKIPPED = "SKIPPED";
 
     private final BatchJobSignalReader signalReader;
     private final BatchJobSignalWriter signalWriter;
@@ -26,24 +27,36 @@ public class BatchJobSignalProcessor {
         int processedCount = 0;
         int boundedLimit = Math.max(1, limit);
         for (int index = 0; index < boundedLimit; index++) {
-            if (stockBatchJobLauncher.hasActiveJobs()) {
-                log.debug("Stock batch signal processing deferred until active jobs complete");
-                break;
-            }
             var signal = signalReader.claimNext();
             if (signal.isEmpty()) {
                 break;
             }
-            process(signal.get());
-            processedCount++;
+            if (process(signal.get())) {
+                processedCount++;
+            } else {
+                break;
+            }
         }
         return processedCount;
     }
 
-    private void process(BatchJobSignal signal) {
+    private boolean process(BatchJobSignal signal) {
         try {
             StockBatchJobRunResponse response = runSignal(signal);
+            if (isSkipped(response)) {
+                signalWriter.defer(signal.id(), response);
+                log.warn(
+                        "Stock batch signal deferred because target job was skipped: id={}, type={}, job={}, mode={}, reason={}",
+                        signal.id(),
+                        signal.signalType(),
+                        signal.jobName(),
+                        signal.executionMode(),
+                        response.message()
+                );
+                return false;
+            }
             signalWriter.complete(signal.id(), response);
+            return true;
         } catch (RuntimeException ex) {
             signalWriter.fail(signal.id(), ex);
             log.warn(
@@ -55,7 +68,12 @@ public class BatchJobSignalProcessor {
                     ex.getMessage(),
                     ex
             );
+            return true;
         }
+    }
+
+    private boolean isSkipped(StockBatchJobRunResponse response) {
+        return response != null && STATUS_SKIPPED.equals(response.status());
     }
 
     private StockBatchJobRunResponse runSignal(BatchJobSignal signal) {

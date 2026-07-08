@@ -210,6 +210,11 @@ public class AutoMarketService {
         List<ClaimedProfile> profiles = new ArrayList<>();
         while (profiles.size() < workerCount) {
             if (!generationSlotLimiter.tryAcquire()) {
+                log.warn(
+                        "Auto market ready profile claim skipped because generation slots are saturated: claimedProfiles={}, workerLimit={}",
+                        profiles.size(),
+                        workerCount
+                );
                 break;
             }
             AutoParticipantProfileType claimedProfile;
@@ -637,6 +642,7 @@ public class AutoMarketService {
                     }
                 })
                 .orElseGet(() -> {
+                    log.warn("Auto market profile generation skipped because profile lock is busy: profileType={}", work.profileType());
                     readyProfileQueue.enqueue(work.profileType(), now.plusSeconds(1));
                     return new AutoMarketRunCount();
                 });

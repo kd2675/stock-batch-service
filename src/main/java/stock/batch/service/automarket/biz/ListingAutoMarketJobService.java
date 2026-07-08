@@ -69,7 +69,7 @@ public class ListingAutoMarketJobService {
                     }
                 })
                 .orElseGet(() -> {
-                    log.info("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    log.warn("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
                     return 0;
                 });
     }

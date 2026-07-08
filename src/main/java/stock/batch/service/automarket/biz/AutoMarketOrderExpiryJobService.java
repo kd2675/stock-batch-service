@@ -87,7 +87,7 @@ public class AutoMarketOrderExpiryJobService {
                     }
                 })
                 .orElseGet(() -> {
-                    log.info("Auto market order expiry skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    log.warn("Auto market order expiry skipped because order-book symbol is busy: symbol={}", config.symbol());
                     return 0;
                 });
     }

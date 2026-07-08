@@ -9,6 +9,7 @@ import java.util.concurrent.RejectedExecutionException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
+import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
@@ -44,6 +45,7 @@ class SchedulerRuntimeControlBehaviorTest {
     private BatchJobRuntimeControl batchJobRuntimeControl;
     private StockBatchScheduledJobGuard scheduledJobGuard;
     private SimulationMarketSessionService simulationMarketSessionService;
+    private AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
     private OrderBookMarketSessionStateService orderBookMarketSessionStateService;
     private MarketCloseRolloverService marketCloseRolloverService;
     private MarketClosePostProcessingCompletionService postProcessingCompletionService;
@@ -54,6 +56,7 @@ class SchedulerRuntimeControlBehaviorTest {
         batchJobRuntimeControl = mock(BatchJobRuntimeControl.class);
         scheduledJobGuard = new StockBatchScheduledJobGuard(batchJobRuntimeControl);
         simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        autoMarketDailyRegimePreCreateService = mock(AutoMarketDailyRegimePreCreateService.class);
         orderBookMarketSessionStateService = mock(OrderBookMarketSessionStateService.class);
         marketCloseRolloverService = mock(MarketCloseRolloverService.class);
         postProcessingCompletionService = mock(MarketClosePostProcessingCompletionService.class);
@@ -68,6 +71,7 @@ class SchedulerRuntimeControlBehaviorTest {
                 .thenReturn(LocalDateTime.of(2026, 7, 3, 18, 30));
         when(simulationMarketSessionService.closeTime())
                 .thenReturn(java.time.LocalTime.of(18, 0));
+        when(autoMarketDailyRegimePreCreateService.shouldPreCreateDailyRegimes()).thenReturn(true);
     }
 
     @Test
@@ -127,7 +131,7 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void autoMarketDailyRegimePreCreateScheduler_outsideRegularSession_stillChecksRuntimeControl() {
+    void autoMarketDailyRegimePreCreateScheduler_outsideRegularSession_stillChecksRuntimeControlWhenPreCreateWindow() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
         when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
 
@@ -136,6 +140,16 @@ class SchedulerRuntimeControlBehaviorTest {
                 scheduler::preCreateDailyRegimes,
                 () -> verify(stockBatchJobLauncher).preCreateAutoMarketDailyRegimes()
         );
+    }
+
+    @Test
+    void autoMarketDailyRegimePreCreateScheduler_outsidePreCreateWindow_skipsBeforeRuntimeControl() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+        when(autoMarketDailyRegimePreCreateService.shouldPreCreateDailyRegimes()).thenReturn(false);
+
+        scheduler.preCreateDailyRegimes();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test
@@ -618,6 +632,7 @@ class SchedulerRuntimeControlBehaviorTest {
                 stockBatchJobLauncher,
                 scheduledJobGuard,
                 simulationMarketSessionService,
+                autoMarketDailyRegimePreCreateService,
                 autoMarketRunTaskExecutor
         );
     }

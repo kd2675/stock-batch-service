@@ -231,6 +231,9 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(5_000);
         assertThat(schedulerSource).contains("stock.batch.signal.fixed-delay-ms:5000");
         assertThat(readme).contains("기본값은 5000ms");
+        assertThat(applicationProperties.getProperty("stock.batch.signal.active-job-deferred-retry-delay-ms"))
+                .isNull();
+        assertThat(readme).doesNotContain("active-job-deferred-retry-delay-ms");
     }
 
     @Test

@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class BatchJobSignalProcessorTest {
@@ -26,13 +27,34 @@ class BatchJobSignalProcessorTest {
     );
 
     @Test
-    void processPendingSignals_activeBatchJob_defersWithoutClaimingSignal() {
-        when(stockBatchJobLauncher.hasActiveJobs()).thenReturn(true);
+    void processPendingSignals_activeBatchJobStillClaimsAndRunsSignal() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 11, 0);
+        BatchJobSignal signal = new BatchJobSignal(
+                10L,
+                "AUTO_PARTICIPANT_CASH_FLOW_RUN",
+                "auto-participant-cash-flow",
+                "manual-recurring-cash",
+                null,
+                "admin",
+                now
+        );
+        StockBatchJobRunResponse response = new StockBatchJobRunResponse(
+                "auto-participant-cash-flow",
+                "COMPLETED",
+                "manual-recurring-cash",
+                1,
+                "Job completed",
+                now,
+                now
+        );
+        when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
+        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 
-        assertThat(processedCount).isZero();
-        verify(signalReader, never()).claimNext();
+        assertThat(processedCount).isEqualTo(1);
+        verify(stockBatchJobLauncher).fundAutoParticipantsManually();
+        verify(signalWriter).complete(10L, response);
     }
 
     @Test
@@ -56,7 +78,6 @@ class BatchJobSignalProcessorTest {
                 now,
                 now
         );
-        when(stockBatchJobLauncher.hasActiveJobs()).thenReturn(false);
         when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
         when(stockBatchJobLauncher.cancelOpenOrderBookOrders("DEMO001")).thenReturn(response);
 
@@ -65,5 +86,46 @@ class BatchJobSignalProcessorTest {
         assertThat(processedCount).isEqualTo(1);
         verify(stockBatchJobLauncher).cancelOpenOrderBookOrders("DEMO001");
         verify(signalWriter).complete(10L, response);
+    }
+
+    @Test
+    void processPendingSignals_skippedTargetJob_defersSignalForRetryAndStopsCurrentChunk() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 11, 0);
+        BatchJobSignal signal = new BatchJobSignal(
+                10L,
+                "MARKET_CLOSE_ROLLOVER_RUN",
+                "market-close-rollover",
+                "price-limit-base",
+                null,
+                "admin",
+                now
+        );
+        StockBatchJobRunResponse response = new StockBatchJobRunResponse(
+                "market-close-rollover",
+                "SKIPPED",
+                "price-limit-base",
+                0,
+                "Job is already running",
+                now,
+                now
+        );
+        when(signalReader.claimNext()).thenReturn(Optional.of(signal));
+        when(stockBatchJobLauncher.rolloverClosingPrices()).thenReturn(response);
+
+        int processedCount = processor.processPendingSignals(20);
+
+        assertThat(processedCount).isZero();
+        verify(signalWriter).defer(10L, response);
+        verify(signalWriter, never()).complete(10L, response);
+    }
+
+    @Test
+    void processPendingSignals_emptyQueueDoesNotCheckActiveJobs() {
+        when(signalReader.claimNext()).thenReturn(Optional.empty());
+
+        int processedCount = processor.processPendingSignals(20);
+
+        assertThat(processedCount).isZero();
+        verifyNoInteractions(signalWriter);
     }
 }

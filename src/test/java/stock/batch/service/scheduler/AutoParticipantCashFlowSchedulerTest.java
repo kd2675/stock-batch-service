@@ -3,6 +3,7 @@ package stock.batch.service.scheduler;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
+import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
@@ -37,6 +38,8 @@ class AutoParticipantCashFlowSchedulerTest {
     private final StockBatchJobLauncher stockBatchJobLauncher = mock(StockBatchJobLauncher.class);
     private final JdbcTemplate jdbcTemplate = createJdbcTemplate();
     private final SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService =
+            mock(AutoMarketDailyRegimePreCreateService.class);
     private final OrderBookMarketSessionStateService orderBookMarketSessionStateService = mock(OrderBookMarketSessionStateService.class);
     private final MarketCloseRolloverService marketCloseRolloverService = mock(MarketCloseRolloverService.class);
     private final MarketClosePostProcessingCompletionService postProcessingCompletionService =
@@ -56,6 +59,7 @@ class AutoParticipantCashFlowSchedulerTest {
         when(simulationMarketSessionService.baseSimulationDate()).thenReturn(LocalDate.of(2026, 7, 1));
         when(simulationMarketSessionService.currentSimulationDateTime()).thenReturn(LocalDateTime.of(2026, 7, 1, 18, 30));
         when(simulationMarketSessionService.closeTime()).thenReturn(LocalTime.of(18, 0));
+        when(autoMarketDailyRegimePreCreateService.shouldPreCreateDailyRegimes()).thenReturn(true);
     }
 
     @Test
@@ -92,6 +96,7 @@ class AutoParticipantCashFlowSchedulerTest {
                 stockBatchJobLauncher,
                 scheduledJobGuard,
                 simulationMarketSessionService,
+                autoMarketDailyRegimePreCreateService,
                 command -> command.run()
         );
         batchJobRuntimeControl.update(AutoMarketJob.JOB_NAME, true, false, "stock-admin");

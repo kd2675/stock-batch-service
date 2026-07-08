@@ -171,6 +171,7 @@ KIS_MARKET_DIV_CODE=J
 - 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버나 stock-back이 최초 조회 시 `runtime_enabled=true`, `scheduler_configured=true`로 생성하고, batch 서버가 실행 전 자신의 실제 설정값을 `scheduler_configured`에 동기화합니다. 운영 중에는 stock-back이 stock-batch HTTP API를 호출하지 않고 같은 DB row를 직접 변경합니다.
 - stock-back의 수동 월급 지급, 종목 장마감 롤오버, 거래정지/서킷브레이크 미체결 정리 요청은 `stock_batch_job_signal.status='PENDING'` row로 저장되고, `BatchJobSignalScheduler`가 `PROCESSING`으로 claim한 뒤 기존 `StockBatchJobLauncher`를 실행합니다.
 - `stock.batch.signal.fixed-delay-ms`: DB signal 큐 폴링 간격. 기본값은 5000ms(5초)입니다.
+- signal 처리는 전체 active job 여부로 막지 않고 먼저 claim한 뒤 target job의 기존 job lock, symbol lock, transaction 정책에 맡깁니다. target job이 lock 점유 등으로 `SKIPPED`를 반환하면 signal을 다시 `PENDING`으로 돌려 다음 polling에서 재시도합니다.
 - `stock.batch.signal.chunk-limit`: 한 번의 폴링에서 처리할 최대 signal 수. 기본값은 20건입니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
 - `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 180초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 하며, heartbeat가 정상 갱신하므로 정상 실행 중인 긴 job은 계속 락을 연장합니다.

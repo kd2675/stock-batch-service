@@ -61,6 +61,29 @@ public class BatchJobSignalWriter {
                 .update();
     }
 
+    @Transactional
+    public void defer(long signalId, StockBatchJobRunResponse response) {
+        LocalDateTime now = LocalDateTime.now();
+        jdbcClient.sql(
+                        """
+                        update stock_batch_job_signal
+                           set status = 'PENDING',
+                               picked_at = null,
+                               completed_at = null,
+                               processed_count = ?,
+                               message = ?,
+                               error_message = null,
+                               updated_at = ?
+                         where id = ?
+                        """
+                )
+                .param(response == null ? 0 : response.processedCount())
+                .param(truncate(response == null ? "Batch signal deferred" : response.message(), 500))
+                .param(now)
+                .param(signalId)
+                .update();
+    }
+
     private String normalizeStatus(String status) {
         return "FAILED".equals(status) ? "FAILED" : "COMPLETED";
     }

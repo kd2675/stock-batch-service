@@ -3,6 +3,7 @@ package stock.batch.service.scheduler;
 import java.time.LocalDate;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -19,6 +20,7 @@ import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class PortfolioSettlementScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
@@ -49,8 +51,16 @@ public class PortfolioSettlementScheduler {
         if (closeDate.equals(lastPostCloseProcessedDate)) {
             return;
         }
+        log.info(
+                "Stock batch post-close pipeline started: businessDate={}, session={}",
+                closeDate,
+                simulationMarketSessionService.currentSession()
+        );
         if (settlePortfolios(closeDate) && postProcessingCompletionService.isComplete(closeDate)) {
             lastPostCloseProcessedDate = closeDate;
+            log.info("Stock batch post-close pipeline completed: businessDate={}", closeDate);
+        } else {
+            log.info("Stock batch post-close pipeline pending: businessDate={}", closeDate);
         }
     }
 
@@ -69,12 +79,15 @@ public class PortfolioSettlementScheduler {
      */
     boolean settlePortfolios(LocalDate businessDate) {
         if (!ensureMarketCloseCompleted(businessDate)) {
+            log.info("Stock batch post-close pipeline waiting for market close rollover: businessDate={}", businessDate);
             return false;
         }
         if (postProcessingCompletionService.isComplete(businessDate)) {
+            log.info("Stock batch post-close pipeline already complete: businessDate={}", businessDate);
             return true;
         }
         if (!runPortfolioSettlement(businessDate)) {
+            log.info("Stock batch post-close pipeline waiting for portfolio settlement: businessDate={}", businessDate);
             return false;
         }
         return postProcessingCompletionService.isComplete(businessDate);
@@ -86,8 +99,10 @@ public class PortfolioSettlementScheduler {
      */
     private boolean runPortfolioSettlement(LocalDate businessDate) {
         if (!settlementSchedulerConfigured) {
+            log.info("Stock batch portfolio settlement skipped because scheduler is disabled: businessDate={}", businessDate);
             return true;
         }
+        log.info("Stock batch portfolio settlement stage started: businessDate={}", businessDate);
         StockBatchJobRunResponse response;
         if (businessDate.equals(simulationMarketSessionService.currentSimulationDate())) {
             response = scheduledJobGuard.runBatchIfEnabled(
@@ -105,6 +120,13 @@ public class PortfolioSettlementScheduler {
                     )
             );
         }
+        log.info(
+                "Stock batch portfolio settlement stage completed: businessDate={}, status={}, processedCount={}, message={}",
+                businessDate,
+                responseStatus(response),
+                responseProcessedCount(response),
+                responseMessage(response)
+        );
         return isNotFailed(response);
     }
 
@@ -115,6 +137,7 @@ public class PortfolioSettlementScheduler {
      */
     private boolean ensureMarketCloseCompleted(LocalDate businessDate) {
         if (marketCloseRolloverService.hasCompletedFullCloseRun(businessDate)) {
+            log.info("Stock batch market close rollover already complete: businessDate={}", businessDate);
             return true;
         }
         if (!runMarketCloseRollover(businessDate)) {
@@ -125,8 +148,10 @@ public class PortfolioSettlementScheduler {
 
     private boolean runMarketCloseRollover(LocalDate businessDate) {
         if (!marketCloseSchedulerConfigured) {
+            log.info("Stock batch market close rollover skipped because scheduler is disabled: businessDate={}", businessDate);
             return false;
         }
+        log.info("Stock batch market close rollover stage started: businessDate={}", businessDate);
         StockBatchJobRunResponse response;
         if (businessDate.equals(simulationMarketSessionService.currentSimulationDate())) {
             response = scheduledJobGuard.runBatchIfEnabled(
@@ -144,6 +169,13 @@ public class PortfolioSettlementScheduler {
                     )
             );
         }
+        log.info(
+                "Stock batch market close rollover stage completed: businessDate={}, status={}, processedCount={}, message={}",
+                businessDate,
+                responseStatus(response),
+                responseProcessedCount(response),
+                responseMessage(response)
+        );
         return isNotFailed(response);
     }
 
@@ -170,5 +202,17 @@ public class PortfolioSettlementScheduler {
 
     private boolean isNotFailed(StockBatchJobRunResponse response) {
         return !StockBatchJobRunResponses.isFailed(response);
+    }
+
+    private String responseStatus(StockBatchJobRunResponse response) {
+        return response == null ? "UNKNOWN" : response.status();
+    }
+
+    private int responseProcessedCount(StockBatchJobRunResponse response) {
+        return response == null ? 0 : response.processedCount();
+    }
+
+    private String responseMessage(StockBatchJobRunResponse response) {
+        return response == null ? "No batch response returned" : response.message();
     }
 }

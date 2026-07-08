@@ -27,7 +27,7 @@ public class AutoMarketDailyRegimePreCreateService {
 
     public int preCreateDailyRegimes() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        if (!clock.running() || !isPreCreateWindow(clock.simulationDateTime())) {
+        if (!shouldPreCreateDailyRegimes(clock)) {
             return 0;
         }
         var configs = autoMarketReader.findDailyRegimePreCreateConfigs();
@@ -36,6 +36,14 @@ public class AutoMarketDailyRegimePreCreateService {
                 clock.simulationDateTime().toLocalDate(),
                 clock.simulationDateTime()
         );
+    }
+
+    public boolean shouldPreCreateDailyRegimes() {
+        return shouldPreCreateDailyRegimes(simulationClockService.currentSnapshot());
+    }
+
+    private boolean shouldPreCreateDailyRegimes(SimulationClockSnapshot clock) {
+        return clock.running() && isPreCreateWindow(clock.simulationDateTime());
     }
 
     private boolean isPreCreateWindow(LocalDateTime simulationDateTime) {

@@ -10,6 +10,7 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
 import stock.batch.service.automarket.config.AutoMarketRunExecutorConfig;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
@@ -26,17 +27,20 @@ public class AutoMarketScheduler {
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
     private final SimulationMarketSessionService simulationMarketSessionService;
+    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
     private final Executor autoMarketRunTaskExecutor;
 
     public AutoMarketScheduler(
             StockBatchJobLauncher stockBatchJobLauncher,
             StockBatchScheduledJobGuard scheduledJobGuard,
             SimulationMarketSessionService simulationMarketSessionService,
+            AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService,
             @Qualifier(AutoMarketRunExecutorConfig.AUTO_MARKET_RUN_TASK_EXECUTOR) Executor autoMarketRunTaskExecutor
     ) {
         this.stockBatchJobLauncher = stockBatchJobLauncher;
         this.scheduledJobGuard = scheduledJobGuard;
         this.simulationMarketSessionService = simulationMarketSessionService;
+        this.autoMarketDailyRegimePreCreateService = autoMarketDailyRegimePreCreateService;
         this.autoMarketRunTaskExecutor = autoMarketRunTaskExecutor;
     }
 
@@ -67,7 +71,7 @@ public class AutoMarketScheduler {
         try {
             autoMarketRunTaskExecutor.execute(this::runAutoMarketIfEnabled);
         } catch (RejectedExecutionException ex) {
-            log.debug("Auto-market run dispatch skipped because dispatcher is saturated: {}", ex.getMessage());
+            log.warn("Auto-market run dispatch skipped because dispatcher is saturated: reason={}", ex.getMessage());
         }
     }
 
@@ -81,6 +85,9 @@ public class AutoMarketScheduler {
             fixedDelayString = "${stock.batch.auto-market.daily-regime.fixed-delay-ms:10000}"
     )
     public void preCreateDailyRegimes() {
+        if (!autoMarketDailyRegimePreCreateService.shouldPreCreateDailyRegimes()) {
+            return;
+        }
         scheduledJobGuard.runIfEnabled(
                 AutoMarketDailyRegimePreCreateJob.JOB_NAME,
                 autoMarketDailyRegimeSchedulerConfigured,

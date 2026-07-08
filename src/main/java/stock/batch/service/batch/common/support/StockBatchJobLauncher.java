@@ -133,10 +133,6 @@ public class StockBatchJobLauncher {
         return stockBatchJobRunner.run(holdingCleanupJob);
     }
 
-    public boolean hasActiveJobs() {
-        return stockBatchJobRunner.hasActiveJobs();
-    }
-
     private StockBatchJobRunResponse runDelegatingJob(String jobName, String executionMode, IntSupplier runner) {
         return stockBatchJobRunner.run(new DelegatingStockBatchJob(jobName, executionMode, runner));
     }

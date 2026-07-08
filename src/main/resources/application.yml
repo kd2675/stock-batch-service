@@ -208,7 +208,7 @@ stock:
       fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:300000}
     market-close:
       enabled: ${STOCK_BATCH_MARKET_CLOSE_ENABLED:true}
-      poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:5000}
+      poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:10000}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
     holding-cleanup:

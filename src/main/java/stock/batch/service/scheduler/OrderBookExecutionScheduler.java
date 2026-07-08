@@ -47,7 +47,7 @@ public class OrderBookExecutionScheduler {
         try {
             orderBookExecutionRunTaskExecutor.execute(this::executeOrderBookOrdersIfEnabled);
         } catch (RejectedExecutionException ex) {
-            log.debug("Order-book execution run dispatch skipped because dispatcher is saturated: {}", ex.getMessage());
+            log.warn("Order-book execution run dispatch skipped because dispatcher is saturated: reason={}", ex.getMessage());
         }
     }
 

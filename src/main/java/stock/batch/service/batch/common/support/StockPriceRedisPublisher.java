@@ -31,9 +31,9 @@ public class StockPriceRedisPublisher {
                     objectMapper.writeValueAsString(new PriceEvent(symbol, currentPrice, priceTime.toString(), provider))
             );
         } catch (JsonProcessingException ex) {
-            log.debug("Redis price event serialization skipped: symbol={}, reason={}", symbol, ex.getMessage());
+            log.warn("Redis price event serialization skipped: symbol={}, reason={}", symbol, ex.getMessage());
         } catch (RuntimeException ex) {
-            log.debug("Redis price publish skipped: symbol={}, reason={}", symbol, ex.getMessage());
+            log.warn("Redis price publish skipped: symbol={}, reason={}", symbol, ex.getMessage());
         }
     }
 

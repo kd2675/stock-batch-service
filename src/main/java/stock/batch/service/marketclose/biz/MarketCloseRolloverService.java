@@ -180,7 +180,7 @@ public class MarketCloseRolloverService {
             var lock = orderBookSymbolLock.tryLock(lockSymbol);
             if (lock.isEmpty()) {
                 releaseLocks(locks);
-                log.info("Market close rollover skipped because order-book symbol is busy: symbol={}", lockSymbol);
+                log.warn("Market close rollover skipped because order-book symbol is busy: symbol={}", lockSymbol);
                 return null;
             }
             locks.add(lock.get());
