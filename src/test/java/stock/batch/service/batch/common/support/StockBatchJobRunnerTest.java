@@ -385,6 +385,21 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void run_contextClosed_skipsNewJobWithoutStartingExecutionRecord() {
+        StockBatchJobRunner runner = runner();
+        runner.prepareShutdown();
+        TestStockBatchJob job = new TestStockBatchJob("context-closed-skip-job", "test-mode", 5);
+
+        var response = runner.run(job);
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.message()).isEqualTo("Batch service is shutting down");
+        assertThat(job.runCount()).isZero();
+        verify(stockBatchJobRepositoryRecorder, never()).start(any(), any());
+        verify(batchJobLockRegistry, never()).tryAcquire(any(), any());
+    }
+
+    @Test
     void hasActiveJobs_reportsRunningJobUntilCompletion() throws Exception {
         StockBatchJobRunner runner = runner();
         CountDownLatch jobStarted = new CountDownLatch(1);

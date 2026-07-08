@@ -126,6 +126,8 @@ class StockDdlContractTest {
     private static final List<String> MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS = List.of(
             "stock_market_close_run",
             "stock_holding_snapshot",
+            "stock_order_book_daily_snapshot",
+            "uk_stock_order_book_daily_snapshot_run_symbol",
             "holding_snapshot_run_id"
     );
 

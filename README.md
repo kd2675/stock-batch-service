@@ -101,8 +101,8 @@ scripts/stock-gateway-h2-smoke.sh
 - batch 운영 제어 상태와 수동 실행 요청은 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock`, `stock_batch_job_signal` 테이블을 기준으로 합니다.
 - `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장합니다. `runtime_enabled`는 stock-back/어드민이 바꾸는 운영 중지 값이고, `scheduler_configured`는 stock-batch가 실제 서버 설정값을 동기화한 값입니다. `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다. `stock_batch_job_signal`은 stock-back이 적재한 수동 실행/후처리 요청을 batch가 폴링해 처리하는 비동기 신호 큐입니다.
 - 현재 custom scheduler job은 Spring Batch metadata를 고빈도 실행 이력 ledger로 사용합니다. `businessDate`, `jobMode`, `runId`를 identifying parameter로 기록해 같은 업무일/모드의 반복 실행도 서로 다른 `JobInstance`가 되게 합니다. 재시작 가능한 chunk job을 새로 만들 때는 `runId` 방식으로 우회하지 말고 해당 job의 restart contract를 별도로 설계합니다.
-- Hikari 풀은 local/dev 기본 8개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
-- Batch metadata Hikari 풀은 local/dev 기본 4개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
+- Hikari 풀은 local/dev 기본 30개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
+- Batch metadata Hikari 풀은 local/dev 기본 12개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
 - 배치 업무 SQL은 `stock.batch.jdbc.query-timeout-seconds`로 statement query timeout을 적용합니다. 기본값은 30초이며 `STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS`로 조정합니다.
 - DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
 - Redis key: `stock:price:{symbol}`. 값은 현재 단일 가격 문자열이며 `stock-back-service` 시장 가격 API가 우선 조회합니다. TTL 기본값은 60초이며 `STOCK_PRICE_CACHE_TTL_SECONDS`로 조정합니다.
@@ -140,15 +140,19 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.order-book-execution.enabled`: 주문장 체결 job 활성화 여부
 - `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
-- `stock.batch.auto-market.fixed-delay-ms`: 자동장 주문 생성 주기
+- `stock.batch.auto-market.fixed-rate-ms`: 자동장 주문 생성 dispatch 주기입니다. 기본값은 5000ms이며, 이전 회차가 실행 중이어도 다음 회차를 전용 dispatcher에 제출합니다.
+- `stock.batch.auto-market.fixed-delay-ms`: 이전 자동장 주문 생성 주기 설정입니다. 현재 dispatch 주기는 `fixed-rate-ms`를 사용합니다.
 - `stock.batch.auto-market.daily-regime.enabled`: 자동장 일일 방향/자산 선호 pre-create job 활성화 여부
 - `stock.batch.auto-market.daily-regime.fixed-delay-ms`: 장 시작 전 일일 방향/자산 선호 pre-create 검사 주기
 - `stock.batch.auto-market.daily-regime.pre-create-before-minutes`: 시뮬레이션 장 시작 몇 분 전부터 다음 거래일 방향/자산 선호를 미리 생성할지 결정합니다. 기본값은 30분입니다.
 - `stock.batch.auto-market.generation-participant-chunk-size`: 한 트랜잭션에서 주문 생성까지 처리할 자동 참여자 수입니다. 기본값은 25입니다.
+- `stock.batch.auto-market.generation-profile-worker-count`: 한 auto-market run이 Redis ready profile queue에서 claim할 profile type 수입니다. 기본값은 9이며, 기본 run dispatcher 3개와 조합해 27개 profile type을 3회차에 나눠 처리합니다.
+- `stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms`: Redis ready profile queue reconcile 주기입니다. 기본값은 7200000ms(2시간)이며, 서버 시작 시에는 별도로 1회 reconcile을 수행합니다.
 - `stock.batch.auto-market.generation-lease-seconds`: 주문 생성 대상으로 claim한 참여자-종목 스케줄의 lease 시간입니다. 주문 생성 실패 시 lease 만료 후 재시도할 수 있게 둡니다.
 - `stock.batch.auto-market.generation-due-limit-per-symbol`: 한 회차에서 종목별로 조회할 주문 생성 대상 최대 수입니다. 기본값은 100입니다.
 - `stock.batch.auto-market.deadlock-retry-max-attempts` / `deadlock-retry-backoff-ms`: 자동장 주문 생성 중 계좌/보유 예약 update에서 deadlock이 발생했을 때 같은 chunk 트랜잭션을 짧게 재시도하는 횟수와 backoff입니다.
-- `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 대상 종목 task를 처리하는 execution thread pool입니다. DB write 경합을 줄이기 위해 실제 동시성은 종목별 Redis symbol lock으로 제한합니다.
+- `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 profile shard를 처리하는 execution thread pool입니다. 기본값은 12/12/0이며, business DB pool에 다른 주문/체결 job이 쓸 여유를 남깁니다.
+- `stock.batch.auto-market.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: auto-market run 단위를 병렬 제출하는 dispatcher pool입니다. 기본값은 3/3/0이며, 4번째 동시 회차는 큐에 쌓지 않고 스킵합니다.
 - `stock.batch.auto-market-order-expiry.enabled`: 자동장이 낸 미체결 주문 만료 job 활성화 여부
 - `stock.batch.auto-market-order-expiry.fixed-delay-ms`: 자동장 미체결 주문 만료 검사 주기
 - `stock.batch.auto-market-order-expiry.expiry-chunk-limit`: 한 회차에서 취소할 자동장 만료 주문 후보 최대 수
@@ -179,7 +183,8 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.scan-limit`: 한 번의 체결 job 실행에서 처리할 최대 체결 횟수입니다. 기본값은 300입니다.
 - `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 잠글 매수 후보 수입니다. 기본값은 20입니다. `EXISTS ... FOR UPDATE`로 매수/매도 범위를 한 번에 잠그지 않고, 매수 후보를 짧게 잠근 뒤 최우선 매도를 별도로 찾습니다.
 - `stock.batch.execution.symbol-chunk-limit`: 한 종목 lock을 잡고 연속 처리할 최대 체결 횟수입니다. 기본값은 50입니다. lock을 오래 점유하지 않도록 `scan-limit`보다 작게 둡니다.
-- `stock.batch.execution.thread-pool.core-size` / `max-size` / `queue-capacity`: 주문장 체결 대상 종목 task를 처리하는 실제 execution thread pool입니다. scheduler pool과 다르며, 신규 상장 종목이 생기면 별도 thread를 만들지 않고 이 pool에 symbol task가 들어갑니다. DB pool을 모두 점유하지 않도록 기본값은 4입니다.
+- `stock.batch.order-book-execution.fixed-rate-ms`: 주문장 체결 run dispatch 주기입니다. 기본값은 5000ms이며, 이전 체결 run이 실행 중이어도 다음 run을 전용 dispatcher에 제출합니다.
+- `stock.batch.order-book-execution.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: 주문장 체결 run 단위를 병렬 제출하는 dispatcher pool입니다. 기본값은 3/3/0이며, 4번째 동시 회차는 큐에 쌓지 않고 스킵합니다.
 - `stock.batch.execution.symbol-lock.type`: 동일 종목 중복 체결 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.execution.symbol-lock.ttl-seconds`: Redis symbol lock TTL입니다. 기본값은 120초입니다. 한 번의 symbol chunk가 이 시간 안에 끝나도록 `symbol-chunk-limit`과 함께 조정합니다.
 - `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.

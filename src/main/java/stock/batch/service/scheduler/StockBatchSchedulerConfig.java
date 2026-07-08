@@ -8,6 +8,8 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 @Configuration
 public class StockBatchSchedulerConfig {
 
+    private static final int SCHEDULER_LIFECYCLE_PHASE = Integer.MAX_VALUE;
+
     @Bean(name = StockBatchSchedulerNames.EXECUTION)
     public ThreadPoolTaskScheduler stockBatchExecutionTaskScheduler(
             @Value("${stock.batch.scheduler-pools.execution.pool-size:2}") int poolSize,
@@ -53,6 +55,7 @@ public class StockBatchSchedulerConfig {
         scheduler.setRemoveOnCancelPolicy(true);
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(shutdownAwaitSeconds);
+        scheduler.setPhase(SCHEDULER_LIFECYCLE_PHASE);
         return scheduler;
     }
 }

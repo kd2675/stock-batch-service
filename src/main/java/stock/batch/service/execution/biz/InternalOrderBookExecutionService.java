@@ -7,13 +7,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
@@ -27,7 +23,6 @@ import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.batch.execution.reader.OrderBookExecutionReader;
 import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
-import stock.batch.service.execution.config.OrderBookExecutionWorkerExecutorConfig;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
 import stock.batch.service.simulation.SimulationClockService;
@@ -45,7 +40,6 @@ public class InternalOrderBookExecutionService {
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
     private final OrderBookReadySymbolQueue readySymbolQueue;
-    private final Executor orderBookExecutionWorkerTaskExecutor;
 
     public InternalOrderBookExecutionService(
             ExecutionCostCalculator executionCostCalculator,
@@ -56,8 +50,7 @@ public class InternalOrderBookExecutionService {
             SimulationClockService simulationClockService,
             TransactionTemplate transactionTemplate,
             OrderBookSymbolLock orderBookSymbolLock,
-            OrderBookReadySymbolQueue readySymbolQueue,
-            @Qualifier(OrderBookExecutionWorkerExecutorConfig.ORDER_BOOK_EXECUTION_WORKER_TASK_EXECUTOR) Executor orderBookExecutionWorkerTaskExecutor
+            OrderBookReadySymbolQueue readySymbolQueue
     ) {
         this.executionCostCalculator = executionCostCalculator;
         this.orderBookExecutionReader = orderBookExecutionReader;
@@ -68,7 +61,6 @@ public class InternalOrderBookExecutionService {
         this.transactionTemplate = transactionTemplate;
         this.orderBookSymbolLock = orderBookSymbolLock;
         this.readySymbolQueue = readySymbolQueue;
-        this.orderBookExecutionWorkerTaskExecutor = orderBookExecutionWorkerTaskExecutor;
     }
 
     @Value("${stock.batch.execution.scan-limit:300}")
@@ -92,30 +84,13 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.slow-symbol-log-threshold-ms:1000}")
     private long slowSymbolLogThresholdMillis;
 
-    @Value("${stock.batch.execution.worker-count:3}")
-    private int executionWorkerCount;
-
     public int executeEligibleOrders() {
         int maxMatches = Math.max(0, scanLimit);
         if (maxMatches <= 0) {
             return 0;
         }
-        int workerCount = Math.min(Math.max(1, executionWorkerCount), maxMatches);
         AtomicInteger remainingMatches = new AtomicInteger(maxMatches);
-        if (workerCount == 1) {
-            return executeNextReadySymbol(remainingMatches);
-        }
-        List<CompletableFuture<Integer>> futures = java.util.stream.IntStream.range(0, workerCount)
-                .mapToObj(workerIndex -> CompletableFuture.supplyAsync(
-                        () -> executeNextReadySymbol(remainingMatches),
-                        orderBookExecutionWorkerTaskExecutor
-                ))
-                .toList();
-        int totalMatchCount = 0;
-        for (CompletableFuture<Integer> future : futures) {
-            totalMatchCount += joinExecutionWorkerResult(future);
-        }
-        return totalMatchCount;
+        return executeNextReadySymbol(remainingMatches);
     }
 
     private int executeNextReadySymbol(AtomicInteger remainingMatches) {
@@ -131,15 +106,6 @@ public class InternalOrderBookExecutionService {
             }
         }
         return 0;
-    }
-
-    private int joinExecutionWorkerResult(CompletableFuture<Integer> future) {
-        try {
-            return future.join();
-        } catch (CompletionException ex) {
-            log.warn("Order book execution worker failed: reason={}", ex.getMessage(), ex);
-            return 0;
-        }
     }
 
     private String findNextReadySymbol() {

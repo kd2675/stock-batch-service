@@ -1,11 +1,16 @@
 package stock.batch.service.scheduler;
 
-import lombok.RequiredArgsConstructor;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import stock.batch.service.automarket.config.AutoMarketRunExecutorConfig;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
@@ -15,12 +20,25 @@ import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Component
-@RequiredArgsConstructor
+@Slf4j
 public class AutoMarketScheduler {
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
     private final StockBatchScheduledJobGuard scheduledJobGuard;
     private final SimulationMarketSessionService simulationMarketSessionService;
+    private final Executor autoMarketRunTaskExecutor;
+
+    public AutoMarketScheduler(
+            StockBatchJobLauncher stockBatchJobLauncher,
+            StockBatchScheduledJobGuard scheduledJobGuard,
+            SimulationMarketSessionService simulationMarketSessionService,
+            @Qualifier(AutoMarketRunExecutorConfig.AUTO_MARKET_RUN_TASK_EXECUTOR) Executor autoMarketRunTaskExecutor
+    ) {
+        this.stockBatchJobLauncher = stockBatchJobLauncher;
+        this.scheduledJobGuard = scheduledJobGuard;
+        this.simulationMarketSessionService = simulationMarketSessionService;
+        this.autoMarketRunTaskExecutor = autoMarketRunTaskExecutor;
+    }
 
     @Value("${stock.batch.auto-market.enabled:true}")
     private boolean autoMarketSchedulerConfigured = true;
@@ -40,12 +58,20 @@ public class AutoMarketScheduler {
     @Scheduled(
             scheduler = StockBatchSchedulerNames.AUTO_MARKET,
             initialDelayString = "${stock.batch.auto-market.initial-delay-ms:5000}",
-            fixedDelayString = "${stock.batch.auto-market.fixed-delay-ms:1000}"
+            fixedRateString = "${stock.batch.auto-market.fixed-rate-ms:5000}"
     )
     public void runAutoMarket() {
         if (!simulationMarketSessionService.isRegularSession()) {
             return;
         }
+        try {
+            autoMarketRunTaskExecutor.execute(this::runAutoMarketIfEnabled);
+        } catch (RejectedExecutionException ex) {
+            log.debug("Auto-market run dispatch skipped because dispatcher is saturated: {}", ex.getMessage());
+        }
+    }
+
+    private void runAutoMarketIfEnabled() {
         scheduledJobGuard.runIfEnabled(AutoMarketJob.JOB_NAME, autoMarketSchedulerConfigured, stockBatchJobLauncher::runAutoMarket);
     }
 
@@ -65,7 +91,7 @@ public class AutoMarketScheduler {
     @Scheduled(
             scheduler = StockBatchSchedulerNames.AUTO_MARKET,
             initialDelayString = "${stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms:4000}",
-            fixedDelayString = "${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:30000}"
+            fixedDelayString = "${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:7200000}"
     )
     public void reconcileProfileQueue() {
         runProfileQueueReconcile();

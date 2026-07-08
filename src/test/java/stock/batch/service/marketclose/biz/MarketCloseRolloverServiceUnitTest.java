@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -109,6 +110,55 @@ class MarketCloseRolloverServiceUnitTest {
         assertThat(processedCount).isEqualTo(1);
         verify(writer, org.mockito.Mockito.times(2)).findOpenOrderBookOrdersForUpdate("MC001");
         verify(writer).creditCash(3L, new BigDecimal("3000.00"), now);
+    }
+
+    @Test
+    void rolloverClosingPrices_snapshotsDailySymbolBeforePriceRollover() {
+        MarketCloseRolloverWriter writer = mock(MarketCloseRolloverWriter.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
+        });
+        MarketCloseRolloverService service = new MarketCloseRolloverService(
+                writer,
+                simulationClockService,
+                orderBookSymbolLock,
+                transactionTemplate()
+        );
+        LocalDate tradeDate = LocalDate.of(2026, 7, 3);
+        LocalDateTime closedAt = LocalDateTime.of(2026, 7, 3, 18, 0);
+        LocalDateTime completedAt = LocalDateTime.of(2026, 7, 3, 18, 0, 5);
+        when(writer.findCloseLockSymbols("MC001")).thenReturn(List.of("MC001"));
+        when(simulationClockService.currentDate()).thenReturn(tradeDate);
+        when(simulationClockService.currentMarketDateTime()).thenReturn(closedAt, completedAt);
+        when(writer.createCloseRun("MC001", tradeDate, closedAt)).thenReturn(10L);
+        when(writer.findOpenOrderBookOrdersForUpdate("MC001")).thenReturn(List.of());
+        when(writer.snapshotHoldings(10L, "MC001", closedAt)).thenReturn(2);
+        when(writer.snapshotOrderBookDailySymbols(
+                10L,
+                "MC001",
+                tradeDate,
+                closedAt,
+                tradeDate.atStartOfDay(),
+                tradeDate.plusDays(1).atStartOfDay()
+        )).thenReturn(1);
+        when(writer.rolloverClosingPrices("MC001")).thenReturn(1);
+
+        int processedCount = service.rolloverClosingPrices("MC001");
+
+        assertThat(processedCount).isEqualTo(4);
+        InOrder inOrder = org.mockito.Mockito.inOrder(writer);
+        inOrder.verify(writer).createCloseRun("MC001", tradeDate, closedAt);
+        inOrder.verify(writer).snapshotHoldings(10L, "MC001", closedAt);
+        inOrder.verify(writer).snapshotOrderBookDailySymbols(
+                10L,
+                "MC001",
+                tradeDate,
+                closedAt,
+                tradeDate.atStartOfDay(),
+                tradeDate.plusDays(1).atStartOfDay()
+        );
+        inOrder.verify(writer).rolloverClosingPrices("MC001");
+        inOrder.verify(writer).completeCloseRun(10L, 0, 2, 1, completedAt);
     }
 
     private TransactionTemplate transactionTemplate() {

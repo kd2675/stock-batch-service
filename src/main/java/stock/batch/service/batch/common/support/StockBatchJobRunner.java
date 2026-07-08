@@ -6,13 +6,17 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
@@ -21,7 +25,9 @@ import stock.batch.service.common.vo.StockBatchJobRunResponse;
 @Component
 @DependsOn("simulationClockScheduler")
 @Slf4j
-public class StockBatchJobRunner {
+public class StockBatchJobRunner implements SmartLifecycle {
+
+    private static final int LIFECYCLE_PHASE = Integer.MAX_VALUE - 100;
 
     private final BatchJobLockRegistry batchJobLockRegistry;
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder;
@@ -29,6 +35,8 @@ public class StockBatchJobRunner {
     private final ScheduledExecutorService lockHeartbeatExecutor;
     private final StockBatchJobLockHeartbeat lockHeartbeat;
     private final StockBatchActiveJobTracker activeJobTracker = new StockBatchActiveJobTracker();
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean shutdownStarted = new AtomicBoolean(false);
 
     @Autowired
     public StockBatchJobRunner(
@@ -279,6 +287,48 @@ public class StockBatchJobRunner {
 
     @PreDestroy
     public void shutdown() {
+        shutdownOnce();
+    }
+
+    @EventListener(ContextClosedEvent.class)
+    public void prepareShutdown() {
+        activeJobTracker.markShuttingDown();
+    }
+
+    @Override
+    public void start() {
+        running.set(true);
+    }
+
+    @Override
+    public void stop() {
+        shutdownOnce();
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        try {
+            shutdownOnce();
+        } finally {
+            callback.run();
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running.get();
+    }
+
+    @Override
+    public int getPhase() {
+        return LIFECYCLE_PHASE;
+    }
+
+    private void shutdownOnce() {
+        if (!shutdownStarted.compareAndSet(false, true)) {
+            return;
+        }
+        running.set(false);
         activeJobTracker.markShuttingDown();
         waitForActiveJobsToComplete();
         shutdownLockHeartbeatExecutor();

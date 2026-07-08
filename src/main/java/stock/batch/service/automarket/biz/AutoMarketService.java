@@ -62,7 +62,7 @@ public class AutoMarketService {
     @Value("${stock.batch.auto-market.generation-due-limit-per-symbol:100}")
     private int generationDueLimitPerSymbol;
 
-    @Value("${stock.batch.auto-market.generation-profile-worker-count:4}")
+    @Value("${stock.batch.auto-market.generation-profile-worker-count:9}")
     private int generationProfileWorkerCount;
 
     @Value("${stock.batch.auto-market.slow-symbol-log-threshold-ms:1000}")

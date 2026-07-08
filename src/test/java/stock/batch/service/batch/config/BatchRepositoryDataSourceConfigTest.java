@@ -24,7 +24,7 @@ class BatchRepositoryDataSourceConfigTest {
                     "spring.datasource.username=sa",
                     "spring.datasource.password=",
                     "spring.datasource.hikari.pool-name=stock-business-pool",
-                    "spring.datasource.hikari.maximum-pool-size=8",
+                    "spring.datasource.hikari.maximum-pool-size=30",
                     "spring.datasource.hikari.minimum-idle=1",
                     "spring.datasource.hikari.connection-timeout=30000",
                     "spring.datasource.hikari.validation-timeout=5000",
@@ -36,7 +36,7 @@ class BatchRepositoryDataSourceConfigTest {
                     "stock.batch.repository.datasource.username=sa",
                     "stock.batch.repository.datasource.password=",
                     "stock.batch.repository.datasource.hikari.pool-name=stock-batch-metadata-pool",
-                    "stock.batch.repository.datasource.hikari.maximum-pool-size=4",
+                    "stock.batch.repository.datasource.hikari.maximum-pool-size=12",
                     "stock.batch.repository.datasource.hikari.minimum-idle=1",
                     "stock.batch.repository.datasource.hikari.connection-timeout=30000",
                     "stock.batch.repository.datasource.hikari.validation-timeout=5000",
@@ -52,12 +52,12 @@ class BatchRepositoryDataSourceConfigTest {
             assertHikariDataSource(
                     context.getBean(BUSINESS_DATA_SOURCE, DataSource.class),
                     "stock-business-pool",
-                    8
+                    30
             );
             assertHikariDataSource(
                     context.getBean(BATCH_METADATA_DATA_SOURCE, DataSource.class),
                     "stock-batch-metadata-pool",
-                    4
+                    12
             );
         });
     }

@@ -12,7 +12,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       pool-name: stock-business-pool
-      maximum-pool-size: 20
+      maximum-pool-size: 30
       minimum-idle: 1
       connection-timeout: 30000
       validation-timeout: 5000
@@ -37,7 +37,7 @@ stock:
         driver-class-name: com.mysql.cj.jdbc.Driver
         hikari:
           pool-name: stock-batch-metadata-pool
-          maximum-pool-size: 4
+          maximum-pool-size: 12
           minimum-idle: 1
           connection-timeout: 30000
           validation-timeout: 5000

@@ -76,7 +76,12 @@ class AutoParticipantCashFlowSchedulerTest {
 
     @Test
     void autoMarketScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
-        AutoMarketScheduler autoMarketScheduler = new AutoMarketScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        AutoMarketScheduler autoMarketScheduler = new AutoMarketScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService,
+                command -> command.run()
+        );
         batchJobRuntimeControl.update(AutoMarketJob.JOB_NAME, true, false, "stock-admin");
 
         autoMarketScheduler.runAutoMarket();
@@ -120,7 +125,12 @@ class AutoParticipantCashFlowSchedulerTest {
     @Test
     void orderBookExecutionScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
         OrderBookExecutionScheduler orderBookExecutionScheduler =
-                new OrderBookExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+                new OrderBookExecutionScheduler(
+                        stockBatchJobLauncher,
+                        scheduledJobGuard,
+                        simulationMarketSessionService,
+                        command -> command.run()
+                );
         batchJobRuntimeControl.update(OrderBookExecutionJob.JOB_NAME, true, false, "stock-admin");
 
         orderBookExecutionScheduler.executeOrderBookOrders();

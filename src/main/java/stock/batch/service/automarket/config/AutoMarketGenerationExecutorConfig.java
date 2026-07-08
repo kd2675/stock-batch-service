@@ -15,8 +15,8 @@ public class AutoMarketGenerationExecutorConfig {
 
     @Bean(name = AUTO_MARKET_GENERATION_TASK_EXECUTOR)
     public Executor autoMarketGenerationTaskExecutor(
-            @Value("${stock.batch.auto-market.thread-pool.core-size:4}") int coreSize,
-            @Value("${stock.batch.auto-market.thread-pool.max-size:8}") int maxSize,
+            @Value("${stock.batch.auto-market.thread-pool.core-size:12}") int coreSize,
+            @Value("${stock.batch.auto-market.thread-pool.max-size:12}") int maxSize,
             @Value("${stock.batch.auto-market.thread-pool.queue-capacity:0}") int queueCapacity
     ) {
         if (coreSize <= 0) {

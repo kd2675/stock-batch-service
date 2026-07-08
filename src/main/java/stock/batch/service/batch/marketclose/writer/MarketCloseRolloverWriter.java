@@ -191,6 +191,140 @@ public class MarketCloseRolloverWriter {
         );
     }
 
+    public int snapshotOrderBookDailySymbols(
+            long closeRunId,
+            String symbol,
+            LocalDate simulationTradeDate,
+            LocalDateTime snapshotAt,
+            LocalDateTime executionRangeStart,
+            LocalDateTime executionRangeEnd
+    ) {
+        return jdbcTemplate.update(
+                """
+                insert into stock_order_book_daily_snapshot(
+                    close_run_id, symbol, simulation_trade_date, snapshot_at, created_at,
+                    name, market, enabled, market_enabled, market_status,
+                    issued_shares, tradable_shares, initial_price, tick_size, price_limit_rate,
+                    close_price, previous_close, change_rate,
+                    price_time, price_provider,
+                    execution_count, execution_quantity, turnover_amount,
+                    buy_quantity, sell_quantity, buy_net_amount, sell_net_amount,
+                    open_order_count, open_buy_order_count, open_sell_order_count, reserved_buy_cash,
+                    holder_count, holding_quantity, pending_corporate_action_count, last_executed_at
+                )
+                select ?,
+                       i.symbol,
+                       ?,
+                       ?,
+                       ?,
+                       i.name,
+                       i.market,
+                       i.enabled,
+                       coalesce(m.enabled, false),
+                       coalesce(m.market_status, 'CLOSED'),
+                       i.issued_shares,
+                       i.tradable_shares,
+                       i.initial_price,
+                       i.tick_size,
+                       i.price_limit_rate,
+                       coalesce(p.current_price, i.initial_price),
+                       coalesce(p.previous_close, i.initial_price),
+                       case
+                         when coalesce(p.previous_close, i.initial_price) > 0
+                         then round(
+                             (coalesce(p.current_price, i.initial_price) - coalesce(p.previous_close, i.initial_price))
+                             * 100 / coalesce(p.previous_close, i.initial_price),
+                             4
+                         )
+                         else 0
+                       end,
+                       p.price_time,
+                       p.provider,
+                       coalesce(e.execution_count, 0),
+                       coalesce(e.execution_quantity, 0),
+                       coalesce(e.turnover_amount, 0),
+                       coalesce(e.buy_quantity, 0),
+                       coalesce(e.sell_quantity, 0),
+                       coalesce(e.buy_net_amount, 0),
+                       coalesce(e.sell_net_amount, 0),
+                       coalesce(o.open_order_count, 0),
+                       coalesce(o.open_buy_order_count, 0),
+                       coalesce(o.open_sell_order_count, 0),
+                       coalesce(o.reserved_buy_cash, 0),
+                       coalesce(h.holder_count, 0),
+                       coalesce(h.holding_quantity, 0),
+                       coalesce(c.pending_corporate_action_count, 0),
+                       e.last_executed_at
+                  from stock_order_book_instrument i
+                  left join stock_order_book_market_config m on m.symbol = i.symbol
+                  left join stock_price p on p.symbol = i.symbol
+                  left join (
+                       select symbol,
+                              count(*) as execution_count,
+                              sum(quantity) as execution_quantity,
+                              sum(gross_amount) as turnover_amount,
+                              sum(case when side = 'BUY' then quantity else 0 end) as buy_quantity,
+                              sum(case when side = 'SELL' then quantity else 0 end) as sell_quantity,
+                              sum(case when side = 'BUY' then net_amount else 0 end) as buy_net_amount,
+                              sum(case when side = 'SELL' then net_amount else 0 end) as sell_net_amount,
+                              max(executed_at) as last_executed_at
+                         from stock_execution
+                        where source = 'INTERNAL_ORDER_BOOK'
+                          and executed_at >= ?
+                          and executed_at < ?
+                          and (? is null or symbol = ?)
+                        group by symbol
+                  ) e on e.symbol = i.symbol
+                  left join (
+                       select symbol,
+                              count(*) as open_order_count,
+                              sum(case when side = 'BUY' then 1 else 0 end) as open_buy_order_count,
+                              sum(case when side = 'SELL' then 1 else 0 end) as open_sell_order_count,
+                              sum(case when side = 'BUY' then reserved_cash else 0 end) as reserved_buy_cash
+                         from stock_order
+                        where market_type = 'ORDER_BOOK'
+                          and status in ('PENDING', 'PARTIALLY_FILLED')
+                          and (? is null or symbol = ?)
+                        group by symbol
+                  ) o on o.symbol = i.symbol
+                  left join (
+                       select h.symbol,
+                              count(distinct h.account_id) as holder_count,
+                              sum(h.quantity) as holding_quantity
+                         from stock_holding h
+                         join stock_account a on a.id = h.account_id and a.status = 'ACTIVE'
+                        where (? is null or h.symbol = ?)
+                        group by h.symbol
+                  ) h on h.symbol = i.symbol
+                  left join (
+                       select symbol,
+                              count(*) as pending_corporate_action_count
+                         from stock_corporate_action
+                        where status in ('ANNOUNCED', 'EX_RIGHTS_APPLIED')
+                          and (? is null or symbol = ?)
+                        group by symbol
+                  ) c on c.symbol = i.symbol
+                 where (? is null or i.symbol = ?)
+                """,
+                closeRunId,
+                simulationTradeDate,
+                snapshotAt,
+                snapshotAt,
+                executionRangeStart,
+                executionRangeEnd,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol,
+                symbol
+        );
+    }
+
     public void completeCloseRun(
             long closeRunId,
             int cancelledOrderCount,

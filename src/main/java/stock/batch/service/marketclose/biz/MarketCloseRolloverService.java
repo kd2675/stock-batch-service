@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -61,10 +62,19 @@ public class MarketCloseRolloverService {
     }
 
     private int rolloverClosingPricesLocked(String normalizedSymbol) {
+        LocalDate simulationTradeDate = simulationClockService.currentDate();
         LocalDateTime closedAt = simulationClockService.currentMarketDateTime();
-        long closeRunId = writer.createCloseRun(normalizedSymbol, simulationClockService.currentDate(), closedAt);
+        long closeRunId = writer.createCloseRun(normalizedSymbol, simulationTradeDate, closedAt);
         int cancelledOrderCount = cancelOpenOrderBookOrdersLocked(normalizedSymbol, closedAt);
         int holdingSnapshotCount = writer.snapshotHoldings(closeRunId, normalizedSymbol, closedAt);
+        int symbolSnapshotCount = writer.snapshotOrderBookDailySymbols(
+                closeRunId,
+                normalizedSymbol,
+                simulationTradeDate,
+                closedAt,
+                simulationTradeDate.atStartOfDay(),
+                simulationTradeDate.plusDays(1).atStartOfDay()
+        );
         int priceRolloverCount = writer.rolloverClosingPrices(normalizedSymbol);
         writer.completeCloseRun(
                 closeRunId,
@@ -73,7 +83,7 @@ public class MarketCloseRolloverService {
                 priceRolloverCount,
                 simulationClockService.currentMarketDateTime()
         );
-        return cancelledOrderCount + priceRolloverCount + holdingSnapshotCount;
+        return cancelledOrderCount + priceRolloverCount + holdingSnapshotCount + symbolSnapshotCount;
     }
 
     public int cancelOpenOrderBookOrders(String symbol) {

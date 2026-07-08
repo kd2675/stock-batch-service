@@ -34,6 +34,7 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_execution");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding_snapshot");
+        jdbcTemplate.update("delete from stock_order_book_daily_snapshot");
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account where user_key like 'market-close-%'");
@@ -88,7 +89,12 @@ class MarketCloseRolloverServiceTest {
 
     @Test
     void rolloverClosingPrices_cancelsOpenOrderBookOrdersAndSnapshotsHoldingsPerCloseRun() {
+        LocalDate simulationDate = LocalDate.of(2026, 7, 3);
+        setSimulationDate(simulationDate);
+        insertOrderBookInstrument("MC001");
         insertPrice("MC001", "73500.00", "70000.00", "internal-order-book");
+        insertExecution("MC001", "BUY", 1L, "73500.00", "73500.00", simulationDate.atTime(10, 0));
+        insertExecution("MC001", "SELL", 2L, "73500.00", "147000.00", simulationDate.atTime(11, 0));
         insertAccount("market-close-buyer", "1000000.00");
         insertAccount("market-close-seller", "500000.00");
         insertHolding("market-close-seller", "MC001", 10L, 4L, "70000.00");
@@ -97,7 +103,7 @@ class MarketCloseRolloverServiceTest {
 
         int processedCount = marketCloseRolloverService.rolloverClosingPrices();
 
-        assertThat(processedCount).isEqualTo(4);
+        assertThat(processedCount).isEqualTo(5);
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
         assertThat(queryLong("select cancelled_order_count from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo(2L);
@@ -105,6 +111,30 @@ class MarketCloseRolloverServiceTest {
                 .isEqualTo(1L);
         assertThat(queryLong("select price_rollover_count from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(1L);
+        assertThat(queryDecimal("select close_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("73500.00"));
+        assertThat(queryDecimal("select previous_close from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+        assertThat(queryDecimal("select change_rate from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("5.0000"));
+        assertThat(queryLong("select execution_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(2L);
+        assertThat(queryLong("select execution_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(3L);
+        assertThat(queryDecimal("select turnover_amount from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("220500.00"));
+        assertThat(queryLong("select buy_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select sell_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(2L);
+        assertThat(queryLong("select open_order_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isZero();
+        assertThat(queryLong("select holder_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select holding_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(10L);
         assertThat(queryLong("select count(*) from stock_order where symbol = 'MC001' and status = 'CANCELLED' and reserved_cash = 0"))
                 .isEqualTo(2L);
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'market-close-buyer'"))
@@ -136,6 +166,8 @@ class MarketCloseRolloverServiceTest {
 
     @Test
     void rolloverClosingPrices_withSymbol_closesOnlyThatOrderBookSymbol() {
+        insertOrderBookInstrument("MC101");
+        insertOrderBookInstrument("MC102");
         insertPrice("MC101", "73500.00", "70000.00", "internal-order-book");
         insertPrice("MC102", "88000.00", "80000.00", "internal-order-book");
         insertAccount("market-close-buyer-a", "1000000.00");
@@ -152,7 +184,7 @@ class MarketCloseRolloverServiceTest {
         int processedCount = marketCloseRolloverService.rolloverClosingPrices("mc101");
 
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
-        assertThat(processedCount).isEqualTo(4);
+        assertThat(processedCount).isEqualTo(5);
         assertThat(queryString("select symbol from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo("MC101");
         assertThat(queryLong("select cancelled_order_count from stock_market_close_run where id = " + closeRunId))
@@ -178,6 +210,18 @@ class MarketCloseRolloverServiceTest {
         assertThat(queryLong("""
                 select count(*)
                   from stock_holding_snapshot
+                 where close_run_id = ?
+                   and symbol = 'MC102'
+                """, closeRunId)).isZero();
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order_book_daily_snapshot
+                 where close_run_id = ?
+                   and symbol = 'MC101'
+                """, closeRunId)).isEqualTo(1L);
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order_book_daily_snapshot
                  where close_run_id = ?
                    and symbol = 'MC102'
                 """, closeRunId)).isZero();
@@ -218,6 +262,7 @@ class MarketCloseRolloverServiceTest {
     void rolloverClosingPrices_sameDayMultipleCloses_createSeparateHoldingSnapshots() {
         LocalDate simulationDate = LocalDate.of(2026, 1, 3);
         setSimulationDate(simulationDate);
+        insertOrderBookInstrument("MC002");
         insertPrice("MC002", "73500.00", "70000.00", "internal-order-book");
         insertAccount("market-close-holder", "500000.00");
         insertHolding("market-close-holder", "MC002", 10L, 0L, "70000.00");
@@ -236,8 +281,8 @@ class MarketCloseRolloverServiceTest {
         int secondProcessedCount = marketCloseRolloverService.rolloverClosingPrices();
         Long secondCloseRunId = queryLong("select max(id) from stock_market_close_run");
 
-        assertThat(firstProcessedCount).isEqualTo(2);
-        assertThat(secondProcessedCount).isEqualTo(1);
+        assertThat(firstProcessedCount).isEqualTo(3);
+        assertThat(secondProcessedCount).isEqualTo(2);
         assertThat(secondCloseRunId).isGreaterThan(firstCloseRunId);
         assertThat(queryLong("select count(*) from stock_market_close_run where business_date = ?", simulationDate))
                 .isEqualTo(2L);
@@ -253,6 +298,12 @@ class MarketCloseRolloverServiceTest {
                  where symbol = 'MC002'
                    and close_run_id = ?
                 """, secondCloseRunId)).isEqualTo(25L);
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order_book_daily_snapshot
+                 where symbol = 'MC002'
+                   and simulation_trade_date = ?
+                """, simulationDate)).isEqualTo(2L);
     }
 
     private void setSimulationDate(LocalDate simulationDate) {
@@ -392,8 +443,39 @@ class MarketCloseRolloverServiceTest {
         );
     }
 
+    private void insertExecution(
+            String symbol,
+            String side,
+            long quantity,
+            String price,
+            String grossAmount,
+            LocalDateTime executedAt
+    ) {
+        jdbcTemplate.update(
+                """
+                insert into stock_execution(
+                    order_id, account_id, symbol, side, quantity, price, gross_amount, net_amount,
+                    fee_amount, tax_amount, realized_profit, source, executed_at
+                )
+                values (?, 1, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'INTERNAL_ORDER_BOOK', ?)
+                """,
+                Math.abs((symbol + side + executedAt).hashCode()),
+                symbol,
+                side,
+                quantity,
+                new BigDecimal(price),
+                new BigDecimal(grossAmount),
+                new BigDecimal(grossAmount),
+                executedAt
+        );
+    }
+
     private BigDecimal queryDecimal(String sql) {
         return jdbcTemplate.queryForObject(sql, BigDecimal.class);
+    }
+
+    private BigDecimal queryDecimal(String sql, Object... args) {
+        return jdbcTemplate.queryForObject(sql, BigDecimal.class, args);
     }
 
     private Long queryLong(String sql) {

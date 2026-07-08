@@ -50,7 +50,6 @@ stock:
       initial-delay-ms: 600000
       fixed-delay-ms: 600000
     execution:
-      worker-count: 1
       symbol-lock:
         type: none
       ready-symbol-queue:

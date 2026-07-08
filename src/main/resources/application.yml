@@ -89,7 +89,7 @@ stock:
         driver-class-name: com.mysql.cj.jdbc.Driver
         hikari:
           pool-name: stock-batch-metadata-pool
-          maximum-pool-size: 4
+          maximum-pool-size: 12
           minimum-idle: 1
           connection-timeout: 30000
           validation-timeout: 5000
@@ -111,17 +111,12 @@ stock:
       fixed-delay-ms: 60000
     execution:
       scan-limit: ${STOCK_BATCH_EXECUTION_SCAN_LIMIT:300}
-      worker-count: ${STOCK_BATCH_EXECUTION_WORKER_COUNT:3}
       buy-candidate-scan-limit: ${STOCK_BATCH_EXECUTION_BUY_CANDIDATE_SCAN_LIMIT:20}
       symbol-chunk-limit: ${STOCK_BATCH_EXECUTION_SYMBOL_CHUNK_LIMIT:50}
       ready-symbol-fallback-scan-limit: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_FALLBACK_SCAN_LIMIT:8}
       deadlock-retry-max-attempts: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}
       slow-symbol-log-threshold-ms: ${STOCK_BATCH_EXECUTION_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
-      thread-pool:
-        core-size: ${STOCK_BATCH_EXECUTION_THREAD_POOL_CORE_SIZE:3}
-        max-size: ${STOCK_BATCH_EXECUTION_THREAD_POOL_MAX_SIZE:6}
-        queue-capacity: ${STOCK_BATCH_EXECUTION_THREAD_POOL_QUEUE_CAPACITY:0}
       symbol-lock:
         type: ${STOCK_BATCH_EXECUTION_SYMBOL_LOCK_TYPE:redis}
         key-prefix: ${STOCK_BATCH_EXECUTION_SYMBOL_LOCK_KEY_PREFIX:stock:orderbook:lock:}
@@ -138,6 +133,12 @@ stock:
       enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_INITIAL_DELAY_MS:36000}
       fixed-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:1000}
+      fixed-rate-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_RATE_MS:5000}
+      run-dispatcher:
+        thread-pool:
+          core-size: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_RUN_THREAD_POOL_CORE_SIZE:3}
+          max-size: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_RUN_THREAD_POOL_MAX_SIZE:3}
+          queue-capacity: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_RUN_THREAD_POOL_QUEUE_CAPACITY:0}
     corporate-actions:
       enabled: ${STOCK_BATCH_CORPORATE_ACTIONS_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_CORPORATE_ACTIONS_INITIAL_DELAY_MS:20000}
@@ -146,13 +147,14 @@ stock:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_INITIAL_DELAY_MS:5000}
       fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:3000}
+      fixed-rate-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_RATE_MS:5000}
       daily-regime:
         enabled: ${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_ENABLED:true}
         initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_INITIAL_DELAY_MS:3000}
         fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_FIXED_DELAY_MS:10000}
         pre-create-before-minutes: ${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_PRE_CREATE_BEFORE_MINUTES:30}
       generation-participant-chunk-size: ${STOCK_BATCH_AUTO_MARKET_GENERATION_PARTICIPANT_CHUNK_SIZE:25}
-      generation-profile-worker-count: ${STOCK_BATCH_AUTO_MARKET_GENERATION_PROFILE_WORKER_COUNT:12}
+      generation-profile-worker-count: ${STOCK_BATCH_AUTO_MARKET_GENERATION_PROFILE_WORKER_COUNT:9}
       generation-base-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_BASE_INTERVAL_SECONDS:10}
       generation-min-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_MIN_INTERVAL_SECONDS:3}
       generation-max-interval-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_MAX_INTERVAL_SECONDS:300}
@@ -172,7 +174,7 @@ stock:
         zone-id: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_ZONE_ID:Asia/Seoul}
         reconcile-enabled: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_ENABLED:true}
         reconcile-initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_INITIAL_DELAY_MS:4000}
-        reconcile-fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MS:30000}
+        reconcile-fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MS:7200000}
         reconcile-limit: ${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_LIMIT:100}
       symbol-selection:
         diversity-penalty: ${STOCK_BATCH_AUTO_MARKET_SYMBOL_SELECTION_DIVERSITY_PENALTY:3.0}
@@ -180,8 +182,13 @@ stock:
         max-share-per-profile: ${STOCK_BATCH_AUTO_MARKET_SYMBOL_SELECTION_MAX_SHARE_PER_PROFILE:0.55}
       thread-pool:
         core-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_CORE_SIZE:12}
-        max-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:16}
+        max-size: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_MAX_SIZE:12}
         queue-capacity: ${STOCK_BATCH_AUTO_MARKET_THREAD_POOL_QUEUE_CAPACITY:0}
+      run-dispatcher:
+        thread-pool:
+          core-size: ${STOCK_BATCH_AUTO_MARKET_RUN_THREAD_POOL_CORE_SIZE:3}
+          max-size: ${STOCK_BATCH_AUTO_MARKET_RUN_THREAD_POOL_MAX_SIZE:3}
+          queue-capacity: ${STOCK_BATCH_AUTO_MARKET_RUN_THREAD_POOL_QUEUE_CAPACITY:0}
     auto-market-order-expiry:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_INITIAL_DELAY_MS:7000}

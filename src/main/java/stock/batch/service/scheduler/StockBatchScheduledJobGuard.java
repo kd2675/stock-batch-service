@@ -1,10 +1,13 @@
 package stock.batch.service.scheduler;
 
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
@@ -17,6 +20,12 @@ import stock.batch.service.common.vo.StockBatchJobRunResponse;
 public class StockBatchScheduledJobGuard {
 
     private final BatchJobRuntimeControl batchJobRuntimeControl;
+    private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
+
+    @EventListener(ContextClosedEvent.class)
+    public void prepareShutdown() {
+        shuttingDown.set(true);
+    }
 
     public void runIfEnabled(String jobName, boolean schedulerConfigured, Runnable action) {
         if (!shouldRun(jobName, schedulerConfigured)) {
@@ -56,6 +65,9 @@ public class StockBatchScheduledJobGuard {
     }
 
     private boolean shouldRun(String jobName, boolean schedulerConfigured) {
+        if (shuttingDown.get()) {
+            return false;
+        }
         try {
             return batchJobRuntimeControl.shouldRunScheduledJob(jobName, schedulerConfigured);
         } catch (RuntimeException ex) {
