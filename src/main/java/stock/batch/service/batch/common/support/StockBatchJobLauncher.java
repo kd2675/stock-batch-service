@@ -1,5 +1,7 @@
 package stock.batch.service.batch.common.support;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.function.IntSupplier;
 
 import lombok.RequiredArgsConstructor;
@@ -87,6 +89,14 @@ public class StockBatchJobLauncher {
         return stockBatchJobRunner.run(portfolioSettlementJob);
     }
 
+    public StockBatchJobRunResponse settlePortfolios(LocalDate snapshotDate, LocalDateTime snapshotAt) {
+        return runDelegatingJob(
+                PortfolioSettlementJob.JOB_NAME,
+                "snapshot-date:" + snapshotDate,
+                () -> portfolioSettlementJob.run(snapshotDate, snapshotAt)
+        );
+    }
+
     public StockBatchJobRunResponse rolloverClosingPrices() {
         return stockBatchJobRunner.run(marketCloseRolloverJob);
     }
@@ -96,6 +106,14 @@ public class StockBatchJobLauncher {
                 MarketCloseRolloverJob.JOB_NAME,
                 "price-limit-base:" + symbol,
                 () -> marketCloseRolloverJob.run(symbol)
+        );
+    }
+
+    public StockBatchJobRunResponse rolloverClosingPrices(LocalDate businessDate, LocalDateTime closedAt) {
+        return runDelegatingJob(
+                MarketCloseRolloverJob.JOB_NAME,
+                "price-limit-base:" + businessDate,
+                () -> marketCloseRolloverJob.run(businessDate, closedAt)
         );
     }
 

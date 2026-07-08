@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -23,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.automarket.config.AutoMarketGenerationExecutorConfig;
+import stock.batch.service.automarket.config.AutoMarketGenerationSlotLimiter;
 import stock.batch.service.automarket.lock.AutoMarketProfileLock;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
@@ -55,6 +57,7 @@ public class AutoMarketService {
     private final AutoMarketProfileLock autoMarketProfileLock;
     private final AutoMarketReadyProfileQueue readyProfileQueue;
     private final Executor autoMarketGenerationTaskExecutor;
+    private final AutoMarketGenerationSlotLimiter generationSlotLimiter;
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
     private int generationParticipantChunkSize;
@@ -94,7 +97,8 @@ public class AutoMarketService {
             TransactionTemplate transactionTemplate,
             AutoMarketProfileLock autoMarketProfileLock,
             AutoMarketReadyProfileQueue readyProfileQueue,
-            @Qualifier(AutoMarketGenerationExecutorConfig.AUTO_MARKET_GENERATION_TASK_EXECUTOR) Executor autoMarketGenerationTaskExecutor
+            @Qualifier(AutoMarketGenerationExecutorConfig.AUTO_MARKET_GENERATION_TASK_EXECUTOR) Executor autoMarketGenerationTaskExecutor,
+            AutoMarketGenerationSlotLimiter generationSlotLimiter
     ) {
         this.autoMarketReader = autoMarketReader;
         this.autoMarketDailyRegimeService = autoMarketDailyRegimeService;
@@ -107,6 +111,7 @@ public class AutoMarketService {
         this.autoMarketProfileLock = autoMarketProfileLock;
         this.readyProfileQueue = readyProfileQueue;
         this.autoMarketGenerationTaskExecutor = autoMarketGenerationTaskExecutor;
+        this.generationSlotLimiter = generationSlotLimiter;
     }
 
     public int runAutoMarketStep() {
@@ -134,32 +139,39 @@ public class AutoMarketService {
                         (left, right) -> left,
                         LinkedHashMap::new
                 ));
-        List<AutoParticipantProfileType> readyProfiles = claimReadyProfiles(clock.simulationDateTime());
+        List<ClaimedProfile> readyProfiles = claimReadyProfiles(clock.simulationDateTime());
         if (readyProfiles.isEmpty()) {
             return 0;
         }
-        Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = findDueCandidatesByProfile(
-                readyProfiles,
-                configs,
-                configBySymbol,
-                clock.simulationDateTime()
-        );
-        requeueProfilesWithoutCandidates(readyProfiles, candidatesByProfile, clock.simulationDateTime());
-        int activeParticipantCount = activeParticipantCount(candidatesByProfile);
-        Map<String, BigDecimal> momentumReferencePricesBySymbol = activeParticipantCount == 0
-                ? Map.of()
-                : autoMarketReader.findLatestPricesAtOrBefore(
-                        configs.stream()
-                                .map(AutoMarketConfig::symbol)
-                                .toList(),
-                        clock.simulationDateTime().minus(PROJECT_SHORT_MOMENTUM_WINDOW)
-                );
-        List<ProfileGenerationWork> works = profileGenerationWorks(
-                candidatesByProfile,
-                configBySymbol,
-                momentumReferencePricesBySymbol
-        );
-        totalCount.add(runProfileGenerationWorks(works, profilePolicies, clock.simulationDateTime()));
+        int activeParticipantCount = 0;
+        try {
+            Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = findDueCandidatesByProfile(
+                    readyProfiles,
+                    configs,
+                    configBySymbol,
+                    clock.simulationDateTime()
+            );
+            requeueProfilesWithoutCandidates(readyProfiles, candidatesByProfile, clock.simulationDateTime());
+            activeParticipantCount = activeParticipantCount(candidatesByProfile);
+            Map<String, BigDecimal> momentumReferencePricesBySymbol = activeParticipantCount == 0
+                    ? Map.of()
+                    : autoMarketReader.findLatestPricesAtOrBefore(
+                            configs.stream()
+                                    .map(AutoMarketConfig::symbol)
+                                    .toList(),
+                            clock.simulationDateTime().minus(PROJECT_SHORT_MOMENTUM_WINDOW)
+                    );
+            List<ProfileGenerationWork> works = profileGenerationWorks(
+                    readyProfiles,
+                    candidatesByProfile,
+                    configBySymbol,
+                    momentumReferencePricesBySymbol
+            );
+            totalCount.add(runProfileGenerationWorks(works, profilePolicies, clock.simulationDateTime()));
+        } catch (RuntimeException ex) {
+            requeueUnreleasedProfiles(readyProfiles, clock.simulationDateTime().plusSeconds(1));
+            throw ex;
+        }
         log.info(
                 "Auto market step completed: symbols={}, participants={}, profileShards={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
                 configs.size(),
@@ -193,20 +205,28 @@ public class AutoMarketService {
         return Math.max(1, generationDueLimitPerSymbol) * Math.max(1, symbolCount);
     }
 
-    private List<AutoParticipantProfileType> claimReadyProfiles(LocalDateTime now) {
+    private List<ClaimedProfile> claimReadyProfiles(LocalDateTime now) {
         int workerCount = Math.max(1, generationProfileWorkerCount);
-        List<AutoParticipantProfileType> profiles = new ArrayList<>();
+        List<ClaimedProfile> profiles = new ArrayList<>();
         while (profiles.size() < workerCount) {
-            int previousSize = profiles.size();
-            AutoParticipantProfileType claimedProfile = readyProfileQueue.claimDueProfile(now)
-                    .orElse(null);
-            if (claimedProfile != null) {
-                if (!addDistinctProfile(profiles, claimedProfile)) {
-                    break;
-                }
-                continue;
+            if (!generationSlotLimiter.tryAcquire()) {
+                break;
             }
-            if (profiles.size() == previousSize) {
+            AutoParticipantProfileType claimedProfile;
+            try {
+                claimedProfile = readyProfileQueue.claimDueProfile(now)
+                        .orElse(null);
+            } catch (RuntimeException ex) {
+                generationSlotLimiter.release();
+                throw ex;
+            }
+            if (claimedProfile == null) {
+                generationSlotLimiter.release();
+                break;
+            }
+            if (!addDistinctProfile(profiles, claimedProfile)) {
+                generationSlotLimiter.release();
+                readyProfileQueue.enqueue(claimedProfile, now.plusSeconds(1));
                 break;
             }
         }
@@ -214,35 +234,36 @@ public class AutoMarketService {
     }
 
     private void requeueProfilesWithoutCandidates(
-            List<AutoParticipantProfileType> claimedProfiles,
+            List<ClaimedProfile> claimedProfiles,
             Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile,
             LocalDateTime now
     ) {
-        List<AutoParticipantProfileType> emptyProfiles = claimedProfiles.stream()
-                .filter(profileType -> !candidatesByProfile.containsKey(profileType))
+        List<ClaimedProfile> emptyProfiles = claimedProfiles.stream()
+                .filter(profile -> !candidatesByProfile.containsKey(profile.profileType()))
                 .toList();
         if (!emptyProfiles.isEmpty()) {
-            requeueProfiles(emptyProfiles, now.plusSeconds(1));
+            requeueClaimedProfiles(emptyProfiles, now.plusSeconds(1));
         }
     }
 
-    private boolean addDistinctProfile(List<AutoParticipantProfileType> profiles, AutoParticipantProfileType profileType) {
-        if (profileType == null || profiles.contains(profileType)) {
+    private boolean addDistinctProfile(List<ClaimedProfile> profiles, AutoParticipantProfileType profileType) {
+        if (profileType == null || profiles.stream().anyMatch(profile -> profile.profileType() == profileType)) {
             return false;
         }
-        profiles.add(profileType);
+        profiles.add(new ClaimedProfile(profileType, generationSlotLimiter));
         return true;
     }
 
     private Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> findDueCandidatesByProfile(
-            List<AutoParticipantProfileType> readyProfiles,
+            List<ClaimedProfile> readyProfiles,
             List<AutoMarketConfig> configs,
             Map<String, AutoMarketConfig> configBySymbol,
             LocalDateTime now
     ) {
         Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = new LinkedHashMap<>();
         int participantLimit = generationDueParticipantLimit(configs.size());
-        for (AutoParticipantProfileType profileType : readyProfiles) {
+        for (ClaimedProfile claimedProfile : readyProfiles) {
+            AutoParticipantProfileType profileType = claimedProfile.profileType();
             List<AutoParticipantSymbolStrategy> candidates = autoMarketReader.findDueParticipantSymbolStrategies(
                     configs,
                     profileType,
@@ -529,18 +550,20 @@ public class AutoMarketService {
     }
 
     private List<ProfileGenerationWork> profileGenerationWorks(
+            List<ClaimedProfile> claimedProfiles,
             Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile,
             Map<String, AutoMarketConfig> configBySymbol,
             Map<String, BigDecimal> momentumReferencePricesBySymbol
     ) {
         List<ProfileGenerationWork> works = new ArrayList<>();
-        for (Map.Entry<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> entry : candidatesByProfile.entrySet()) {
-            if (entry.getValue().isEmpty()) {
+        for (ClaimedProfile claimedProfile : claimedProfiles) {
+            List<AutoParticipantSymbolStrategy> candidates = candidatesByProfile.getOrDefault(claimedProfile.profileType(), List.of());
+            if (candidates.isEmpty()) {
                 continue;
             }
             works.add(new ProfileGenerationWork(
-                    entry.getKey(),
-                    entry.getValue(),
+                    claimedProfile,
+                    candidates,
                     configBySymbol,
                     momentumReferencePricesBySymbol
             ));
@@ -557,16 +580,38 @@ public class AutoMarketService {
             return new AutoMarketRunCount();
         }
         List<CompletableFuture<AutoMarketRunCount>> futures = works.stream()
-                .map(work -> CompletableFuture.supplyAsync(
-                        () -> runProfileGenerationWork(work, profilePolicies, now),
-                        autoMarketGenerationTaskExecutor
-                ))
+                .map(work -> submitProfileGenerationWork(work, profilePolicies, now))
+                .filter(future -> future != null)
                 .toList();
         AutoMarketRunCount total = new AutoMarketRunCount();
         for (CompletableFuture<AutoMarketRunCount> future : futures) {
             total.add(joinProfileGenerationResult(future));
         }
         return total;
+    }
+
+    private CompletableFuture<AutoMarketRunCount> submitProfileGenerationWork(
+            ProfileGenerationWork work,
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
+    ) {
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    return runProfileGenerationWork(work, profilePolicies, now);
+                } catch (RuntimeException ex) {
+                    requeueProfiles(List.of(work.profileType()), now.plusSeconds(1));
+                    throw ex;
+                } finally {
+                    work.releasePermit();
+                }
+            }, autoMarketGenerationTaskExecutor);
+        } catch (RejectedExecutionException ex) {
+            log.warn("Auto market profile generation submit rejected: profileType={}, reason={}", work.profileType(), ex.getMessage());
+            requeueProfiles(List.of(work.profileType()), now.plusSeconds(1));
+            work.releasePermit();
+            return null;
+        }
     }
 
     private AutoMarketRunCount joinProfileGenerationResult(CompletableFuture<AutoMarketRunCount> future) {
@@ -602,6 +647,25 @@ public class AutoMarketService {
             readyProfileQueue.enqueueAll(autoParticipantOrderScheduleService.findNextProfileSchedules(profileTypes, fallbackReadyAt));
         } catch (RuntimeException ex) {
             log.warn("Auto market ready profile requeue failed: profileTypes={}, reason={}", profileTypes, ex.getMessage());
+        }
+    }
+
+    private void requeueClaimedProfiles(List<ClaimedProfile> profiles, LocalDateTime fallbackReadyAt) {
+        requeueProfiles(
+                profiles.stream()
+                        .map(ClaimedProfile::profileType)
+                        .toList(),
+                fallbackReadyAt
+        );
+        profiles.forEach(ClaimedProfile::releasePermit);
+    }
+
+    private void requeueUnreleasedProfiles(List<ClaimedProfile> profiles, LocalDateTime fallbackReadyAt) {
+        List<ClaimedProfile> unreleasedProfiles = profiles.stream()
+                .filter(ClaimedProfile::permitHeld)
+                .toList();
+        if (!unreleasedProfiles.isEmpty()) {
+            requeueClaimedProfiles(unreleasedProfiles, fallbackReadyAt);
         }
     }
 
@@ -893,11 +957,48 @@ public class AutoMarketService {
     }
 
     private record ProfileGenerationWork(
-            AutoParticipantProfileType profileType,
+            ClaimedProfile claimedProfile,
             List<AutoParticipantSymbolStrategy> candidates,
             Map<String, AutoMarketConfig> configBySymbol,
             Map<String, BigDecimal> momentumReferencePricesBySymbol
     ) {
+        private AutoParticipantProfileType profileType() {
+            return claimedProfile.profileType();
+        }
+
+        private void releasePermit() {
+            claimedProfile.releasePermit();
+        }
+    }
+
+    private static final class ClaimedProfile {
+        private final AutoParticipantProfileType profileType;
+        private final AutoMarketGenerationSlotLimiter generationSlotLimiter;
+        private boolean permitHeld = true;
+
+        private ClaimedProfile(
+                AutoParticipantProfileType profileType,
+                AutoMarketGenerationSlotLimiter generationSlotLimiter
+        ) {
+            this.profileType = profileType;
+            this.generationSlotLimiter = generationSlotLimiter;
+        }
+
+        private AutoParticipantProfileType profileType() {
+            return profileType;
+        }
+
+        private boolean permitHeld() {
+            return permitHeld;
+        }
+
+        private void releasePermit() {
+            if (!permitHeld) {
+                return;
+            }
+            permitHeld = false;
+            generationSlotLimiter.release();
+        }
     }
 
 }

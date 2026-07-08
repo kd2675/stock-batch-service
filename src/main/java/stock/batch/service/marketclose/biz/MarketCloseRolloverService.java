@@ -42,28 +42,49 @@ public class MarketCloseRolloverService {
     private long deadlockRetryBackoffMs = 50;
 
     public int rolloverClosingPrices() {
-        return rolloverClosingPrices(null);
+        LocalDate simulationTradeDate = simulationClockService.currentDate();
+        LocalDateTime closedAt = simulationClockService.currentMarketDateTime();
+        return rolloverClosingPrices(null, simulationTradeDate, closedAt);
     }
 
     public int rolloverClosingPrices(String symbol) {
+        return rolloverClosingPrices(symbol, simulationClockService.currentDate(), simulationClockService.currentMarketDateTime());
+    }
+
+    public int rolloverClosingPrices(LocalDate simulationTradeDate, LocalDateTime closedAt) {
+        return rolloverClosingPrices(null, simulationTradeDate, closedAt);
+    }
+
+    public boolean hasCompletedFullCloseRun(LocalDate businessDate) {
+        if (businessDate == null) {
+            return false;
+        }
+        return writer.hasCompletedFullCloseRun(businessDate);
+    }
+
+    private int rolloverClosingPrices(String symbol, LocalDate simulationTradeDate, LocalDateTime closedAt) {
+        if (simulationTradeDate == null) {
+            throw new IllegalArgumentException("simulationTradeDate is required");
+        }
+        if (closedAt == null) {
+            throw new IllegalArgumentException("closedAt is required");
+        }
         String normalizedSymbol = normalizeSymbol(symbol);
         List<OrderBookSymbolLock.LockHandle> locks = acquireCloseLocks(normalizedSymbol);
         if (locks == null) {
-            return 0;
+            throw new CannotAcquireLockException("Market close rollover skipped because order-book symbol lock is busy");
         }
         try {
             return runIntInTransactionWithDeadlockRetry(
                     closeRetryLabel(normalizedSymbol),
-                    () -> rolloverClosingPricesLocked(normalizedSymbol)
+                    () -> rolloverClosingPricesLocked(normalizedSymbol, simulationTradeDate, closedAt)
             );
         } finally {
             releaseLocks(locks);
         }
     }
 
-    private int rolloverClosingPricesLocked(String normalizedSymbol) {
-        LocalDate simulationTradeDate = simulationClockService.currentDate();
-        LocalDateTime closedAt = simulationClockService.currentMarketDateTime();
+    private int rolloverClosingPricesLocked(String normalizedSymbol, LocalDate simulationTradeDate, LocalDateTime closedAt) {
         long closeRunId = writer.createCloseRun(normalizedSymbol, simulationTradeDate, closedAt);
         int cancelledOrderCount = cancelOpenOrderBookOrdersLocked(normalizedSymbol, closedAt);
         int holdingSnapshotCount = writer.snapshotHoldings(closeRunId, normalizedSymbol, closedAt);

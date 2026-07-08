@@ -8,6 +8,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,6 +135,34 @@ class AutoParticipantCashFlowServiceTest {
                 where a.user_key = 'stock-auto-second'
                   and f.reason = 'AUTO_PARTICIPANT_RECURRING_DEPOSIT'
                 """)).isEqualTo(2L);
+    }
+
+    @Test
+    void fundRecurringCash_regularSession_doesNotDeposit() {
+        insertAutoParticipant("stock-auto-regular-auto", "PAYDAY_ACCUMULATOR", true, "50000.00", "1.0", "DAY");
+        insertActiveAccount("stock-auto-regular-auto", "0.00");
+        insertSimulationClockAt(LocalDateTime.of(2026, 7, 1, 9, 0));
+
+        int funded = autoParticipantCashFlowService.fundRecurringCash();
+
+        assertThat(funded).isZero();
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-regular-auto'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    void fundRecurringCashManually_regularSession_doesNotDeposit() {
+        insertAutoParticipant("stock-auto-regular-manual", "PAYDAY_ACCUMULATOR", true, "50000.00", "1.0", "DAY");
+        insertActiveAccount("stock-auto-regular-manual", "0.00");
+        insertSimulationClockAt(LocalDateTime.of(2026, 7, 1, 9, 0));
+
+        int funded = autoParticipantCashFlowService.fundRecurringCashManually();
+
+        assertThat(funded).isZero();
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-regular-manual'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
@@ -320,6 +350,30 @@ class AutoParticipantCashFlowServiceTest {
                 """,
                 userKey,
                 new BigDecimal(cashBalance)
+        );
+    }
+
+    private void insertSimulationClockAt(LocalDateTime simulationDateTime) {
+        LocalDateTime baseDateTime = simulationDateTime.toLocalDate().atStartOfDay();
+        long accumulatedSeconds = Duration.between(baseDateTime, simulationDateTime).toSeconds();
+        jdbcTemplate.update("""
+                insert into stock_simulation_clock(
+                    clock_id,
+                    base_simulation_date,
+                    real_seconds_per_simulation_day,
+                    accumulated_real_seconds,
+                    running,
+                    last_started_at,
+                    last_heartbeat_at,
+                    timezone,
+                    created_at,
+                    updated_at
+                )
+                values ('DEFAULT', ?, 86400, ?, false, null, ?, 'Asia/Seoul', current_timestamp, current_timestamp)
+                """,
+                simulationDateTime.toLocalDate(),
+                accumulatedSeconds,
+                simulationDateTime
         );
     }
 

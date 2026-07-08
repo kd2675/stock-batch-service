@@ -19,6 +19,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 class StockBatchTradingFlowTest {
 
+    private static final LocalDate TEST_SIMULATION_DATE = LocalDate.of(2026, 7, 1);
+    private static final LocalDateTime TEST_SETTLEMENT_AT = LocalDateTime.of(2026, 7, 1, 18, 30);
+    private static final long POST_CLOSE_ACCUMULATED_REAL_SECONDS = 5_550L;
+
     @Autowired
     private OrderExecutionService orderExecutionService;
 
@@ -35,7 +39,12 @@ class StockBatchTradingFlowTest {
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_price");
+        jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_account");
+        jdbcTemplate.update("delete from stock_market_close_run");
+        jdbcTemplate.update("delete from stock_simulation_clock");
+        insertSimulationClock();
+        insertCompletedFullCloseRun(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
     }
 
     @Test
@@ -62,7 +71,7 @@ class StockBatchTradingFlowTest {
         assertThat(queryLong("select count(*) from stock_execution e join stock_account a on a.id = e.account_id where a.user_key = 'flow-buyer' and source = 'VIRTUAL_MARKET_PRICE'"))
                 .isEqualTo(1L);
         assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'flow-buyer'"))
-                .isEqualTo(LocalDate.now());
+                .isEqualTo(TEST_SIMULATION_DATE);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'flow-buyer'"))
                 .isEqualByComparingTo(new BigDecimal("10000000.00"));
         assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'flow-buyer'"))
@@ -143,6 +152,41 @@ class StockBatchTradingFlowTest {
                 new BigDecimal(reservedCash),
                 LocalDateTime.now(),
                 LocalDateTime.now()
+        );
+    }
+
+    private void insertSimulationClock() {
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update(
+                """
+                insert into stock_simulation_clock(
+                    clock_id, base_simulation_date, real_seconds_per_simulation_day,
+                    accumulated_real_seconds, running, last_started_at, last_heartbeat_at,
+                    timezone, created_at, updated_at
+                )
+                values ('DEFAULT', ?, 7200, ?, false, null, null, 'Asia/Seoul', ?, ?)
+                """,
+                TEST_SIMULATION_DATE,
+                POST_CLOSE_ACCUMULATED_REAL_SECONDS,
+                now,
+                now
+        );
+    }
+
+    private void insertCompletedFullCloseRun(LocalDate businessDate, LocalDateTime completedAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_market_close_run(
+                    symbol, business_date, closed_at, status,
+                    cancelled_order_count, holding_snapshot_count, price_rollover_count,
+                    created_at, completed_at
+                )
+                values (null, ?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
+                """,
+                businessDate,
+                completedAt,
+                completedAt,
+                completedAt
         );
     }
 

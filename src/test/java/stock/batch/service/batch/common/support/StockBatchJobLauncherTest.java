@@ -31,6 +31,8 @@ import stock.batch.service.marketdata.biz.MarketDataRefreshService;
 import stock.batch.service.settlement.biz.PortfolioSettlementService;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -134,6 +136,20 @@ class StockBatchJobLauncherTest {
         assertThat(response.job()).isEqualTo("portfolio-settlement");
         assertThat(response.processedCount()).isEqualTo(4);
         verify(portfolioSettlementService).settleToday();
+    }
+
+    @Test
+    void settlePortfolios_snapshotDateRun_invokesPortfolioSettlementForDate() {
+        LocalDate snapshotDate = LocalDate.of(2026, 7, 3);
+        LocalDateTime snapshotAt = LocalDateTime.of(2026, 7, 3, 18, 0);
+        when(portfolioSettlementService.settle(snapshotDate, snapshotAt)).thenReturn(4);
+
+        var response = stockBatchJobLauncher.settlePortfolios(snapshotDate, snapshotAt);
+
+        assertThat(response.job()).isEqualTo("portfolio-settlement");
+        assertThat(response.executionMode()).isEqualTo("snapshot-date:2026-07-03");
+        assertThat(response.processedCount()).isEqualTo(4);
+        verify(portfolioSettlementService).settle(snapshotDate, snapshotAt);
     }
 
     @Test

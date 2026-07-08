@@ -24,6 +24,7 @@ import stock.batch.service.batch.automarket.reader.AutoParticipantCashFlowReader
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
 import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
 
 @Service
@@ -40,6 +41,7 @@ public class AutoParticipantCashFlowService {
     private final AutoMarketWriter autoMarketWriter;
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
+    private final SimulationMarketSessionService simulationMarketSessionService;
 
     @Transactional
     public int fundRecurringCash() {
@@ -52,6 +54,9 @@ public class AutoParticipantCashFlowService {
     }
 
     private int fundRecurringCash(boolean manualRun) {
+        if (simulationMarketSessionService.isRegularSession()) {
+            return 0;
+        }
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         LocalDateTime now = clock.simulationDateTime();

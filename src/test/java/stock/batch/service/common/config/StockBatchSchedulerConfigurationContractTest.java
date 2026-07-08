@@ -146,8 +146,10 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-enabled"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_ENABLED:true}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_INITIAL_DELAY_MS:4000}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MS:7200000}");
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MS:600000}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-limit"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_PROFILE_QUEUE_RECONCILE_LIMIT:100}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))
@@ -173,7 +175,8 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))).isBetween(1, 16);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))).isEqualTo(9);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))).isBetween(1, 500);
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))).isEqualTo(7_200_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms"))).isEqualTo(4_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))).isEqualTo(600_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-limit"))).isBetween(1, 1_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.run-dispatcher.thread-pool.core-size"))).isEqualTo(3);
@@ -206,11 +209,28 @@ class StockBatchSchedulerConfigurationContractTest {
 
         Object propertyValue = applicationProperties.getProperty("stock.batch.auto-participant-cash-flow.fixed-delay-ms");
 
-        assertThat(propertyValue).isEqualTo("${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:60000}");
-        assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(60_000);
-        assertThat(schedulerSource).contains("stock.batch.auto-participant-cash-flow.fixed-delay-ms:60000");
-        assertThat(readme).contains("기본값은 60000ms");
+        assertThat(propertyValue).isEqualTo("${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:300000}");
+        assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(300_000);
+        assertThat(schedulerSource).contains("stock.batch.auto-participant-cash-flow.fixed-delay-ms:300000");
+        assertThat(readme).contains("기본값은 300000ms");
         assertThat(readme).contains("실제 서버 시간이 기준인 polling 간격");
+    }
+
+    @Test
+    void batchJobSignalDefaultPollInterval_isNotOneSecondDatabaseScan() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+        String schedulerSource = Files.readString(
+                Path.of("src/main/java/stock/batch/service/scheduler/BatchJobSignalScheduler.java"),
+                StandardCharsets.UTF_8
+        );
+        String readme = Files.readString(Path.of("README.md"), StandardCharsets.UTF_8);
+
+        Object propertyValue = applicationProperties.getProperty("stock.batch.signal.fixed-delay-ms");
+
+        assertThat(propertyValue).isEqualTo("${STOCK_BATCH_SIGNAL_FIXED_DELAY_MS:5000}");
+        assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(5_000);
+        assertThat(schedulerSource).contains("stock.batch.signal.fixed-delay-ms:5000");
+        assertThat(readme).contains("기본값은 5000ms");
     }
 
     @Test

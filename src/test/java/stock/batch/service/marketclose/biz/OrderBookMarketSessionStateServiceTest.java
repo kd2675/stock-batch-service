@@ -13,15 +13,20 @@ import java.time.LocalTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OrderBookMarketSessionStateServiceTest {
 
     private final JdbcTemplate jdbcTemplate = new JdbcTemplate(BatchTestDatabaseFactory.createDataSource("market_session_state_test"));
     private final SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+    private final MarketClosePostProcessingCompletionService postProcessingCompletionService =
+            mock(MarketClosePostProcessingCompletionService.class);
     private final OrderBookMarketSessionStateService service = new OrderBookMarketSessionStateService(
             JdbcClient.create(jdbcTemplate),
-            simulationMarketSessionService
+            simulationMarketSessionService,
+            postProcessingCompletionService
     );
 
     @BeforeEach
@@ -45,8 +50,12 @@ class OrderBookMarketSessionStateServiceTest {
                 .thenReturn(LocalDateTime.of(2026, 7, 2, 18, 0));
         when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(java.time.LocalDate.of(2026, 7, 3));
+        when(simulationMarketSessionService.baseSimulationDate())
+                .thenReturn(java.time.LocalDate.of(2026, 7, 2));
         when(simulationMarketSessionService.openTime())
                 .thenReturn(LocalTime.of(6, 0));
+        when(postProcessingCompletionService.isComplete(java.time.LocalDate.of(2026, 7, 2)))
+                .thenReturn(true);
     }
 
     @Test
@@ -75,6 +84,45 @@ class OrderBookMarketSessionStateServiceTest {
         assertThat(statusOf("CLOSED")).isEqualTo("OPEN");
         assertThat(statusOf("HALTED")).isEqualTo("HALTED");
         assertThat(statusOf("DISABLED")).isEqualTo("OPEN");
+    }
+
+    @Test
+    void syncCurrentSession_regular_blocksOpenWhenPreviousCloseIsMissing() {
+        // given
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(LocalDateTime.of(2026, 7, 3, 6, 0));
+        when(postProcessingCompletionService.isComplete(java.time.LocalDate.of(2026, 7, 2)))
+                .thenReturn(false);
+
+        // when
+        int updated = service.syncCurrentSession();
+
+        // then
+        assertThat(updated).isEqualTo(1);
+        assertThat(statusOf("OPENED")).isEqualTo("CLOSED");
+        assertThat(statusOf("CLOSED")).isEqualTo("CLOSED");
+        verify(postProcessingCompletionService).isComplete(java.time.LocalDate.of(2026, 7, 2));
+    }
+
+    @Test
+    void syncCurrentSession_regular_firstSimulationDayDoesNotRequirePreviousClose() {
+        // given
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
+        when(simulationMarketSessionService.currentSimulationDate())
+                .thenReturn(java.time.LocalDate.of(2026, 7, 3));
+        when(simulationMarketSessionService.baseSimulationDate())
+                .thenReturn(java.time.LocalDate.of(2026, 7, 3));
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(LocalDateTime.of(2026, 7, 3, 6, 0));
+
+        // when
+        int updated = service.syncCurrentSession();
+
+        // then
+        assertThat(updated).isEqualTo(1);
+        assertThat(statusOf("CLOSED")).isEqualTo("OPEN");
+        verify(postProcessingCompletionService, never()).isComplete(java.time.LocalDate.of(2026, 7, 2));
     }
 
     @Test

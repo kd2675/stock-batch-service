@@ -146,12 +146,12 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.auto-market.daily-regime.fixed-delay-ms`: 장 시작 전 일일 방향/자산 선호 pre-create 검사 주기
 - `stock.batch.auto-market.daily-regime.pre-create-before-minutes`: 시뮬레이션 장 시작 몇 분 전부터 다음 거래일 방향/자산 선호를 미리 생성할지 결정합니다. 기본값은 30분입니다.
 - `stock.batch.auto-market.generation-participant-chunk-size`: 한 트랜잭션에서 주문 생성까지 처리할 자동 참여자 수입니다. 기본값은 25입니다.
-- `stock.batch.auto-market.generation-profile-worker-count`: 한 auto-market run이 Redis ready profile queue에서 claim할 profile type 수입니다. 기본값은 9이며, 기본 run dispatcher 3개와 조합해 27개 profile type을 3회차에 나눠 처리합니다.
-- `stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms`: Redis ready profile queue reconcile 주기입니다. 기본값은 7200000ms(2시간)이며, 서버 시작 시에는 별도로 1회 reconcile을 수행합니다.
+- `stock.batch.auto-market.generation-profile-worker-count`: 한 auto-market run이 Redis ready profile queue에서 claim할 profile type 수입니다. 기본값은 9입니다. 전체 실행 slot이 부족하면 남은 profile은 claim하지 않고 다음 run에서 처리합니다.
+- `stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms`: Redis ready profile queue reconcile 주기입니다. 기본값은 600000ms(10분)이며, 서버 시작 시에는 별도로 1회 reconcile을 수행합니다. 수동 복구는 `POST /internal/stock-batch/v1/jobs/auto-market-profile-queue/reconcile` endpoint를 사용합니다.
 - `stock.batch.auto-market.generation-lease-seconds`: 주문 생성 대상으로 claim한 참여자-종목 스케줄의 lease 시간입니다. 주문 생성 실패 시 lease 만료 후 재시도할 수 있게 둡니다.
 - `stock.batch.auto-market.generation-due-limit-per-symbol`: 한 회차에서 종목별로 조회할 주문 생성 대상 최대 수입니다. 기본값은 100입니다.
 - `stock.batch.auto-market.deadlock-retry-max-attempts` / `deadlock-retry-backoff-ms`: 자동장 주문 생성 중 계좌/보유 예약 update에서 deadlock이 발생했을 때 같은 chunk 트랜잭션을 짧게 재시도하는 횟수와 backoff입니다.
-- `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 profile shard를 처리하는 execution thread pool입니다. 기본값은 12/12/0이며, business DB pool에 다른 주문/체결 job이 쓸 여유를 남깁니다.
+- `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 profile shard를 처리하는 execution thread pool입니다. 기본값은 12/12/0이며, 전체 profile 작업 동시 실행 상한도 `max-size`와 같습니다. run thread는 executor 포화 시 profile 작업을 직접 실행하지 않고, 실행 slot을 확보한 뒤에만 Redis profile을 claim합니다.
 - `stock.batch.auto-market.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: auto-market run 단위를 병렬 제출하는 dispatcher pool입니다. 기본값은 3/3/0이며, 4번째 동시 회차는 큐에 쌓지 않고 스킵합니다.
 - `stock.batch.auto-market-order-expiry.enabled`: 자동장이 낸 미체결 주문 만료 job 활성화 여부
 - `stock.batch.auto-market-order-expiry.fixed-delay-ms`: 자동장 미체결 주문 만료 검사 주기
@@ -159,9 +159,10 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.listing-auto-market.enabled`: 상장주관사 자동계정 주문 공급 job 활성화 여부
 - `stock.batch.listing-auto-market.fixed-delay-ms`: 상장주관사 자동계정 주문 공급 주기
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
-- `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기. 기본값은 60000ms입니다. 지급 여부는 시뮬레이션 시간 기준으로 판단하지만, 이 값은 실제 서버 시간이 기준인 polling 간격입니다. 초 단위 주기 입금을 즉시성 있게 테스트해야 할 때만 환경값으로 더 낮춥니다.
+- `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기. 기본값은 300000ms(5분)입니다. 지급 여부는 시뮬레이션 시간 기준으로 판단하지만, 이 값은 실제 서버 시간이 기준인 polling 간격입니다. 초 단위 주기 입금을 즉시성 있게 테스트해야 할 때만 환경값으로 더 낮춥니다.
 - `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
 - `stock.batch.market-close.poll-fixed-delay-ms`: 시뮬레이션 날짜 변경 감지 주기. 기본값은 5000ms이며, `stock_simulation_clock` 기준 날짜가 바뀔 때 장마감과 정산을 실행합니다.
+- 장마감 후처리는 미체결 정리, 보유/종목 일일 스냅샷, 종가 rollover, 포트폴리오 정산 완료 여부로 판단합니다. 장 상태는 장마감 즉시 `CLOSED`로 내려 주문/체결을 막고, 후처리 완료 전에는 다음 일자 시작과 다음 장 시작 이동을 차단합니다.
 - `stock.batch.settlement.enabled`: 포트폴리오 정산 job 활성화 여부
 - `stock.batch.holding-cleanup.enabled`: 0주/0예약 보유 row 유지보수 정리 job 활성화 여부
 - `stock.batch.holding-cleanup.fixed-delay-ms`: 빈 보유 row 정리 job 실행 간격. 기본값은 300000ms입니다.
@@ -169,7 +170,7 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.holding-cleanup.delete-limit`: 한 번에 삭제할 최대 row 수. 기본값은 1000건입니다.
 - 자동 실행 중지/재개 상태는 `stock_batch_job_control.runtime_enabled` DB row가 기준입니다. row가 없으면 batch 서버나 stock-back이 최초 조회 시 `runtime_enabled=true`, `scheduler_configured=true`로 생성하고, batch 서버가 실행 전 자신의 실제 설정값을 `scheduler_configured`에 동기화합니다. 운영 중에는 stock-back이 stock-batch HTTP API를 호출하지 않고 같은 DB row를 직접 변경합니다.
 - stock-back의 수동 월급 지급, 종목 장마감 롤오버, 거래정지/서킷브레이크 미체결 정리 요청은 `stock_batch_job_signal.status='PENDING'` row로 저장되고, `BatchJobSignalScheduler`가 `PROCESSING`으로 claim한 뒤 기존 `StockBatchJobLauncher`를 실행합니다.
-- `stock.batch.signal.fixed-delay-ms`: DB signal 큐 폴링 간격. 기본값은 1000ms입니다.
+- `stock.batch.signal.fixed-delay-ms`: DB signal 큐 폴링 간격. 기본값은 5000ms(5초)입니다.
 - `stock.batch.signal.chunk-limit`: 한 번의 폴링에서 처리할 최대 signal 수. 기본값은 20건입니다.
 - runtime 중지는 해당 job의 스케줄러 자동 실행만 건너뛰게 합니다. `/internal/stock-batch/v1/jobs/**` 수동 실행 API는 관리자 명시 실행으로 별도 허용합니다.
 - `stock.batch.job-lock.ttl-seconds`: 배치 job DB 락 만료 시간. 서버 비정상 종료 후 영구 락을 막기 위한 값이며 기본값은 180초입니다. 여러 batch 서버가 동시에 떠 있는 운영에서는 가장 긴 job 예상 실행 시간보다 충분히 길게 잡아야 하며, heartbeat가 정상 갱신하므로 정상 실행 중인 긴 job은 계속 락을 연장합니다.
@@ -257,4 +258,4 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.
 - 주문장 시장가 주문은 반대편 지정가 호가가 있을 때만 체결합니다. 양쪽 모두 시장가인 주문은 기준 가격이 없기 때문에 체결 대상에서 제외합니다.
 - 내부 주문장 모드는 자전거래 방지를 위해 같은 사용자끼리의 매수/매도 주문은 매칭하지 않습니다.
-- 시뮬레이션 장마감 기준가 롤오버와 포트폴리오 정산은 벽시계 cron이 아니라 `stock_simulation_clock`의 시뮬레이션 날짜 변경을 감지해 실행합니다. 프로젝트 하루는 batch 서버 heartbeat 기준 현실 2시간이며, 서버가 꺼져 heartbeat가 멈추면 시뮬레이션 시간도 마지막 heartbeat 시점에서 멈춥니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.
+- 시뮬레이션 장마감은 먼저 시장 상태를 `CLOSED`로 내려 주문/체결/자동주문을 차단하고, 장마감 후처리인 기준가 롤오버와 포트폴리오 정산이 실제 완료된 뒤에만 다음 일자/다음 장으로 이동할 수 있습니다. 프로젝트 하루는 batch 서버 heartbeat 기준 현실 2시간이며, 서버가 꺼져 heartbeat가 멈추면 시뮬레이션 시간도 마지막 heartbeat 시점에서 멈춥니다. 운영 점검이나 smoke에서는 `POST /internal/stock-batch/v1/jobs/market-close/rollover`, `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run` 수동 job API를 사용합니다.

@@ -118,6 +118,11 @@ public class SimulationClockService {
     }
 
     @Transactional
+    public LocalDate baseSimulationDate() {
+        return findClock().orElseGet(this::createPausedClock).baseSimulationDate();
+    }
+
+    @Transactional
     public LocalDateTime currentMarketDateTime() {
         return currentSnapshot().simulationDateTime();
     }

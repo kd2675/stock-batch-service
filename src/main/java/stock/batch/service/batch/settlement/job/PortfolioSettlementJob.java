@@ -1,5 +1,8 @@
 package stock.batch.service.batch.settlement.job;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -28,5 +31,9 @@ public class PortfolioSettlementJob implements StockBatchJob {
     @Override
     public int run() {
         return portfolioSettlementService.settleToday();
+    }
+
+    public int run(LocalDate snapshotDate, LocalDateTime snapshotAt) {
+        return portfolioSettlementService.settle(snapshotDate, snapshotAt);
     }
 }

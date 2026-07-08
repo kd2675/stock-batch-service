@@ -1,6 +1,7 @@
 package stock.batch.service.marketclose.biz;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -110,6 +111,29 @@ class MarketCloseRolloverServiceUnitTest {
         assertThat(processedCount).isEqualTo(1);
         verify(writer, org.mockito.Mockito.times(2)).findOpenOrderBookOrdersForUpdate("MC001");
         verify(writer).creditCash(3L, new BigDecimal("3000.00"), now);
+    }
+
+    @Test
+    void rolloverClosingPrices_symbolLockBusy_failsInsteadOfReturningZero() {
+        MarketCloseRolloverWriter writer = mock(MarketCloseRolloverWriter.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.empty();
+        MarketCloseRolloverService service = new MarketCloseRolloverService(
+                writer,
+                simulationClockService,
+                orderBookSymbolLock,
+                transactionTemplate()
+        );
+        LocalDate tradeDate = LocalDate.of(2026, 7, 3);
+        LocalDateTime closedAt = LocalDateTime.of(2026, 7, 3, 18, 30);
+        when(writer.findCloseLockSymbols(null)).thenReturn(List.of("MC001"));
+        when(simulationClockService.currentDate()).thenReturn(tradeDate);
+        when(simulationClockService.currentMarketDateTime()).thenReturn(closedAt);
+
+        assertThatThrownBy(service::rolloverClosingPrices)
+                .isInstanceOf(CannotAcquireLockException.class)
+                .hasMessageContaining("symbol lock is busy");
+        verify(writer, never()).createCloseRun(null, tradeDate, closedAt);
     }
 
     @Test

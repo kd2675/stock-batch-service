@@ -18,7 +18,7 @@ public class BatchJobSignalScheduler {
     @Scheduled(
             scheduler = StockBatchSchedulerNames.MAINTENANCE,
             initialDelayString = "${stock.batch.signal.initial-delay-ms:3000}",
-            fixedDelayString = "${stock.batch.signal.fixed-delay-ms:1000}"
+            fixedDelayString = "${stock.batch.signal.fixed-delay-ms:5000}"
     )
     public void processBatchJobSignals() {
         batchJobSignalProcessor.processPendingSignals(chunkLimit);

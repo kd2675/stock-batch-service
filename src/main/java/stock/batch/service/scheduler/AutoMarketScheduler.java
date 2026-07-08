@@ -91,7 +91,7 @@ public class AutoMarketScheduler {
     @Scheduled(
             scheduler = StockBatchSchedulerNames.AUTO_MARKET,
             initialDelayString = "${stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms:4000}",
-            fixedDelayString = "${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:7200000}"
+            fixedDelayString = "${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:600000}"
     )
     public void reconcileProfileQueue() {
         runProfileQueueReconcile();

@@ -60,6 +60,22 @@ public class MarketCloseRolloverWriter {
         return key.longValue();
     }
 
+    public boolean hasCompletedFullCloseRun(LocalDate businessDate) {
+        Integer count = jdbcClient.sql(
+                        """
+                        select count(*)
+                          from stock_market_close_run
+                         where business_date = ?
+                           and symbol is null
+                           and status = 'COMPLETED'
+                        """
+                )
+                .param(businessDate)
+                .query(Integer.class)
+                .single();
+        return count != null && count > 0;
+    }
+
     public List<String> findCloseLockSymbols(String symbol) {
         if (symbol != null && !symbol.isBlank()) {
             return List.of(symbol);

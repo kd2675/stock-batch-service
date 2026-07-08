@@ -46,6 +46,10 @@ public class SimulationMarketSessionService {
         return simulationClockService.currentDate();
     }
 
+    public LocalDate baseSimulationDate() {
+        return simulationClockService.baseSimulationDate();
+    }
+
     public LocalDateTime currentSimulationDateTime() {
         return simulationClockService.currentMarketDateTime();
     }

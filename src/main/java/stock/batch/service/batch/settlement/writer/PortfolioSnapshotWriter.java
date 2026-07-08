@@ -18,8 +18,10 @@ public class PortfolioSnapshotWriter {
     private final SimulationClockService simulationClockService;
 
     public void write(PortfolioSnapshotCommand command) {
-        LocalDate today = simulationClockService.currentDate();
-        LocalDateTime now = simulationClockService.currentMarketDateTime();
+        write(command, simulationClockService.currentDate(), simulationClockService.currentMarketDateTime());
+    }
+
+    public void write(PortfolioSnapshotCommand command, LocalDate snapshotDate, LocalDateTime snapshotAt) {
         int updatedRows = jdbcTemplate.update(
                 """
                 update portfolio_snapshot
@@ -30,9 +32,9 @@ public class PortfolioSnapshotWriter {
                 command.cashBalance(),
                 command.marketValue(),
                 command.returnRate(),
-                now,
+                snapshotAt,
                 command.accountId(),
-                today
+                snapshotDate
         );
         if (updatedRows > 0) {
             return;
@@ -44,12 +46,12 @@ public class PortfolioSnapshotWriter {
                 values (?, ?, ?, ?, ?, ?, ?)
                 """,
                 command.accountId(),
-                today,
+                snapshotDate,
                 command.totalAsset(),
                 command.cashBalance(),
                 command.marketValue(),
                 command.returnRate(),
-                now
+                snapshotAt
         );
     }
 }

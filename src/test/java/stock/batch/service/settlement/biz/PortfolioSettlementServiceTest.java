@@ -1,5 +1,9 @@
 package stock.batch.service.settlement.biz;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -7,15 +11,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
 class PortfolioSettlementServiceTest {
+
+    private static final LocalDate TEST_SIMULATION_DATE = LocalDate.of(2026, 7, 1);
+    private static final LocalDateTime TEST_SETTLEMENT_AT = LocalDateTime.of(2026, 7, 1, 18, 30);
+    private static final long POST_CLOSE_ACCUMULATED_REAL_SECONDS = 5_550L;
 
     @Autowired
     private PortfolioSettlementService portfolioSettlementService;
@@ -31,7 +35,10 @@ class PortfolioSettlementServiceTest {
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_account");
+        jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_simulation_clock");
+        insertSimulationClock();
+        insertCompletedFullCloseRun(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
     }
 
     @Test
@@ -50,7 +57,7 @@ class PortfolioSettlementServiceTest {
         assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("20.0000"));
         assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
-                .isEqualTo(LocalDate.now());
+                .isEqualTo(TEST_SIMULATION_DATE);
     }
 
     @Test
@@ -67,6 +74,22 @@ class PortfolioSettlementServiceTest {
                 .isEqualTo(1L);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("260000.00"));
+    }
+
+    @Test
+    void settle_withSnapshotDate_createsSnapshotForRequestedBusinessDate() {
+        insertAccount("catch-up-ranker", "100000.00", "200000.00");
+        insertPrice("005930", "70000.00");
+        insertHolding("catch-up-ranker", "005930", 2, "50000.00");
+
+        int settledCount = portfolioSettlementService.settle(
+                LocalDate.of(2026, 7, 3),
+                LocalDateTime.of(2026, 7, 3, 18, 0)
+        );
+
+        assertThat(settledCount).isEqualTo(1);
+        assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'catch-up-ranker'"))
+                .isEqualTo(LocalDate.of(2026, 7, 3));
     }
 
     @Test
@@ -122,6 +145,55 @@ class PortfolioSettlementServiceTest {
 
         assertThat(settledCount).isZero();
         assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
+    }
+
+    @Test
+    void settleToday_withoutCompletedMarketCloseRun_skipsCurrentDateSnapshot() {
+        // given
+        jdbcTemplate.update("delete from stock_market_close_run");
+        insertAccount("not-closed-ranker", "100000.00", "200000.00");
+
+        // when
+        int settledCount = portfolioSettlementService.settleToday();
+
+        // then
+        assertThat(settledCount).isZero();
+        assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
+    }
+
+    private void insertSimulationClock() {
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update(
+                """
+                insert into stock_simulation_clock(
+                    clock_id, base_simulation_date, real_seconds_per_simulation_day,
+                    accumulated_real_seconds, running, last_started_at, last_heartbeat_at,
+                    timezone, created_at, updated_at
+                )
+                values ('DEFAULT', ?, 7200, ?, false, null, null, 'Asia/Seoul', ?, ?)
+                """,
+                TEST_SIMULATION_DATE,
+                POST_CLOSE_ACCUMULATED_REAL_SECONDS,
+                now,
+                now
+        );
+    }
+
+    private void insertCompletedFullCloseRun(LocalDate businessDate, LocalDateTime completedAt) {
+        jdbcTemplate.update(
+                """
+                insert into stock_market_close_run(
+                    symbol, business_date, closed_at, status,
+                    cancelled_order_count, holding_snapshot_count, price_rollover_count,
+                    created_at, completed_at
+                )
+                values (null, ?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
+                """,
+                businessDate,
+                completedAt,
+                completedAt,
+                completedAt
+        );
     }
 
     private void insertAccount(String userKey, String cashBalance, String openingGrantAmount) {

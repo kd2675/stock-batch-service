@@ -1,5 +1,8 @@
 package stock.batch.service.batch.marketclose.job;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -32,6 +35,10 @@ public class MarketCloseRolloverJob implements StockBatchJob {
 
     public int run(String symbol) {
         return marketCloseRolloverService.rolloverClosingPrices(symbol);
+    }
+
+    public int run(LocalDate businessDate, LocalDateTime closedAt) {
+        return marketCloseRolloverService.rolloverClosingPrices(businessDate, closedAt);
     }
 
     public int cancelOpenOrders(String symbol) {

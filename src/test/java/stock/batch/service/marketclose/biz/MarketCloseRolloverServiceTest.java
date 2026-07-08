@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 class MarketCloseRolloverServiceTest {
 
+    private static final long POST_CLOSE_ACCUMULATED_REAL_SECONDS = 5_550L;
+
     @Autowired
     private MarketCloseRolloverService marketCloseRolloverService;
 
@@ -43,6 +45,7 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_order_book_market_config");
         jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_simulation_clock");
+        setSimulationDate(LocalDate.of(2026, 1, 1));
     }
 
     @Test
@@ -321,9 +324,10 @@ class MarketCloseRolloverServiceTest {
                     timezone,
                     created_at,
                     updated_at
-                ) key(clock_id) values ('DEFAULT', ?, 7200, 0, false, null, null, 'Asia/Seoul', ?, ?)
+                ) key(clock_id) values ('DEFAULT', ?, 7200, ?, false, null, null, 'Asia/Seoul', ?, ?)
                 """,
                 simulationDate,
+                POST_CLOSE_ACCUMULATED_REAL_SECONDS,
                 now,
                 now
         );

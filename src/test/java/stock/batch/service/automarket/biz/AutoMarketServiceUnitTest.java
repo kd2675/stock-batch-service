@@ -35,6 +35,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
+import stock.batch.service.automarket.config.AutoMarketGenerationSlotLimiter;
 import stock.batch.service.automarket.lock.AutoMarketProfileLock;
 import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
 import stock.batch.service.simulation.SimulationClockService;
@@ -70,14 +71,56 @@ class AutoMarketServiceUnitTest {
                 profileType -> Optional.of(() -> {
                 }),
                 readyProfileQueue,
-                Runnable::run
+                Runnable::run,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
 
-        @SuppressWarnings("unchecked")
-        List<AutoParticipantProfileType> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now);
+        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now);
 
-        assertThat(profiles).containsExactly(AutoParticipantProfileType.MARKET_MAKER);
+        assertThat(profiles).hasSize(1);
+        assertThat(ReflectionTestUtils.getField(profiles.get(0), "profileType"))
+                .isEqualTo(AutoParticipantProfileType.MARKET_MAKER);
+        verify(scheduleService, never()).findDueProfileSchedules(any(), anyInt());
+    }
+
+    @Test
+    void claimReadyProfiles_withoutGenerationSlot_doesNotClaimRedisProfile() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        AutoMarketDailyRegimeService autoMarketDailyRegimeService = mock(AutoMarketDailyRegimeService.class);
+        AutoParticipantOrderService autoParticipantOrderService = mock(AutoParticipantOrderService.class);
+        AutoParticipantOrderScheduleService scheduleService = mock(AutoParticipantOrderScheduleService.class);
+        AutoProfileBehaviorSupport profileBehaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        InMemoryReadyProfileQueue readyProfileQueue = new InMemoryReadyProfileQueue();
+        AutoMarketGenerationSlotLimiter generationSlotLimiter = new AutoMarketGenerationSlotLimiter(1);
+        assertThat(generationSlotLimiter.tryAcquire()).isTrue();
+        LocalDateTime now = LocalDateTime.of(2026, 7, 22, 16, 0);
+        readyProfileQueue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now.minusSeconds(1));
+        AutoMarketService service = new AutoMarketService(
+                autoMarketReader,
+                autoMarketDailyRegimeService,
+                autoParticipantOrderService,
+                scheduleService,
+                profileBehaviorSupport,
+                simulationClockService,
+                simulationMarketSessionService,
+                transactionTemplate,
+                profileType -> Optional.of(() -> {
+                }),
+                readyProfileQueue,
+                Runnable::run,
+                generationSlotLimiter
+        );
+        ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
+
+        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now);
+
+        assertThat(profiles).isEmpty();
+        assertThat(readyProfileQueue.readyAtByProfile)
+                .containsKey(AutoParticipantProfileType.MARKET_MAKER);
         verify(scheduleService, never()).findDueProfileSchedules(any(), anyInt());
     }
 
@@ -105,7 +148,8 @@ class AutoMarketServiceUnitTest {
                 transactionTemplate,
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
-                directExecutor
+                directExecutor,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -201,7 +245,8 @@ class AutoMarketServiceUnitTest {
                 transactionTemplate,
                 autoMarketProfileLock,
                 readyProfileQueue,
-                directExecutor
+                directExecutor,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
@@ -279,7 +324,8 @@ class AutoMarketServiceUnitTest {
                 transactionTemplate,
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
-                directExecutor
+                directExecutor,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -359,7 +405,8 @@ class AutoMarketServiceUnitTest {
                 transactionTemplate,
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
-                directExecutor
+                directExecutor,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -457,7 +504,8 @@ class AutoMarketServiceUnitTest {
                 transactionTemplate,
                 autoMarketProfileLock,
                 readyProfileQueue(),
-                Runnable::run
+                Runnable::run,
+                new AutoMarketGenerationSlotLimiter(12)
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         SimulationClockSnapshot clock = new SimulationClockSnapshot(
