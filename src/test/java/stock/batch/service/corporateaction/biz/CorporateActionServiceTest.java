@@ -53,26 +53,6 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_additionalIssueOnListingDate_increasesSharesWithoutPriceReset() {
-        insertCompletedMarketCloseForToday();
-        insertOrderBookInstrument("ZQ003", 100000L, 100000L);
-        insertPrice("ZQ003", "70000.00");
-        insertAdditionalIssue("ZQ003", 30000L, "60000.00", LocalDate.now().minusDays(1));
-
-        int processedCount = corporateActionService.applyDueCorporateActions();
-
-        assertThat(processedCount).isEqualTo(1);
-        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ003'"))
-                .isEqualTo("LISTED");
-        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ003'"))
-                .isEqualTo(130000L);
-        assertThat(queryLong("select tradable_shares from stock_order_book_instrument where symbol = 'ZQ003'"))
-                .isEqualTo(130000L);
-        assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ003'"))
-                .isEqualByComparingTo(new BigDecimal("70000.00"));
-    }
-
-    @Test
     void applyDueCorporateActions_pausedSimulationClock_usesSimulationClockForTimestamps() {
         LocalDateTime lastHeartbeatAt = LocalDateTime.of(2026, 1, 2, 3, 4, 5);
         LocalDate simulationDate = LocalDate.now();
@@ -81,7 +61,7 @@ class CorporateActionServiceTest {
         insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ020", 100000L, 100000L);
         insertPrice("ZQ020", "70000.00");
-        insertAdditionalIssue("ZQ020", 30000L, "60000.00", LocalDate.now().minusDays(1));
+        insertStockSplit("ZQ020", 1, 2, LocalDate.now().minusDays(1));
 
         int processedCount = corporateActionService.applyDueCorporateActions();
 
@@ -98,7 +78,7 @@ class CorporateActionServiceTest {
         insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ021", 100000L, 100000L);
         insertPrice("ZQ021", "70000.00");
-        insertAdditionalIssue("ZQ021", 30000L, "60000.00", LocalDate.now().minusDays(1));
+        insertStockSplit("ZQ021", 1, 2, LocalDate.now().minusDays(1));
 
         int processedCount = corporateActionService.applyDueCorporateActions();
 
@@ -156,7 +136,14 @@ class CorporateActionServiceTest {
         setPausedSimulationClock(simulationDate.minusDays(1), LocalDateTime.now(), simulationDate.atTime(5, 30));
         insertOrderBookInstrument("ZQ024", 100000L, 100000L);
         insertPrice("ZQ024", "70000.00");
-        insertAdditionalIssue("ZQ024", 30000L, "60000.00", simulationDate);
+        insertCashDividend(
+                "ZQ024",
+                "1000.00",
+                "70000.00",
+                "70000.00",
+                simulationDate,
+                simulationDate.plusDays(1)
+        );
 
         int processedCount = corporateActionService.applyDueCorporateActions();
 
@@ -171,7 +158,7 @@ class CorporateActionServiceTest {
     void applyDueCorporateActions_afterCloseWithoutCompletedMarketCloseRun_waits() {
         insertOrderBookInstrument("ZQ022", 100000L, 100000L);
         insertPrice("ZQ022", "70000.00");
-        insertAdditionalIssue("ZQ022", 30000L, "60000.00", LocalDate.now().minusDays(1));
+        insertStockSplit("ZQ022", 1, 2, LocalDate.now().minusDays(1));
 
         int processedCount = corporateActionService.applyDueCorporateActions();
 
@@ -180,24 +167,6 @@ class CorporateActionServiceTest {
                 .isEqualTo("ANNOUNCED");
         assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ022'"))
                 .isEqualTo(100000L);
-    }
-
-    @Test
-    void corporateActionTable_additionalIssueWithoutIssuePrice_rejectsInvalidLedgerRow() {
-        insertOrderBookInstrument("ZQ006", 100000L, 100000L);
-
-        assertThatThrownBy(() -> jdbcTemplate.update(
-                """
-                insert into stock_corporate_action(
-                  symbol, action_type, share_quantity, status, listing_date, description, created_at
-                ) values (?, 'ADDITIONAL_ISSUE', ?, 'ANNOUNCED', ?, 'test', ?)
-                """,
-                "ZQ006",
-                30000L,
-                LocalDate.now().plusDays(1),
-                LocalDateTime.now()
-        ))
-                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -666,24 +635,6 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_additionalIssueWithOpenOrder_waitsWithoutChangingShares() {
-        insertCompletedMarketCloseForToday();
-        insertOrderBookInstrument("ZQ012", 100000L, 100000L);
-        insertPrice("ZQ012", "70000.00");
-        insertAccount("additional-open-buyer");
-        insertOpenOrder("additional-open-order", "additional-open-buyer", "ZQ012");
-        insertAdditionalIssue("ZQ012", 30000L, "60000.00", LocalDate.now().minusDays(1));
-
-        int processedCount = corporateActionService.applyDueCorporateActions();
-
-        assertThat(processedCount).isZero();
-        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ012'"))
-                .isEqualTo("ANNOUNCED");
-        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ012'"))
-                .isEqualTo(100000L);
-    }
-
-    @Test
     void applyDueCorporateActions_zeroValueDelisting_cancelsOrdersAndDisablesTrading() {
         insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ015", 100000L, 100000L);
@@ -1005,21 +956,6 @@ class CorporateActionServiceTest {
                 "select id from stock_account where user_key = ?",
                 Long.class,
                 userKey
-        );
-    }
-
-    private void insertAdditionalIssue(String symbol, long shareQuantity, String issuePrice, LocalDate listingDate) {
-        jdbcTemplate.update(
-                """
-                insert into stock_corporate_action(
-                  symbol, action_type, share_quantity, issue_price, status, listing_date, description, created_at
-                ) values (?, 'ADDITIONAL_ISSUE', ?, ?, 'ANNOUNCED', ?, 'test', ?)
-                """,
-                symbol,
-                shareQuantity,
-                new BigDecimal(issuePrice),
-                listingDate,
-                LocalDateTime.now()
         );
     }
 

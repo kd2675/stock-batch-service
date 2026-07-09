@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   KEY idx_stock_corporate_action_symbol_created (symbol, created_at),
   KEY idx_stock_corporate_action_status_dates (status, ex_rights_date, payment_date, listing_date, delisting_date),
   KEY idx_stock_corporate_action_status_symbol (status, symbol),
-  CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'ADDITIONAL_ISSUE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 WHEN 'DELISTING' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 WHEN 'DELISTING' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_status_valid CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'EX_RIGHTS_APPLIED' THEN 1 WHEN 'PAID' THEN 1 WHEN 'LISTED' THEN 1 WHEN 'DELISTED' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_delisting_treatment CHECK (delisting_treatment IS NULL OR delisting_treatment = 'ZERO_VALUE'),
   CONSTRAINT chk_stock_corporate_action_share_quantity CHECK (share_quantity IS NULL OR share_quantity > 0),
@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   CONSTRAINT chk_stock_corporate_action_split_from CHECK (split_from IS NULL OR split_from > 0),
   CONSTRAINT chk_stock_corporate_action_split_to CHECK (split_to IS NULL OR split_to > 0),
   CONSTRAINT chk_stock_corporate_action_issue_required CHECK (
-    action_type NOT IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE')
+    action_type NOT IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE')
     OR (share_quantity IS NOT NULL AND issue_price IS NOT NULL)
   ),
   CONSTRAINT chk_stock_corporate_action_paid_schedule_required CHECK (
@@ -217,9 +217,6 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
       AND payment_date IS NOT NULL
       AND listing_date IS NOT NULL
     )
-  ),
-  CONSTRAINT chk_stock_corporate_action_additional_listing_required CHECK (
-    action_type <> 'ADDITIONAL_ISSUE' OR listing_date IS NOT NULL
   ),
   CONSTRAINT chk_stock_corporate_action_split_required CHECK (
     action_type <> 'STOCK_SPLIT'
@@ -258,14 +255,14 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
     )
   ),
   CONSTRAINT chk_stock_corporate_action_field_scope CHECK (
-    (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR share_quantity IS NULL)
-    AND (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE') OR issue_price IS NULL)
+    (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR share_quantity IS NULL)
+    AND (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE') OR issue_price IS NULL)
     AND (action_type = 'CASH_DIVIDEND' OR dividend_amount IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR base_price IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR theoretical_ex_rights_price IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR ex_rights_date IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND') OR payment_date IS NULL)
-    AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'ADDITIONAL_ISSUE', 'STOCK_SPLIT', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR listing_date IS NULL)
+    AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'STOCK_SPLIT', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR listing_date IS NULL)
     AND (action_type = 'DELISTING' OR delisting_date IS NULL)
     AND (action_type = 'DELISTING' OR delisting_treatment IS NULL)
     AND (action_type = 'STOCK_SPLIT' OR (split_from IS NULL AND split_to IS NULL))

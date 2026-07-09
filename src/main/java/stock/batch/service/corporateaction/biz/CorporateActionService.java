@@ -29,7 +29,6 @@ import web.common.core.simulation.SimulationMarketSession;
 public class CorporateActionService {
 
     private static final String PAID_IN_CAPITAL_INCREASE = "PAID_IN_CAPITAL_INCREASE";
-    private static final String ADDITIONAL_ISSUE = "ADDITIONAL_ISSUE";
     private static final String STOCK_SPLIT = "STOCK_SPLIT";
     private static final String CASH_DIVIDEND = "CASH_DIVIDEND";
     private static final String BONUS_ISSUE = "BONUS_ISSUE";
@@ -69,11 +68,10 @@ public class CorporateActionService {
         int rightsListingCount = listDueRightsShares(actionDate);
         int bonusIssueListingCount = listDueFreeShareDistributions(actionDate, BONUS_ISSUE);
         int stockDividendListingCount = listDueFreeShareDistributions(actionDate, STOCK_DIVIDEND);
-        int additionalIssueCount = listDueAdditionalIssues(actionDate);
         int stockSplitCount = applyDueStockSplits(actionDate);
         int delistingCount = applyDueDelistings(actionDate);
         return exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
-                + bonusIssueListingCount + stockDividendListingCount + additionalIssueCount + stockSplitCount
+                + bonusIssueListingCount + stockDividendListingCount + stockSplitCount
                 + delistingCount;
     }
 
@@ -185,10 +183,6 @@ public class CorporateActionService {
 
     private int listDueRightsShares(LocalDate today) {
         return listDueShareIssues(today, PAID_IN_CAPITAL_INCREASE, PAID);
-    }
-
-    private int listDueAdditionalIssues(LocalDate today) {
-        return listDueShareIssues(today, ADDITIONAL_ISSUE, ANNOUNCED);
     }
 
     private int listDueFreeShareDistributions(LocalDate today, String actionType) {
