@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.simulation.SimulationMarketSessionService;
+import web.common.core.simulation.SimulationMarketSession;
 
 @Component
 @RequiredArgsConstructor
@@ -23,7 +24,7 @@ public class CorporateActionScheduler {
             fixedDelayString = "${stock.batch.corporate-actions.fixed-delay-ms:60000}"
     )
     public void applyCorporateActions() {
-        if (!simulationMarketSessionService.isAfterCloseSession()) {
+        if (simulationMarketSessionService.currentSession() == SimulationMarketSession.REGULAR) {
             return;
         }
         scheduledJobGuard.runIfEnabled(CorporateActionJob.JOB_NAME, true, stockBatchJobLauncher::applyCorporateActions);

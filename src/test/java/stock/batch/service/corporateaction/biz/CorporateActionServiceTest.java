@@ -110,6 +110,64 @@ class CorporateActionServiceTest {
     }
 
     @Test
+    void applyDueCorporateActions_preOpenAppliesTodayExRightsUsingPreviousCloseSnapshot() {
+        LocalDate simulationDate = LocalDate.now();
+        LocalDate previousDate = simulationDate.minusDays(1);
+        setPausedSimulationClock(previousDate, LocalDateTime.now(), simulationDate.atTime(5, 30));
+        insertOrderBookInstrument("ZQ023", 100000L, 100000L);
+        insertPrice("ZQ023", "70000.00");
+        insertAccount("dividend-pre-open-holder");
+        insertHolding("dividend-pre-open-holder", "ZQ023", 10L, 0L, "70000.00");
+        long previousCloseRunId = insertHoldingSnapshot("ZQ023", previousDate, previousDate.atTime(18, 0));
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = 99,
+                       updated_at = ?
+                 where symbol = 'ZQ023'
+                """,
+                LocalDateTime.now()
+        );
+        insertCashDividend(
+                "ZQ023",
+                "1000.00",
+                "70000.00",
+                "70000.00",
+                simulationDate,
+                simulationDate.plusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ023'"))
+                .isEqualTo("EX_RIGHTS_APPLIED");
+        assertThat(queryLong("select quantity from stock_corporate_action_entitlement where symbol = 'ZQ023'"))
+                .isEqualTo(10L);
+        assertThat(queryLong("select holding_snapshot_run_id from stock_corporate_action_entitlement where symbol = 'ZQ023'"))
+                .isEqualTo(previousCloseRunId);
+        assertThat(queryLong("select quantity from stock_holding where symbol = 'ZQ023'"))
+                .isEqualTo(99L);
+    }
+
+    @Test
+    void applyDueCorporateActions_preOpenWithoutPreviousCloseRun_waits() {
+        LocalDate simulationDate = LocalDate.now();
+        setPausedSimulationClock(simulationDate.minusDays(1), LocalDateTime.now(), simulationDate.atTime(5, 30));
+        insertOrderBookInstrument("ZQ024", 100000L, 100000L);
+        insertPrice("ZQ024", "70000.00");
+        insertAdditionalIssue("ZQ024", 30000L, "60000.00", simulationDate);
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isZero();
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ024'"))
+                .isEqualTo("ANNOUNCED");
+        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ024'"))
+                .isEqualTo(100000L);
+    }
+
+    @Test
     void applyDueCorporateActions_afterCloseWithoutCompletedMarketCloseRun_waits() {
         insertOrderBookInstrument("ZQ022", 100000L, 100000L);
         insertPrice("ZQ022", "70000.00");
@@ -144,11 +202,16 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_cashDividendOnPaymentDate_keepsPriceAndPaysEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ007", 100000L, 100000L);
         insertPrice("ZQ007", "70000.00");
         insertAccount("dividend-holder");
         insertHolding("dividend-holder", "ZQ007", 10L, 0L, "70000.00");
-        long closeRunId = insertHoldingSnapshot("ZQ007");
+        long closeRunId = insertHoldingSnapshot(
+                "ZQ007",
+                LocalDate.now().minusDays(3),
+                LocalDate.now().minusDays(3).atTime(18, 0)
+        );
         jdbcTemplate.update(
                 """
                 update stock_holding
@@ -216,11 +279,16 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_bonusIssueOnListingDate_adjustsPriceAndCreditsShareEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ009", 100000L, 100000L);
         insertPrice("ZQ009", "70000.00");
         insertAccount("bonus-holder");
         insertHolding("bonus-holder", "ZQ009", 100L, 0L, "70000.00");
-        insertHoldingSnapshot("ZQ009");
+        insertHoldingSnapshot(
+                "ZQ009",
+                LocalDate.now().minusDays(3),
+                LocalDate.now().minusDays(3).atTime(18, 0)
+        );
         insertBonusIssue(
                 "ZQ009",
                 10000L,
@@ -253,11 +321,16 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_stockDividendOnListingDate_adjustsPriceAndCreditsShareEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ010", 100000L, 100000L);
         insertPrice("ZQ010", "70000.00");
         insertAccount("dividend-stock-holder");
         insertHolding("dividend-stock-holder", "ZQ010", 100L, 0L, "70000.00");
-        insertHoldingSnapshot("ZQ010");
+        insertHoldingSnapshot(
+                "ZQ010",
+                LocalDate.now().minusDays(3),
+                LocalDate.now().minusDays(3).atTime(18, 0)
+        );
         insertFreeShareDistribution(
                 "ZQ010",
                 "STOCK_DIVIDEND",
@@ -315,6 +388,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_stockSplitWithOpenOrder_waitsWithoutChangingShares() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ005", 100000L, 100000L);
         insertPrice("ZQ005", "70000.00");
         insertAccount("split-open-buyer");
@@ -392,6 +466,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_exRightsWithOpenOrder_waitsWithoutChangingPrice() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ011", 100000L, 100000L);
         insertPrice("ZQ011", "70000.00");
         insertAccount("rights-open-buyer");
@@ -418,6 +493,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_cashDividendWithOpenOrder_waitsWithoutCreatingEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ013", 100000L, 100000L);
         insertPrice("ZQ013", "70000.00");
         insertAccount("dividend-open-holder");
@@ -445,6 +521,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_bonusIssueWithOpenOrder_waitsWithoutCreatingEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ014", 100000L, 100000L);
         insertPrice("ZQ014", "70000.00");
         insertAccount("bonus-open-holder");
@@ -472,6 +549,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_cashDividendWithoutHoldingSnapshot_waitsWithoutCreatingEntitlements() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ016", 100000L, 100000L);
         insertPrice("ZQ016", "70000.00");
         insertAccount("dividend-no-snapshot-holder");
@@ -495,12 +573,18 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_cashDividendUsesLatestCloseSnapshotWhenMultipleClosesExist() {
+    void applyDueCorporateActions_cashDividendUsesLatestCloseBeforeExRightsDateWhenMultipleClosesExist() {
+        insertCompletedMarketCloseForToday();
+        LocalDate exRightsDate = LocalDate.now();
         insertOrderBookInstrument("ZQ017", 100000L, 100000L);
         insertPrice("ZQ017", "70000.00");
         insertAccount("dividend-multi-close-holder");
         insertHolding("dividend-multi-close-holder", "ZQ017", 10L, 0L, "70000.00");
-        insertHoldingSnapshot("ZQ017", LocalDateTime.now().minusHours(3));
+        insertHoldingSnapshot(
+                "ZQ017",
+                exRightsDate.minusDays(2),
+                exRightsDate.minusDays(2).atTime(18, 0)
+        );
         jdbcTemplate.update(
                 """
                 update stock_holding
@@ -510,7 +594,11 @@ class CorporateActionServiceTest {
                 """,
                 LocalDateTime.now().minusHours(2)
         );
-        long latestCloseRunId = insertHoldingSnapshot("ZQ017", LocalDateTime.now().minusHours(1));
+        long latestCloseRunId = insertHoldingSnapshot(
+                "ZQ017",
+                exRightsDate.minusDays(1),
+                exRightsDate.minusDays(1).atTime(18, 0)
+        );
         jdbcTemplate.update(
                 """
                 update stock_holding
@@ -525,7 +613,7 @@ class CorporateActionServiceTest {
                 "1000.00",
                 "70000.00",
                 "69000.00",
-                LocalDate.now().minusDays(1),
+                exRightsDate,
                 LocalDate.now().plusDays(1)
         );
 
@@ -544,19 +632,25 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_cashDividendDoesNotReuseStaleSnapshotWhenLatestCloseHasNoHolder() {
+        insertCompletedMarketCloseForToday();
+        LocalDate exRightsDate = LocalDate.now();
         insertOrderBookInstrument("ZQ018", 100000L, 100000L);
         insertPrice("ZQ018", "70000.00");
         insertAccount("dividend-stale-snapshot-holder");
         insertHolding("dividend-stale-snapshot-holder", "ZQ018", 10L, 0L, "70000.00");
-        insertHoldingSnapshot("ZQ018", LocalDateTime.now().minusHours(3));
+        insertHoldingSnapshot(
+                "ZQ018",
+                exRightsDate.minusDays(2),
+                exRightsDate.minusDays(2).atTime(18, 0)
+        );
         jdbcTemplate.update("delete from stock_holding where symbol = 'ZQ018'");
-        long latestCloseRunId = insertMarketCloseRun(LocalDateTime.now().minusHours(1));
+        long latestCloseRunId = insertMarketCloseRun(exRightsDate.minusDays(1), exRightsDate.minusDays(1).atTime(18, 0));
         insertCashDividend(
                 "ZQ018",
                 "1000.00",
                 "70000.00",
                 "69000.00",
-                LocalDate.now().minusDays(1),
+                exRightsDate,
                 LocalDate.now().plusDays(1)
         );
 
@@ -573,6 +667,7 @@ class CorporateActionServiceTest {
 
     @Test
     void applyDueCorporateActions_additionalIssueWithOpenOrder_waitsWithoutChangingShares() {
+        insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ012", 100000L, 100000L);
         insertPrice("ZQ012", "70000.00");
         insertAccount("additional-open-buyer");
@@ -656,8 +751,14 @@ class CorporateActionServiceTest {
     }
 
     private void setPausedSimulationClock(LocalDate baseDate, LocalDateTime lastHeartbeatAt, LocalTime simulationTime) {
+        setPausedSimulationClock(baseDate, lastHeartbeatAt, baseDate.atTime(simulationTime));
+    }
+
+    private void setPausedSimulationClock(LocalDate baseDate, LocalDateTime lastHeartbeatAt, LocalDateTime simulationDateTime) {
         jdbcTemplate.update("delete from stock_simulation_clock");
-        long accumulatedRealSeconds = simulationTime.toSecondOfDay() * 7200L / Duration.ofDays(1).toSeconds();
+        long dayOffset = Duration.between(baseDate.atStartOfDay(), simulationDateTime.toLocalDate().atStartOfDay()).toDays();
+        long accumulatedRealSeconds = dayOffset * 7200L
+                + simulationDateTime.toLocalTime().toSecondOfDay() * 7200L / Duration.ofDays(1).toSeconds();
         jdbcTemplate.update(
                 """
                 insert into stock_simulation_clock(
@@ -683,7 +784,11 @@ class CorporateActionServiceTest {
     }
 
     private void insertCompletedMarketCloseForToday() {
-        insertMarketCloseRun(LocalDate.now().atTime(18, 0));
+        insertMarketCloseRun(LocalDate.now(), LocalDate.now().atTime(18, 0));
+    }
+
+    private void insertCompletedMarketCloseForDate(LocalDate businessDate) {
+        insertMarketCloseRun(businessDate, businessDate.atTime(18, 0));
     }
 
     private void insertPrice(String symbol, String price) {
@@ -836,7 +941,11 @@ class CorporateActionServiceTest {
     }
 
     private long insertHoldingSnapshot(String symbol, LocalDateTime snapshotAt) {
-        Long closeRunId = insertMarketCloseRun(snapshotAt);
+        return insertHoldingSnapshot(symbol, LocalDate.now(), snapshotAt);
+    }
+
+    private long insertHoldingSnapshot(String symbol, LocalDate businessDate, LocalDateTime snapshotAt) {
+        Long closeRunId = insertMarketCloseRun(businessDate, snapshotAt);
         jdbcTemplate.update(
                 """
                 insert into stock_holding_snapshot(
@@ -867,6 +976,10 @@ class CorporateActionServiceTest {
     }
 
     private long insertMarketCloseRun(LocalDateTime snapshotAt) {
+        return insertMarketCloseRun(LocalDate.now(), snapshotAt);
+    }
+
+    private long insertMarketCloseRun(LocalDate businessDate, LocalDateTime snapshotAt) {
         jdbcTemplate.update(
                 """
                 insert into stock_market_close_run(
@@ -876,7 +989,7 @@ class CorporateActionServiceTest {
                 )
                 values (?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
                 """,
-                LocalDate.now(),
+                businessDate,
                 snapshotAt,
                 snapshotAt,
                 snapshotAt

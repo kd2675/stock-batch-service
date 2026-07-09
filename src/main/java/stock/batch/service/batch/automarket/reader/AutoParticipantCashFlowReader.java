@@ -43,27 +43,28 @@ public class AutoParticipantCashFlowReader {
     public List<AutoParticipantRecentCashFlow> findRecentCashFlows(
             List<Long> accountIds,
             Set<String> reasons,
-            String createdBy,
+            Set<String> createdByValues,
             LocalDateTime since
     ) {
-        if (accountIds.isEmpty() || reasons.isEmpty()) {
+        if (accountIds.isEmpty() || reasons.isEmpty() || createdByValues.isEmpty()) {
             return List.of();
         }
         List<String> sortedReasons = reasons.stream().sorted().toList();
+        List<String> sortedCreatedByValues = createdByValues.stream().sorted().toList();
         return jdbcClient.sql(
                 """
                 select account_id, reason, created_at
                 from stock_account_cash_flow
                 where account_id in (:accountIds)
                   and reason in (:reasons)
-                  and created_by = :createdBy
+                  and created_by in (:createdByValues)
                   and created_at >= :since
                 order by account_id asc, created_at desc, id desc
                 """
         )
                 .param("accountIds", accountIds)
                 .param("reasons", sortedReasons)
-                .param("createdBy", createdBy)
+                .param("createdByValues", sortedCreatedByValues)
                 .param("since", since)
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toRecentCashFlow(rs))
                 .list();

@@ -35,6 +35,10 @@ public class AutoParticipantCashFlowService {
     private static final String AUTO_PARTICIPANT_RECURRING_DEPOSIT_REASON = "AUTO_PARTICIPANT_RECURRING_DEPOSIT";
     private static final String AUTO_MARKET_CREATED_BY = "AUTO_MARKET";
     private static final String MANUAL_CREATED_BY = "AUTO_MARKET_MANUAL";
+    private static final Set<String> RECURRING_CASH_CREATED_BY_VALUES = Set.of(
+            AUTO_MARKET_CREATED_BY,
+            MANUAL_CREATED_BY
+    );
 
     private final AutoMarketReader autoMarketReader;
     private final AutoParticipantCashFlowReader autoParticipantCashFlowReader;
@@ -61,13 +65,11 @@ public class AutoParticipantCashFlowService {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         LocalDateTime now = clock.simulationDateTime();
         List<RecurringCashCandidate> candidates = recurringCashCandidates(profilePolicies, clock);
-        Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId = manualRun
-                ? Map.of()
-                : loadRecentAutomaticCashFlows(candidates);
+        Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId = loadRecentRecurringCashFlows(candidates);
         int funded = 0;
 
         for (RecurringCashCandidate candidate : candidates) {
-            if (!manualRun && hasRecentAutomaticCashFlow(candidate, recentCashFlowsByAccountId)) {
+            if (hasRecentRecurringCashFlow(candidate, recentCashFlowsByAccountId)) {
                 continue;
             }
             String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
@@ -99,7 +101,7 @@ public class AutoParticipantCashFlowService {
         return candidates;
     }
 
-    private Map<Long, List<AutoParticipantRecentCashFlow>> loadRecentAutomaticCashFlows(List<RecurringCashCandidate> candidates) {
+    private Map<Long, List<AutoParticipantRecentCashFlow>> loadRecentRecurringCashFlows(List<RecurringCashCandidate> candidates) {
         if (candidates.isEmpty()) {
             return Map.of();
         }
@@ -113,12 +115,12 @@ public class AutoParticipantCashFlowService {
         List<Long> accountIds = candidates.stream()
                 .map(RecurringCashCandidate::accountId)
                 .toList();
-        return autoParticipantCashFlowReader.findRecentCashFlows(accountIds, reasons, AUTO_MARKET_CREATED_BY, earliestWindowStart)
+        return autoParticipantCashFlowReader.findRecentCashFlows(accountIds, reasons, RECURRING_CASH_CREATED_BY_VALUES, earliestWindowStart)
                 .stream()
                 .collect(Collectors.groupingBy(AutoParticipantRecentCashFlow::accountId));
     }
 
-    private boolean hasRecentAutomaticCashFlow(
+    private boolean hasRecentRecurringCashFlow(
             RecurringCashCandidate candidate,
             Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId
     ) {

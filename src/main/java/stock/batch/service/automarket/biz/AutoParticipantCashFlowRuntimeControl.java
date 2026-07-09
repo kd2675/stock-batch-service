@@ -25,6 +25,10 @@ public class AutoParticipantCashFlowRuntimeControl {
         return status().effectiveEnabled();
     }
 
+    public boolean canRunManualCashFlow() {
+        return !status().effectiveEnabled();
+    }
+
     public AutoParticipantCashFlowStatusResponse status() {
         return toResponse(batchJobRuntimeControl.status(
                 AutoParticipantCashFlowJob.JOB_NAME,

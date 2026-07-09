@@ -22,6 +22,7 @@ import stock.batch.service.batch.corporateaction.writer.CorporateActionPriceWrit
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
+import web.common.core.simulation.SimulationMarketSession;
 
 @Service
 @RequiredArgsConstructor
@@ -53,25 +54,38 @@ public class CorporateActionService {
 
     @Transactional
     public int applyDueCorporateActions() {
-        if (!simulationMarketSessionService.isAfterCloseSession()) {
+        SimulationMarketSession session = simulationMarketSessionService.currentSession();
+        if (session == SimulationMarketSession.REGULAR) {
             return 0;
         }
-        LocalDate today = simulationMarketSessionService.currentSimulationDate();
-        if (!corporateActionReader.existsCompletedMarketCloseRun(today)) {
+        LocalDate actionDate = simulationMarketSessionService.currentSimulationDate();
+        LocalDate requiredCloseDate = requiredCloseDate(session, actionDate);
+        if (requiredCloseDate == null || !corporateActionReader.existsCompletedMarketCloseRun(requiredCloseDate)) {
             return 0;
         }
-        int exRightsCount = applyDueExRights(today);
-        int rightsPaymentCount = markDueRightsPayments(today);
-        int dividendPaymentCount = payDueCashDividends(today);
-        int rightsListingCount = listDueRightsShares(today);
-        int bonusIssueListingCount = listDueFreeShareDistributions(today, BONUS_ISSUE);
-        int stockDividendListingCount = listDueFreeShareDistributions(today, STOCK_DIVIDEND);
-        int additionalIssueCount = listDueAdditionalIssues(today);
-        int stockSplitCount = applyDueStockSplits(today);
-        int delistingCount = applyDueDelistings(today);
+        int exRightsCount = applyDueExRights(actionDate);
+        int rightsPaymentCount = markDueRightsPayments(actionDate);
+        int dividendPaymentCount = payDueCashDividends(actionDate);
+        int rightsListingCount = listDueRightsShares(actionDate);
+        int bonusIssueListingCount = listDueFreeShareDistributions(actionDate, BONUS_ISSUE);
+        int stockDividendListingCount = listDueFreeShareDistributions(actionDate, STOCK_DIVIDEND);
+        int additionalIssueCount = listDueAdditionalIssues(actionDate);
+        int stockSplitCount = applyDueStockSplits(actionDate);
+        int delistingCount = applyDueDelistings(actionDate);
         return exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
                 + bonusIssueListingCount + stockDividendListingCount + additionalIssueCount + stockSplitCount
                 + delistingCount;
+    }
+
+    private LocalDate requiredCloseDate(SimulationMarketSession session, LocalDate actionDate) {
+        if (session == SimulationMarketSession.AFTER_CLOSE) {
+            return actionDate;
+        }
+        LocalDate previousDate = actionDate.minusDays(1);
+        if (previousDate.isBefore(simulationMarketSessionService.baseSimulationDate())) {
+            return null;
+        }
+        return previousDate;
     }
 
     private int applyDueExRights(LocalDate today) {
@@ -116,7 +130,7 @@ public class CorporateActionService {
         if (!requiresHoldingSnapshot(row.actionType())) {
             return null;
         }
-        return corporateActionReader.findLatestCompletedMarketCloseRunId(row.symbol()).orElse(null);
+        return corporateActionReader.findLatestCompletedMarketCloseRunIdBefore(row.symbol(), row.exRightsDate()).orElse(null);
     }
 
     private boolean requiresHoldingSnapshot(String actionType) {

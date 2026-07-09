@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import stock.batch.service.batch.common.support.StockBatchJobRunResponses;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.signal.model.BatchJobSignal;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
@@ -43,6 +44,17 @@ public class BatchJobSignalProcessor {
     private boolean process(BatchJobSignal signal) {
         try {
             StockBatchJobRunResponse response = runSignal(signal);
+            if (StockBatchJobRunResponses.isManualCashFlowAutoEnabledSkip(response)) {
+                signalWriter.complete(signal.id(), response);
+                log.info(
+                        "Stock batch signal completed without manual cash flow because automatic cash flow is enabled: id={}, type={}, job={}, mode={}",
+                        signal.id(),
+                        signal.signalType(),
+                        signal.jobName(),
+                        signal.executionMode()
+                );
+                return true;
+            }
             if (isSkipped(response)) {
                 signalWriter.defer(signal.id(), response);
                 log.warn(

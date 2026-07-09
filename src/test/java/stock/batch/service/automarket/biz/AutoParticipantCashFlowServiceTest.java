@@ -214,7 +214,7 @@ class AutoParticipantCashFlowServiceTest {
     }
 
     @Test
-    void fundRecurringCashManually_depositsEvenWhenConfiguredIntervalHasNotElapsed() {
+    void fundRecurringCashManually_doesNotDepositWhenConfiguredIntervalHasNotElapsed() {
         insertAutoParticipant("stock-auto-manual", "PAYDAY_ACCUMULATOR", true, "50000.00", "2.0", "HOUR");
         insertActiveAccount("stock-auto-manual", "0.00");
         jdbcTemplate.update("""
@@ -226,14 +226,14 @@ class AutoParticipantCashFlowServiceTest {
 
         int funded = autoParticipantCashFlowService.fundRecurringCashManually();
 
-        assertThat(funded).isEqualTo(1);
+        assertThat(funded).isZero();
         assertThat(queryLong("""
                 select count(*)
                 from stock_account_cash_flow f
                 join stock_account a on a.id = f.account_id
                 where a.user_key = 'stock-auto-manual'
                   and f.reason = 'AUTO_PARTICIPANT_RECURRING_DEPOSIT'
-                """)).isEqualTo(2L);
+                """)).isEqualTo(1L);
         assertThat(queryLong("""
                 select count(*)
                 from stock_account_cash_flow f
@@ -241,13 +241,13 @@ class AutoParticipantCashFlowServiceTest {
                 where a.user_key = 'stock-auto-manual'
                   and f.reason = 'AUTO_PARTICIPANT_RECURRING_DEPOSIT'
                   and f.created_by = 'AUTO_MARKET_MANUAL'
-                """)).isEqualTo(1L);
+                """)).isZero();
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-manual'"))
-                .isEqualByComparingTo(new BigDecimal("50000.00"));
+                .isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
-    void fundRecurringCash_manualDepositDoesNotDelayNextAutomaticDeposit() {
+    void fundRecurringCash_manualDepositDelaysNextAutomaticDeposit() {
         insertAutoParticipant("stock-auto-manual-then-auto", "PAYDAY_ACCUMULATOR", true, "50000.00", "2.0", "HOUR");
         insertActiveAccount("stock-auto-manual-then-auto", "0.00");
 
@@ -255,7 +255,7 @@ class AutoParticipantCashFlowServiceTest {
         int automaticFunded = autoParticipantCashFlowService.fundRecurringCash();
 
         assertThat(manualFunded).isEqualTo(1);
-        assertThat(automaticFunded).isEqualTo(1);
+        assertThat(automaticFunded).isZero();
         assertThat(queryLong("""
                 select count(*)
                 from stock_account_cash_flow f
@@ -271,9 +271,9 @@ class AutoParticipantCashFlowServiceTest {
                 where a.user_key = 'stock-auto-manual-then-auto'
                   and f.reason = 'AUTO_PARTICIPANT_RECURRING_DEPOSIT'
                   and f.created_by = 'AUTO_MARKET'
-                """)).isEqualTo(1L);
+                """)).isZero();
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-manual-then-auto'"))
-                .isEqualByComparingTo(new BigDecimal("100000.00"));
+                .isEqualByComparingTo(new BigDecimal("50000.00"));
     }
 
     private void insertDisabledMarketConfigAndSymbolStrategy(String userKey) {

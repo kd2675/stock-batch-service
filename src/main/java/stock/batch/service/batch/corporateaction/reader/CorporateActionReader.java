@@ -32,7 +32,7 @@ public class CorporateActionReader {
     ) {
         return jdbcClient.sql(
                 """
-                select id, symbol, action_type, theoretical_ex_rights_price, dividend_amount
+                select id, symbol, action_type, ex_rights_date, theoretical_ex_rights_price, dividend_amount
                   from stock_corporate_action
                  where action_type in (:actionTypes)
                    and status = :announcedStatus
@@ -48,6 +48,7 @@ public class CorporateActionReader {
                         rs.getLong("id"),
                         rs.getString("symbol"),
                         rs.getString("action_type"),
+                        rs.getObject("ex_rights_date", LocalDate.class),
                         rs.getBigDecimal("theoretical_ex_rights_price"),
                         rs.getBigDecimal("dividend_amount")
                 ))
@@ -162,18 +163,20 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public Optional<Long> findLatestCompletedMarketCloseRunId(String symbol) {
+    public Optional<Long> findLatestCompletedMarketCloseRunIdBefore(String symbol, LocalDate actionDate) {
         return jdbcClient.sql(
                 """
                 select id
                   from stock_market_close_run
                  where status = 'COMPLETED'
+                   and business_date < :actionDate
                    and (symbol = :symbol or symbol is null)
-                 order by closed_at desc, id desc
+                 order by business_date desc, closed_at desc, id desc
                  limit 1
                 """
         )
                 .param("symbol", symbol)
+                .param("actionDate", actionDate)
                 .query(Long.class)
                 .optional();
     }

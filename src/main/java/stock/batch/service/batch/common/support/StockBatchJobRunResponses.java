@@ -11,6 +11,8 @@ public final class StockBatchJobRunResponses {
     static final String FAILED = "FAILED";
     static final String ALREADY_RUNNING_MESSAGE = "Job is already running";
     static final String SHUTTING_DOWN_MESSAGE = "Batch service is shutting down";
+    public static final String MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE =
+            "Manual recurring cash is allowed only when automatic cash flow is disabled";
     private static final String SCHEDULED_EXECUTION_MODE = "scheduled";
     private static final String SCHEDULED_DISABLED_MESSAGE = "Scheduled job is disabled";
 
@@ -31,6 +33,24 @@ public final class StockBatchJobRunResponses {
 
     public static boolean isFailed(StockBatchJobRunResponse response) {
         return response == null || FAILED.equals(response.status());
+    }
+
+    public static boolean isManualCashFlowAutoEnabledSkip(StockBatchJobRunResponse response) {
+        return response != null
+                && SKIPPED.equals(response.status())
+                && MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE.equals(response.message());
+    }
+
+    public static StockBatchJobRunResponse manualCashFlowAutoEnabled(LocalDateTime now) {
+        return response(
+                "auto-participant-cash-flow",
+                "manual-recurring-cash",
+                SKIPPED,
+                0,
+                MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE,
+                now,
+                now
+        );
     }
 
     static StockBatchJobRunResponse alreadyRunning(StockBatchJob job, LocalDateTime startedAt, LocalDateTime endedAt) {

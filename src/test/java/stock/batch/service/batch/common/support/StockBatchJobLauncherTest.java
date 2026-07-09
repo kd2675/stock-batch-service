@@ -2,6 +2,7 @@ package stock.batch.service.batch.common.support;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
 import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
 import stock.batch.service.automarket.biz.AutoMarketService;
@@ -66,9 +67,12 @@ class StockBatchJobLauncherTest {
     private final HoldingCleanupService holdingCleanupService = mock(HoldingCleanupService.class);
     private final StockBatchJobExecutionRecord executionRecord = mock(StockBatchJobExecutionRecord.class);
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder = mock(StockBatchJobRepositoryRecorder.class);
+    private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
+            mock(AutoParticipantCashFlowRuntimeControl.class);
 
     private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
             new StockBatchJobRunner(createBatchJobLockRegistry("launcher-default"), stockBatchJobRepositoryRecorder),
+            autoParticipantCashFlowRuntimeControl,
             new MarketDataRefreshJob(marketDataRefreshService),
             new VirtualPriceExecutionJob(orderExecutionService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
@@ -86,6 +90,7 @@ class StockBatchJobLauncherTest {
 
     StockBatchJobLauncherTest() {
         when(stockBatchJobRepositoryRecorder.start(any(), any())).thenReturn(executionRecord);
+        when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(true);
     }
 
     @Test
@@ -227,7 +232,7 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
-    void fundAutoParticipantsManually_manualRun_ignoresRecurringIntervalGuard() {
+    void fundAutoParticipantsManually_manualRun_invokesManualCashFlow() {
         when(autoParticipantCashFlowService.fundRecurringCashManually()).thenReturn(6);
 
         var response = stockBatchJobLauncher.fundAutoParticipantsManually();
@@ -239,6 +244,19 @@ class StockBatchJobLauncherTest {
         verify(autoParticipantCashFlowService, never()).fundRecurringCash();
         verify(autoMarketService, never()).runAutoMarketStep();
         verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
+    }
+
+    @Test
+    void fundAutoParticipantsManually_automaticCashFlowEnabled_skipsManualRun() {
+        when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(false);
+
+        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
+
+        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
+        assertThat(response.executionMode()).isEqualTo("manual-recurring-cash");
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.message()).isEqualTo(StockBatchJobRunResponses.MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE);
+        verify(autoParticipantCashFlowService, never()).fundRecurringCashManually();
     }
 
     @Test
@@ -372,6 +390,7 @@ class StockBatchJobLauncherTest {
     private StockBatchJobLauncher createLauncher(BatchJobLockRegistry batchJobLockRegistry) {
         return new StockBatchJobLauncher(
                 new StockBatchJobRunner(batchJobLockRegistry, stockBatchJobRepositoryRecorder),
+                autoParticipantCashFlowRuntimeControl,
                 new MarketDataRefreshJob(marketDataRefreshService),
                 new VirtualPriceExecutionJob(orderExecutionService),
                 new OrderBookExecutionJob(internalOrderBookExecutionService),

@@ -7,6 +7,7 @@ import java.util.function.IntSupplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
@@ -27,6 +28,7 @@ import stock.batch.service.common.vo.StockBatchJobRunResponse;
 public class StockBatchJobLauncher {
 
     private final StockBatchJobRunner stockBatchJobRunner;
+    private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl;
     private final MarketDataRefreshJob marketDataRefreshJob;
     private final VirtualPriceExecutionJob virtualPriceExecutionJob;
     private final OrderBookExecutionJob orderBookExecutionJob;
@@ -58,6 +60,9 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse fundAutoParticipantsManually() {
+        if (!autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()) {
+            return StockBatchJobRunResponses.manualCashFlowAutoEnabled(LocalDateTime.now());
+        }
         return runDelegatingJob(
                 AutoParticipantCashFlowJob.JOB_NAME,
                 "manual-recurring-cash",

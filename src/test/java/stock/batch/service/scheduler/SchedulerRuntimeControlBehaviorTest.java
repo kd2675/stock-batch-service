@@ -233,13 +233,25 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void corporateActionScheduler_beforeClose_skipsBeforeRuntimeControl() {
+    void corporateActionScheduler_regularSession_skipsBeforeRuntimeControl() {
         CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
-        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
 
         scheduler.applyCorporateActions();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
+    void corporateActionScheduler_preOpen_checksRuntimeControlBeforeLaunching() {
+        CorporateActionScheduler scheduler = new CorporateActionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
+
+        assertSimpleSchedulerGate(
+                CorporateActionJob.JOB_NAME,
+                scheduler::applyCorporateActions,
+                () -> verify(stockBatchJobLauncher).applyCorporateActions()
+        );
     }
 
     @Test

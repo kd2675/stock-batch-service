@@ -1,6 +1,7 @@
 package stock.batch.service.batch.common.support;
 
 import org.junit.jupiter.api.Test;
+import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
 import stock.batch.service.automarket.biz.AutoMarketOrderExpiryJobService;
 import stock.batch.service.automarket.biz.AutoMarketService;
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
@@ -42,6 +43,8 @@ import static org.mockito.Mockito.when;
 class StockBatchJobLauncherRoutingTest {
 
     private final StockBatchJobRunner stockBatchJobRunner = mock(StockBatchJobRunner.class);
+    private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
+            mock(AutoParticipantCashFlowRuntimeControl.class);
     private final MarketDataRefreshService marketDataRefreshService = mock(MarketDataRefreshService.class);
     private final OrderExecutionService orderExecutionService = mock(OrderExecutionService.class);
     private final InternalOrderBookExecutionService internalOrderBookExecutionService =
@@ -82,6 +85,7 @@ class StockBatchJobLauncherRoutingTest {
 
     private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
             stockBatchJobRunner,
+            autoParticipantCashFlowRuntimeControl,
             marketDataRefreshJob,
             virtualPriceExecutionJob,
             orderBookExecutionJob,
@@ -96,6 +100,10 @@ class StockBatchJobLauncherRoutingTest {
             corporateActionJob,
             holdingCleanupJob
     );
+
+    StockBatchJobLauncherRoutingTest() {
+        when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(true);
+    }
 
     @Test
     void launcherMethods_routeEveryJobThroughRunner() {

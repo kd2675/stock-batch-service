@@ -52,15 +52,22 @@ class AutoParticipantCashFlowReaderTest {
                 "OTHER",
                 createdAt
         );
+        jdbcTemplate.update(
+                "insert into stock_account_cash_flow(account_id, reason, created_by, created_at) values (?, ?, ?, ?)",
+                20L,
+                "AUTO_PARTICIPANT_RECURRING_DEPOSIT",
+                "AUTO_MARKET_MANUAL",
+                createdAt
+        );
 
         List<AutoParticipantRecentCashFlow> cashFlows = reader.findRecentCashFlows(
                 List.of(10L, 20L),
                 Set.of("AUTO_PROFILE_RECURRING_DEPOSIT", "AUTO_PARTICIPANT_RECURRING_DEPOSIT"),
-                "AUTO_MARKET",
+                Set.of("AUTO_MARKET", "AUTO_MARKET_MANUAL"),
                 since
         );
 
-        assertThat(cashFlows).hasSize(1);
+        assertThat(cashFlows).hasSize(2);
         AutoParticipantRecentCashFlow cashFlow = cashFlows.getFirst();
         assertThat(cashFlow.accountId()).isEqualTo(10L);
         assertThat(cashFlow.reason()).isEqualTo("AUTO_PROFILE_RECURRING_DEPOSIT");

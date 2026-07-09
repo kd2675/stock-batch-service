@@ -1,6 +1,7 @@
 package stock.batch.service.batch.signal.biz;
 
 import org.junit.jupiter.api.Test;
+import stock.batch.service.batch.common.support.StockBatchJobRunResponses;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.signal.model.BatchJobSignal;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
@@ -117,6 +118,29 @@ class BatchJobSignalProcessorTest {
         assertThat(processedCount).isZero();
         verify(signalWriter).defer(10L, response);
         verify(signalWriter, never()).complete(10L, response);
+    }
+
+    @Test
+    void processPendingSignals_manualCashFlowSkippedBecauseAutoEnabled_completesSignal() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 11, 0);
+        BatchJobSignal signal = new BatchJobSignal(
+                10L,
+                "AUTO_PARTICIPANT_CASH_FLOW_RUN",
+                "auto-participant-cash-flow",
+                "manual-recurring-cash",
+                null,
+                "admin",
+                now
+        );
+        StockBatchJobRunResponse response = StockBatchJobRunResponses.manualCashFlowAutoEnabled(now);
+        when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
+        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
+
+        int processedCount = processor.processPendingSignals(20);
+
+        assertThat(processedCount).isEqualTo(1);
+        verify(signalWriter).complete(10L, response);
+        verify(signalWriter, never()).defer(10L, response);
     }
 
     @Test
