@@ -16,7 +16,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJ
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
@@ -24,7 +23,6 @@ import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
 import stock.batch.service.corporateaction.biz.CorporateActionService;
 import stock.batch.service.execution.biz.InternalOrderBookExecutionService;
-import stock.batch.service.execution.biz.OrderExecutionService;
 import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
@@ -46,7 +44,6 @@ class StockBatchJobLauncherRoutingTest {
     private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
             mock(AutoParticipantCashFlowRuntimeControl.class);
     private final MarketDataRefreshService marketDataRefreshService = mock(MarketDataRefreshService.class);
-    private final OrderExecutionService orderExecutionService = mock(OrderExecutionService.class);
     private final InternalOrderBookExecutionService internalOrderBookExecutionService =
             mock(InternalOrderBookExecutionService.class);
     private final AutoParticipantCashFlowService autoParticipantCashFlowService =
@@ -66,7 +63,6 @@ class StockBatchJobLauncherRoutingTest {
     private final HoldingCleanupService holdingCleanupService = mock(HoldingCleanupService.class);
 
     private final MarketDataRefreshJob marketDataRefreshJob = new MarketDataRefreshJob(marketDataRefreshService);
-    private final VirtualPriceExecutionJob virtualPriceExecutionJob = new VirtualPriceExecutionJob(orderExecutionService);
     private final OrderBookExecutionJob orderBookExecutionJob = new OrderBookExecutionJob(internalOrderBookExecutionService);
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob =
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService);
@@ -87,7 +83,6 @@ class StockBatchJobLauncherRoutingTest {
             stockBatchJobRunner,
             autoParticipantCashFlowRuntimeControl,
             marketDataRefreshJob,
-            virtualPriceExecutionJob,
             orderBookExecutionJob,
             autoParticipantCashFlowJob,
             autoMarketDailyRegimePreCreateJob,
@@ -108,7 +103,6 @@ class StockBatchJobLauncherRoutingTest {
     @Test
     void launcherMethods_routeEveryJobThroughRunner() {
         assertRoutesThroughRunner(marketDataRefreshJob, stockBatchJobLauncher::refreshMarketData);
-        assertRoutesThroughRunner(virtualPriceExecutionJob, stockBatchJobLauncher::executeVirtualPriceOrders);
         assertRoutesThroughRunner(orderBookExecutionJob, stockBatchJobLauncher::executeOrderBookOrders);
         assertRoutesThroughRunner(autoParticipantCashFlowJob, stockBatchJobLauncher::fundAutoParticipants);
         assertRoutesThroughRunner(autoMarketDailyRegimePreCreateJob, stockBatchJobLauncher::preCreateAutoMarketDailyRegimes);
@@ -124,7 +118,6 @@ class StockBatchJobLauncherRoutingTest {
         verifyNoMoreInteractions(stockBatchJobRunner);
         verifyNoInteractions(
                 marketDataRefreshService,
-                orderExecutionService,
                 internalOrderBookExecutionService,
                 autoParticipantCashFlowService,
                 autoMarketDailyRegimePreCreateService,

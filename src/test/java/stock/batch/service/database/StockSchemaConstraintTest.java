@@ -128,7 +128,7 @@ class StockSchemaConstraintTest {
                 "HOLD",
                 1L,
                 new BigDecimal("70000.00"),
-                "VIRTUAL_MARKET_PRICE",
+                "INTERNAL_ORDER_BOOK",
                 LocalDateTime.now()
         )).isInstanceOf(DataIntegrityViolationException.class);
     }

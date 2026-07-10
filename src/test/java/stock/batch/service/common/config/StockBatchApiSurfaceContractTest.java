@@ -21,7 +21,6 @@ class StockBatchApiSurfaceContractTest {
     private static final Set<String> EXPECTED_INTERNAL_API_SURFACE = Set.of(
             "GET /internal/stock-batch/v1/system/status",
             "POST /internal/stock-batch/v1/jobs/market-data/refresh",
-            "POST /internal/stock-batch/v1/jobs/virtual-price-execution/run",
             "POST /internal/stock-batch/v1/jobs/order-book-execution/run",
             "POST /internal/stock-batch/v1/jobs/auto-participant-cash-flow/run",
             "GET /internal/stock-batch/v1/jobs/auto-participant-cash-flow/status",

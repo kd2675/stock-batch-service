@@ -2,11 +2,11 @@ package stock.batch.service.batch.corporateaction.model;
 
 import java.math.BigDecimal;
 
-public record ShareEntitlementRow(
+public record CapitalIncreaseSubscriptionActionRow(
         long id,
-        long accountId,
         String symbol,
+        String offeringType,
         long shareQuantity,
-        BigDecimal cashAmount
+        BigDecimal issuePrice
 ) {
 }

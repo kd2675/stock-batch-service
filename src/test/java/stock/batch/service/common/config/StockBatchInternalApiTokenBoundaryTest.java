@@ -36,7 +36,6 @@ class StockBatchInternalApiTokenBoundaryTest {
 
     private static final List<Endpoint> PROTECTED_JOB_ENDPOINTS = List.of(
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/market-data/refresh", null),
-            new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/virtual-price-execution/run", null),
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/order-book-execution/run", null),
             new Endpoint(HttpMethod.POST, "/internal/stock-batch/v1/jobs/auto-participant-cash-flow/run", null),
             new Endpoint(HttpMethod.GET, "/internal/stock-batch/v1/jobs/auto-participant-cash-flow/status", null),

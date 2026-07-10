@@ -35,10 +35,13 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_holding where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_holding_snapshot where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_market_close_run");
-        jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%')");
+        jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%' or user_key like 'rights-%' or user_key like 'capital-%')");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key like 'capital-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'bonus-%'");
+        jdbcTemplate.update("delete from stock_account where user_key like 'rights-%'");
+        jdbcTemplate.update("delete from stock_account where user_key like 'capital-%'");
         jdbcTemplate.update("delete from stock_corporate_action_entitlement where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_corporate_action where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_price_tick where symbol like 'ZQ%'");
@@ -374,8 +377,9 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void applyDueCorporateActions_exRightsPaymentAndListing_updatesPriceThenShares() {
+    void applyDueCorporateActions_exRightsPaymentAndListing_withoutSubscriptionDoesNotIssueShares() {
         insertCompletedMarketCloseForToday();
+        insertCompletedMarketCloseForDate(LocalDate.now().minusDays(4));
         insertOrderBookInstrument("ZQ001", 100000L, 100000L);
         insertPrice("ZQ001", "70000.00");
         insertPaidInCapitalIncrease(
@@ -399,16 +403,195 @@ class CorporateActionServiceTest {
         assertThat(queryString("select provider from stock_price where symbol = 'ZQ001'"))
                 .isEqualTo("corporate-action-rights");
         assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ001'"))
-                .isEqualTo(150000L);
+                .isEqualTo(100000L);
         assertThat(queryLong("select tradable_shares from stock_order_book_instrument where symbol = 'ZQ001'"))
-                .isEqualTo(150000L);
+                .isEqualTo(100000L);
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = 'ZQ001' and provider = 'corporate-action-rights'"))
                 .isEqualTo(1L);
     }
 
     @Test
+    void applyDueCorporateActions_shareholderAllocationExRights_createsRightsEntitlement() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ025", 100000L, 100000L);
+        insertPrice("ZQ025", "70000.00");
+        insertAccount("rights-holder");
+        insertHolding("rights-holder", "ZQ025", 100L, 0L, "70000.00");
+        long closeRunId = insertHoldingSnapshot(
+                "ZQ025",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().minusDays(1).atTime(18, 0)
+        );
+        insertPaidInCapitalIncrease(
+                "ZQ025",
+                50000L,
+                "50000.00",
+                "70000.00",
+                "63333.33",
+                LocalDate.now(),
+                LocalDate.now().plusDays(2),
+                LocalDate.now().plusDays(5)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ025'"))
+                .isEqualTo("EX_RIGHTS_APPLIED");
+        assertThat(queryLong("select quantity from stock_corporate_action_entitlement where symbol = 'ZQ025'"))
+                .isEqualTo(100L);
+        assertThat(queryLong("select share_quantity from stock_corporate_action_entitlement where symbol = 'ZQ025'"))
+                .isEqualTo(50L);
+        assertThat(queryDecimal("select cash_amount from stock_corporate_action_entitlement where symbol = 'ZQ025'"))
+                .isEqualByComparingTo(new BigDecimal("2500000.00"));
+        assertThat(queryLong("select holding_snapshot_run_id from stock_corporate_action_entitlement where symbol = 'ZQ025'"))
+                .isEqualTo(closeRunId);
+    }
+
+    @Test
+    void applyDueCorporateActions_subscribedRightsListing_issuesSubscribedSharesAndCreditsHolding() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ026", 100000L, 100000L);
+        insertPrice("ZQ026", "70000.00");
+        insertAccount("capital-subscriber");
+        insertHolding("capital-subscriber", "ZQ026", 100L, 0L, "70000.00");
+        insertHoldingSnapshot(
+                "ZQ026",
+                LocalDate.now().minusDays(4),
+                LocalDate.now().minusDays(4).atTime(18, 0)
+        );
+        insertPaidInCapitalIncrease(
+                "ZQ026",
+                50000L,
+                "50000.00",
+                "70000.00",
+                "63333.33",
+                LocalDate.now().minusDays(3),
+                LocalDate.now().plusDays(1),
+                LocalDate.now().plusDays(1)
+        );
+
+        assertThat(corporateActionService.applyDueCorporateActions()).isEqualTo(1);
+        jdbcTemplate.update(
+                """
+                update stock_corporate_action_entitlement
+                   set status = 'SUBSCRIBED',
+                       subscribed_share_quantity = 40,
+                       subscribed_cash_amount = 2000000.00,
+                       subscribed_at = ?
+                 where symbol = 'ZQ026'
+                """,
+                LocalDateTime.now()
+        );
+        jdbcTemplate.update(
+                """
+                update stock_corporate_action
+                   set payment_date = ?,
+                       listing_date = ?
+                 where symbol = 'ZQ026'
+                """,
+                LocalDate.now(),
+                LocalDate.now()
+        );
+
+        assertThat(corporateActionService.applyDueCorporateActions()).isEqualTo(2);
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ026'"))
+                .isEqualTo("LISTED");
+        assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ026'"))
+                .isEqualTo(100040L);
+        assertThat(queryLong("select tradable_shares from stock_order_book_instrument where symbol = 'ZQ026'"))
+                .isEqualTo(100040L);
+        assertThat(queryLong("select quantity from stock_holding where symbol = 'ZQ026'"))
+                .isEqualTo(140L);
+        assertThat(queryDecimal("select average_price from stock_holding where symbol = 'ZQ026'"))
+                .isEqualByComparingTo(new BigDecimal("64285.71"));
+        assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ026'"))
+                .isEqualTo("PAID");
+    }
+
+    @Test
+    void applyDueCorporateActions_afterCloseAutoParticipantSubscribesAllocatedRights() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ027", 100000L, 100000L);
+        insertPrice("ZQ027", "70000.00");
+        insertAccount("capital-auto-holder");
+        insertAutoParticipant("capital-auto-holder", "LONG_TERM_HOLDER");
+        long accountId = accountIdFor("capital-auto-holder");
+        long actionId = insertAppliedPaidInCapitalIncrease(
+                "ZQ027",
+                50000L,
+                "50000.00",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().plusDays(1),
+                LocalDate.now().plusDays(2),
+                LocalDate.now().plusDays(3)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount, status,
+                  holding_snapshot_run_id, created_at, paid_at
+                ) values (?, ?, 'ZQ027', 100, 50, 2500000.00, 'ANNOUNCED', null, ?, null)
+                """,
+                actionId,
+                accountId,
+                LocalDateTime.now()
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ027'"))
+                .isEqualTo("SUBSCRIBED");
+        assertThat(queryLong("select subscribed_share_quantity from stock_corporate_action_entitlement where symbol = 'ZQ027'"))
+                .isEqualTo(47L);
+        assertThat(queryDecimal("select subscribed_cash_amount from stock_corporate_action_entitlement where symbol = 'ZQ027'"))
+                .isEqualByComparingTo(new BigDecimal("2350000.00"));
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'capital-auto-holder'"))
+                .isEqualByComparingTo(new BigDecimal("7650000.00"));
+        assertThat(queryDecimal("""
+                select amount
+                  from stock_account_cash_flow f
+                  join stock_account a on a.id = f.account_id
+                 where a.user_key = 'capital-auto-holder'
+                   and f.reason = 'CAPITAL_INCREASE_SUBSCRIPTION'
+                """)).isEqualByComparingTo(new BigDecimal("2350000.00"));
+    }
+
+    @Test
+    void applyDueCorporateActions_afterCloseAutoParticipantSubscribesPublicOffering() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ028", 100000L, 100000L);
+        insertPrice("ZQ028", "70000.00");
+        insertAccount("capital-public-auto");
+        insertAutoParticipant("capital-public-auto", "LONG_TERM_HOLDER");
+        insertPublicOfferingCapitalIncrease(
+                "ZQ028",
+                100L,
+                "50000.00",
+                LocalDate.now().minusDays(1),
+                LocalDate.now().plusDays(1),
+                LocalDate.now().plusDays(2),
+                LocalDate.now().plusDays(3)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ028'"))
+                .isEqualTo("SUBSCRIBED");
+        assertThat(queryLong("select subscribed_share_quantity from stock_corporate_action_entitlement where symbol = 'ZQ028'"))
+                .isEqualTo(35L);
+        assertThat(queryDecimal("select subscribed_cash_amount from stock_corporate_action_entitlement where symbol = 'ZQ028'"))
+                .isEqualByComparingTo(new BigDecimal("1750000.00"));
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'capital-public-auto'"))
+                .isEqualByComparingTo(new BigDecimal("8250000.00"));
+    }
+
+    @Test
     void applyDueCorporateActions_beforeListingDate_keepsShareCountsPending() {
         insertCompletedMarketCloseForToday();
+        insertCompletedMarketCloseForDate(LocalDate.now().minusDays(2));
         insertOrderBookInstrument("ZQ002", 100000L, 100000L);
         insertPrice("ZQ002", "70000.00");
         insertPaidInCapitalIncrease(
@@ -458,6 +641,35 @@ class CorporateActionServiceTest {
                 .isEqualTo("ANNOUNCED");
         assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ011'"))
                 .isEqualByComparingTo(new BigDecimal("70000.00"));
+    }
+
+    @Test
+    void applyDueCorporateActions_shareholderAllocationWithoutHoldingSnapshot_waitsWithoutCreatingRights() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ030", 100000L, 100000L);
+        insertPrice("ZQ030", "70000.00");
+        insertAccount("rights-no-snapshot-holder");
+        insertHolding("rights-no-snapshot-holder", "ZQ030", 10L, 0L, "70000.00");
+        insertPaidInCapitalIncrease(
+                "ZQ030",
+                50000L,
+                "50000.00",
+                "70000.00",
+                "63333.33",
+                LocalDate.now().minusDays(1),
+                LocalDate.now(),
+                LocalDate.now().plusDays(3)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isZero();
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ030'"))
+                .isEqualTo("ANNOUNCED");
+        assertThat(queryDecimal("select current_price from stock_price where symbol = 'ZQ030'"))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+        assertThat(queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ030'"))
+                .isZero();
     }
 
     @Test
@@ -772,6 +984,20 @@ class CorporateActionServiceTest {
         );
     }
 
+    private void insertAutoParticipant(String userKey, String profileType) {
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant(user_key, display_name, enabled, profile_type, created_at, updated_at, withdrawn_at)
+                values (?, ?, true, ?, ?, ?, null)
+                """,
+                userKey,
+                userKey,
+                profileType,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
     private void insertHolding(String userKey, String symbol, long quantity, long reservedQuantity, String averagePrice) {
         Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
@@ -986,17 +1212,79 @@ class CorporateActionServiceTest {
     ) {
         jdbcTemplate.update(
                 """
-                insert into stock_corporate_action(
-                  symbol, action_type, share_quantity, issue_price, status, base_price,
-                  theoretical_ex_rights_price, ex_rights_date, payment_date, listing_date, description, created_at
-                ) values (?, 'PAID_IN_CAPITAL_INCREASE', ?, ?, 'ANNOUNCED', ?, ?, ?, ?, ?, 'test', ?)
-                """,
+	                insert into stock_corporate_action(
+	                  symbol, action_type, share_quantity, issue_price, status, base_price,
+	                  theoretical_ex_rights_price, ex_rights_date, subscription_start_date, subscription_end_date,
+	                  payment_date, listing_date, offering_type, description, created_at
+	                ) values (?, 'PAID_IN_CAPITAL_INCREASE', ?, ?, 'ANNOUNCED', ?, ?, ?, ?, ?, ?, ?, 'SHAREHOLDER_ALLOCATION', 'test', ?)
+	                """,
                 symbol,
                 shareQuantity,
                 new BigDecimal(issuePrice),
                 new BigDecimal(basePrice),
                 new BigDecimal(theoreticalExRightsPrice),
                 exRightsDate,
+                exRightsDate.plusDays(1),
+                paymentDate,
+                paymentDate,
+                listingDate,
+                LocalDateTime.now()
+        );
+    }
+
+    private long insertAppliedPaidInCapitalIncrease(
+            String symbol,
+            long shareQuantity,
+            String issuePrice,
+            LocalDate subscriptionStartDate,
+            LocalDate subscriptionEndDate,
+            LocalDate paymentDate,
+            LocalDate listingDate
+    ) {
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action(
+                  symbol, action_type, share_quantity, issue_price, status, base_price,
+                  theoretical_ex_rights_price, ex_rights_date, subscription_start_date, subscription_end_date,
+                  payment_date, listing_date, offering_type, applied_at, description, created_at
+                ) values (?, 'PAID_IN_CAPITAL_INCREASE', ?, ?, 'EX_RIGHTS_APPLIED', 70000.00, 63333.33, ?, ?, ?, ?, ?, 'SHAREHOLDER_ALLOCATION', ?, 'test', ?)
+                """,
+                symbol,
+                shareQuantity,
+                new BigDecimal(issuePrice),
+                subscriptionStartDate.minusDays(1),
+                subscriptionStartDate,
+                subscriptionEndDate,
+                paymentDate,
+                listingDate,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+        return queryLong("select max(id) from stock_corporate_action where symbol = '" + symbol + "'");
+    }
+
+    private void insertPublicOfferingCapitalIncrease(
+            String symbol,
+            long shareQuantity,
+            String issuePrice,
+            LocalDate subscriptionStartDate,
+            LocalDate subscriptionEndDate,
+            LocalDate paymentDate,
+            LocalDate listingDate
+    ) {
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action(
+                  symbol, action_type, share_quantity, issue_price, status,
+                  subscription_start_date, subscription_end_date, payment_date, listing_date,
+                  offering_type, description, created_at
+                ) values (?, 'PAID_IN_CAPITAL_INCREASE', ?, ?, 'ANNOUNCED', ?, ?, ?, ?, 'PUBLIC_OFFERING', 'test', ?)
+                """,
+                symbol,
+                shareQuantity,
+                new BigDecimal(issuePrice),
+                subscriptionStartDate,
+                subscriptionEndDate,
                 paymentDate,
                 listingDate,
                 LocalDateTime.now()

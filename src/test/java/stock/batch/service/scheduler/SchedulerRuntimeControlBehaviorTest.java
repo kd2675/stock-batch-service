@@ -20,7 +20,6 @@ import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
@@ -304,35 +303,6 @@ class SchedulerRuntimeControlBehaviorTest {
 
         verify(batchJobRuntimeControl, times(3)).shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true);
         verify(stockBatchJobLauncher, times(3)).executeOrderBookOrders();
-    }
-
-    @Test
-    void virtualPriceExecutionScheduler_checksRuntimeControlBeforeLaunching() {
-        VirtualPriceExecutionScheduler scheduler = new VirtualPriceExecutionScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService
-        );
-
-        assertSimpleSchedulerGate(
-                VirtualPriceExecutionJob.JOB_NAME,
-                scheduler::executeVirtualPriceOrders,
-                () -> verify(stockBatchJobLauncher).executeVirtualPriceOrders()
-        );
-    }
-
-    @Test
-    void virtualPriceExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
-        VirtualPriceExecutionScheduler scheduler = new VirtualPriceExecutionScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService
-        );
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
-
-        scheduler.executeVirtualPriceOrders();
-
-        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test

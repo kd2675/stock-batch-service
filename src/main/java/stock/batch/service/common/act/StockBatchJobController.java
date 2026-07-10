@@ -39,11 +39,6 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.refreshMarketData());
     }
 
-    @PostMapping("/virtual-price-execution/run")
-    public ResponseDataDTO<StockBatchJobRunResponse> executeVirtualPriceOrders() {
-        return ResponseDataDTO.of(stockBatchJobLauncher.executeVirtualPriceOrders());
-    }
-
     @PostMapping("/order-book-execution/run")
     public ResponseDataDTO<StockBatchJobRunResponse> executeOrderBookOrders() {
         return ResponseDataDTO.of(stockBatchJobLauncher.executeOrderBookOrders());

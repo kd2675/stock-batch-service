@@ -10,7 +10,6 @@ import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
@@ -115,28 +114,6 @@ class AutoParticipantCashFlowSchedulerTest {
         marketDataRefreshScheduler.refreshMarketData();
 
         verify(stockBatchJobLauncher, never()).refreshMarketData();
-    }
-
-    @Test
-    void virtualPriceExecutionScheduler_runtimeDisabled_skipsJobThroughSharedControlTable() {
-        VirtualPriceExecutionScheduler virtualPriceExecutionScheduler =
-                new VirtualPriceExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
-        batchJobRuntimeControl.update(VirtualPriceExecutionJob.JOB_NAME, true, false, "stock-admin");
-
-        virtualPriceExecutionScheduler.executeVirtualPriceOrders();
-
-        verify(stockBatchJobLauncher, never()).executeVirtualPriceOrders();
-    }
-
-    @Test
-    void virtualPriceExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
-        VirtualPriceExecutionScheduler virtualPriceExecutionScheduler =
-                new VirtualPriceExecutionScheduler(stockBatchJobLauncher, scheduledJobGuard, simulationMarketSessionService);
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
-
-        virtualPriceExecutionScheduler.executeVirtualPriceOrders();
-
-        verify(stockBatchJobLauncher, never()).executeVirtualPriceOrders();
     }
 
     @Test

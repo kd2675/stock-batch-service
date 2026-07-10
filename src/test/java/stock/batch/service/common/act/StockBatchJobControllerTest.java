@@ -52,17 +52,6 @@ class StockBatchJobControllerTest {
     }
 
     @Test
-    void executeVirtualPriceOrders_postRequest_returnsExecutionMode() throws Exception {
-        when(stockBatchJobLauncher.executeVirtualPriceOrders()).thenReturn(response("virtual-price-execution", "virtual-price"));
-
-        mockMvc.perform(post("/internal/stock-batch/v1/jobs/virtual-price-execution/run"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.job").value("virtual-price-execution"))
-                .andExpect(jsonPath("$.data.executionMode").value("virtual-price"))
-                .andExpect(jsonPath("$.data.processedCount").value(7));
-    }
-
-    @Test
     void executeOrderBookOrders_postRequest_returnsExecutionMode() throws Exception {
         when(stockBatchJobLauncher.executeOrderBookOrders()).thenReturn(response("order-book-execution", "order-book"));
 
@@ -138,14 +127,14 @@ class StockBatchJobControllerTest {
     void getRuntimeControls_getRequest_returnsAllBatchJobRuntimeStatuses() throws Exception {
         mockMvc.perform(get("/internal/stock-batch/v1/jobs/runtime-controls"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(13))
+                .andExpect(jsonPath("$.data.length()").value(12))
                 .andExpect(jsonPath("$.data[0].jobName").value("market-data-refresh"))
-                .andExpect(jsonPath("$.data[5].jobName").value("auto-market-daily-regime-pre-create"))
-                .andExpect(jsonPath("$.data[6].jobName").value("auto-market-profile-queue-reconcile"))
-                .andExpect(jsonPath("$.data[7].jobName").value("auto-market-order-expiry"))
-                .andExpect(jsonPath("$.data[8].jobName").value("listing-auto-market"))
-                .andExpect(jsonPath("$.data[11].jobName").value("portfolio-settlement"))
-                .andExpect(jsonPath("$.data[12].jobName").value("holding-cleanup"));
+                .andExpect(jsonPath("$.data[4].jobName").value("auto-market-daily-regime-pre-create"))
+                .andExpect(jsonPath("$.data[5].jobName").value("auto-market-profile-queue-reconcile"))
+                .andExpect(jsonPath("$.data[6].jobName").value("auto-market-order-expiry"))
+                .andExpect(jsonPath("$.data[7].jobName").value("listing-auto-market"))
+                .andExpect(jsonPath("$.data[10].jobName").value("portfolio-settlement"))
+                .andExpect(jsonPath("$.data[11].jobName").value("holding-cleanup"));
     }
 
     @Test
@@ -340,7 +329,6 @@ class StockBatchJobControllerTest {
     private BatchJobRuntimeCatalog createRuntimeCatalog() {
         return new BatchJobRuntimeCatalog(
                 batchJobRuntimeControl,
-                true,
                 true,
                 true,
                 true,

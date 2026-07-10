@@ -18,14 +18,12 @@ import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.corporateaction.biz.CorporateActionService;
 import stock.batch.service.execution.biz.InternalOrderBookExecutionService;
-import stock.batch.service.execution.biz.OrderExecutionService;
 import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
@@ -34,24 +32,18 @@ import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class StockBatchJobLauncherTest {
 
     private final MarketDataRefreshService marketDataRefreshService = mock(MarketDataRefreshService.class);
-    private final OrderExecutionService orderExecutionService = mock(OrderExecutionService.class);
     private final InternalOrderBookExecutionService internalOrderBookExecutionService = mock(InternalOrderBookExecutionService.class);
     private final PortfolioSettlementService portfolioSettlementService = mock(PortfolioSettlementService.class);
     private final AutoParticipantCashFlowService autoParticipantCashFlowService = mock(AutoParticipantCashFlowService.class);
@@ -74,7 +66,6 @@ class StockBatchJobLauncherTest {
             new StockBatchJobRunner(createBatchJobLockRegistry("launcher-default"), stockBatchJobRepositoryRecorder),
             autoParticipantCashFlowRuntimeControl,
             new MarketDataRefreshJob(marketDataRefreshService),
-            new VirtualPriceExecutionJob(orderExecutionService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
             new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService),
@@ -94,21 +85,6 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
-    void executeVirtualPriceOrders_usesMarketPriceExecution() {
-        when(orderExecutionService.executeEligibleOrders()).thenReturn(3);
-
-        var response = stockBatchJobLauncher.executeVirtualPriceOrders();
-
-        assertThat(response.job()).isEqualTo("virtual-price-execution");
-        assertThat(response.executionMode()).isEqualTo("virtual-price");
-        assertThat(response.status()).isEqualTo("COMPLETED");
-        assertThat(response.processedCount()).isEqualTo(3);
-        assertThat(response.message()).isEqualTo("Job completed");
-        verify(orderExecutionService).executeEligibleOrders();
-        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
-    }
-
-    @Test
     void executeOrderBookOrders_usesOrderBookExecution() {
         when(internalOrderBookExecutionService.executeEligibleOrders()).thenReturn(2);
 
@@ -118,7 +94,6 @@ class StockBatchJobLauncherTest {
         assertThat(response.executionMode()).isEqualTo("order-book");
         assertThat(response.processedCount()).isEqualTo(2);
         verify(internalOrderBookExecutionService).executeEligibleOrders();
-        verify(orderExecutionService, never()).executeEligibleOrders();
     }
 
     @Test
@@ -314,66 +289,6 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
-    void executeVirtualPriceOrders_sameJobAlreadyRunning_skipsSecondRun() throws Exception {
-        CountDownLatch actionStarted = new CountDownLatch(1);
-        CountDownLatch releaseAction = new CountDownLatch(1);
-        doAnswer(invocation -> {
-            actionStarted.countDown();
-            assertThat(releaseAction.await(3, TimeUnit.SECONDS)).isTrue();
-            return 3;
-        }).when(orderExecutionService).executeEligibleOrders();
-
-        var executor = Executors.newSingleThreadExecutor();
-        try {
-            var firstRun = executor.submit(stockBatchJobLauncher::executeVirtualPriceOrders);
-            assertThat(actionStarted.await(3, TimeUnit.SECONDS)).isTrue();
-
-            var secondResponse = stockBatchJobLauncher.executeVirtualPriceOrders();
-
-            assertThat(secondResponse.status()).isEqualTo("SKIPPED");
-            assertThat(secondResponse.processedCount()).isZero();
-            assertThat(secondResponse.message()).isEqualTo("Job is already running");
-            releaseAction.countDown();
-            assertThat(firstRun.get(3, TimeUnit.SECONDS).status()).isEqualTo("COMPLETED");
-            verify(orderExecutionService, times(1)).executeEligibleOrders();
-        } finally {
-            releaseAction.countDown();
-            executor.shutdownNow();
-        }
-    }
-
-    @Test
-    void executeVirtualPriceOrders_separateRunnersShareDatabaseLock_skipsSecondRun() throws Exception {
-        JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        StockBatchJobLauncher firstLauncher = createLauncher(createBatchJobLockRegistry(jdbcTemplate, "launcher-1"));
-        StockBatchJobLauncher secondLauncher = createLauncher(createBatchJobLockRegistry(jdbcTemplate, "launcher-2"));
-        CountDownLatch actionStarted = new CountDownLatch(1);
-        CountDownLatch releaseAction = new CountDownLatch(1);
-        doAnswer(invocation -> {
-            actionStarted.countDown();
-            assertThat(releaseAction.await(3, TimeUnit.SECONDS)).isTrue();
-            return 3;
-        }).when(orderExecutionService).executeEligibleOrders();
-
-        var executor = Executors.newSingleThreadExecutor();
-        try {
-            var firstRun = executor.submit(firstLauncher::executeVirtualPriceOrders);
-            assertThat(actionStarted.await(3, TimeUnit.SECONDS)).isTrue();
-
-            var secondResponse = secondLauncher.executeVirtualPriceOrders();
-
-            assertThat(secondResponse.status()).isEqualTo("SKIPPED");
-            assertThat(secondResponse.message()).isEqualTo("Job is already running");
-            releaseAction.countDown();
-            assertThat(firstRun.get(3, TimeUnit.SECONDS).status()).isEqualTo("COMPLETED");
-            verify(orderExecutionService, times(1)).executeEligibleOrders();
-        } finally {
-            releaseAction.countDown();
-            executor.shutdownNow();
-        }
-    }
-
-    @Test
     void refreshMarketData_actionThrows_returnsFailedResponse() {
         doThrow(new IllegalStateException("provider unavailable"))
                 .when(marketDataRefreshService)
@@ -385,26 +300,6 @@ class StockBatchJobLauncherTest {
         assertThat(response.status()).isEqualTo("FAILED");
         assertThat(response.processedCount()).isZero();
         assertThat(response.message()).contains("provider unavailable");
-    }
-
-    private StockBatchJobLauncher createLauncher(BatchJobLockRegistry batchJobLockRegistry) {
-        return new StockBatchJobLauncher(
-                new StockBatchJobRunner(batchJobLockRegistry, stockBatchJobRepositoryRecorder),
-                autoParticipantCashFlowRuntimeControl,
-                new MarketDataRefreshJob(marketDataRefreshService),
-                new VirtualPriceExecutionJob(orderExecutionService),
-                new OrderBookExecutionJob(internalOrderBookExecutionService),
-                new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
-                new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService),
-                new AutoMarketProfileQueueReconcileJob(autoMarketProfileQueueReconcileService),
-                new AutoMarketJob(autoMarketService),
-                new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
-                new ListingAutoMarketJob(listingAutoMarketJobService),
-                new PortfolioSettlementJob(portfolioSettlementService),
-                new MarketCloseRolloverJob(marketCloseRolloverService),
-                new CorporateActionJob(corporateActionService),
-                new HoldingCleanupJob(holdingCleanupService)
-        );
     }
 
     private BatchJobLockRegistry createBatchJobLockRegistry(String lockOwner) {

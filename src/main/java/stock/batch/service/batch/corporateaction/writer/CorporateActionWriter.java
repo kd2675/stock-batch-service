@@ -26,6 +26,7 @@ public class CorporateActionWriter {
             String paidStatus,
             String actionType,
             String sourceStatus,
+            String offeringType,
             LocalDateTime paidAt
     ) {
         return jdbcTemplate.update(
@@ -33,14 +34,16 @@ public class CorporateActionWriter {
                 update stock_corporate_action
                    set status = ?,
                        paid_at = ?
-                 where action_type = ?
-                   and status = ?
-                   and payment_date <= ?
-                """,
+	                 where action_type = ?
+	                   and status = ?
+	                   and offering_type = ?
+	                   and payment_date <= ?
+	                """,
                 paidStatus,
                 paidAt,
                 actionType,
                 sourceStatus,
+                offeringType,
                 today
         );
     }

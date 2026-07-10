@@ -2373,6 +2373,23 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void runAutoMarketStep_noiseTraderWithoutCashOrHoldingCannotCreateOrder() {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
+        insertAutoAccount("stock-auto-001", "0.00");
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
+                .isZero();
+        assertThat(queryLong("select count(*) from stock_holding h join stock_account a on a.id = h.account_id where h.symbol = '005930' and a.user_key = 'stock-auto-001'"))
+                .isZero();
+    }
+
+    @Test
     void runAutoMarketStep_observerRespondsOnlyToStrongBuySignalWithSmallOrder() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-003'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-003'");

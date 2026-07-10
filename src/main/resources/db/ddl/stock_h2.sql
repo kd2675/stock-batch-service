@@ -155,6 +155,9 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   payment_date DATE,
   listing_date DATE,
   delisting_date DATE,
+  offering_type VARCHAR(40),
+  subscription_start_date DATE,
+  subscription_end_date DATE,
   delisting_treatment VARCHAR(30),
   applied_at TIMESTAMP,
   paid_at TIMESTAMP,
@@ -166,6 +169,7 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   CONSTRAINT chk_stock_corporate_action_type_valid CHECK (CASE `action_type` WHEN 'INITIAL_ISSUE' THEN 1 WHEN 'PAID_IN_CAPITAL_INCREASE' THEN 1 WHEN 'STOCK_SPLIT' THEN 1 WHEN 'CASH_DIVIDEND' THEN 1 WHEN 'BONUS_ISSUE' THEN 1 WHEN 'STOCK_DIVIDEND' THEN 1 WHEN 'DELISTING' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_status_valid CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'EX_RIGHTS_APPLIED' THEN 1 WHEN 'PAID' THEN 1 WHEN 'LISTED' THEN 1 WHEN 'DELISTED' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_delisting_treatment CHECK (delisting_treatment IS NULL OR delisting_treatment = 'ZERO_VALUE'),
+  CONSTRAINT chk_stock_corporate_action_offering_type CHECK (offering_type IS NULL OR CASE `offering_type` WHEN 'SHAREHOLDER_ALLOCATION' THEN 1 WHEN 'PUBLIC_OFFERING' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_corporate_action_share_quantity CHECK (share_quantity IS NULL OR share_quantity > 0),
   CONSTRAINT chk_stock_corporate_action_issue_price CHECK (issue_price IS NULL OR issue_price > 0),
   CONSTRAINT chk_stock_corporate_action_dividend_amount CHECK (dividend_amount IS NULL OR dividend_amount > 0),
@@ -173,6 +177,7 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   CONSTRAINT chk_stock_corporate_action_ex_rights_price CHECK (theoretical_ex_rights_price IS NULL OR theoretical_ex_rights_price > 0),
   CONSTRAINT chk_stock_corporate_action_paid_dates CHECK (ex_rights_date IS NULL OR payment_date IS NULL OR payment_date >= ex_rights_date),
   CONSTRAINT chk_stock_corporate_action_listing_dates CHECK (payment_date IS NULL OR listing_date IS NULL OR listing_date >= payment_date),
+  CONSTRAINT chk_stock_corporate_action_subscription_dates CHECK (subscription_start_date IS NULL OR subscription_end_date IS NULL OR subscription_end_date >= subscription_start_date),
   CONSTRAINT chk_stock_corporate_action_split_from CHECK (split_from IS NULL OR split_from > 0),
   CONSTRAINT chk_stock_corporate_action_split_to CHECK (split_to IS NULL OR split_to > 0),
   CONSTRAINT chk_stock_corporate_action_issue_required CHECK (
@@ -182,11 +187,24 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   CONSTRAINT chk_stock_corporate_action_paid_schedule_required CHECK (
     action_type <> 'PAID_IN_CAPITAL_INCREASE'
     OR (
-      base_price IS NOT NULL
-      AND theoretical_ex_rights_price IS NOT NULL
-      AND ex_rights_date IS NOT NULL
+      offering_type IS NOT NULL
+      AND subscription_start_date IS NOT NULL
+      AND subscription_end_date IS NOT NULL
       AND payment_date IS NOT NULL
       AND listing_date IS NOT NULL
+      AND (
+        (
+          offering_type = 'SHAREHOLDER_ALLOCATION'
+          AND base_price IS NOT NULL
+          AND theoretical_ex_rights_price IS NOT NULL
+          AND ex_rights_date IS NOT NULL
+        )
+        OR (
+          offering_type = 'PUBLIC_OFFERING'
+          AND ex_rights_date IS NULL
+          AND theoretical_ex_rights_price IS NULL
+        )
+      )
     )
   ),
   CONSTRAINT chk_stock_corporate_action_split_required CHECK (
@@ -228,6 +246,9 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action (
   CONSTRAINT chk_stock_corporate_action_field_scope CHECK (
     (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR share_quantity IS NULL)
     AND (action_type IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE') OR issue_price IS NULL)
+    AND (action_type = 'PAID_IN_CAPITAL_INCREASE' OR offering_type IS NULL)
+    AND (action_type = 'PAID_IN_CAPITAL_INCREASE' OR subscription_start_date IS NULL)
+    AND (action_type = 'PAID_IN_CAPITAL_INCREASE' OR subscription_end_date IS NULL)
     AND (action_type = 'CASH_DIVIDEND' OR dividend_amount IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR base_price IS NULL)
     AND (action_type IN ('PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND', 'BONUS_ISSUE', 'STOCK_DIVIDEND') OR theoretical_ex_rights_price IS NULL)
@@ -261,16 +282,25 @@ CREATE TABLE IF NOT EXISTS stock_corporate_action_entitlement (
   quantity BIGINT NOT NULL,
   share_quantity BIGINT,
   cash_amount DECIMAL(19,2),
+  subscribed_share_quantity BIGINT,
+  subscribed_cash_amount DECIMAL(19,2),
   status VARCHAR(20) NOT NULL DEFAULT 'ANNOUNCED',
   holding_snapshot_run_id BIGINT,
   created_at TIMESTAMP NOT NULL,
+  subscribed_at TIMESTAMP,
   paid_at TIMESTAMP,
   CONSTRAINT uk_stock_corporate_action_entitlement_action_account UNIQUE (action_id, account_id),
   CONSTRAINT chk_stock_corporate_action_entitlement_quantity CHECK (quantity > 0),
   CONSTRAINT chk_stock_corporate_action_entitlement_share CHECK (share_quantity IS NULL OR share_quantity > 0),
   CONSTRAINT chk_stock_corporate_action_entitlement_cash CHECK (cash_amount IS NULL OR cash_amount > 0),
+  CONSTRAINT chk_stock_corporate_action_entitlement_subscribed_share CHECK (subscribed_share_quantity IS NULL OR subscribed_share_quantity > 0),
+  CONSTRAINT chk_stock_corporate_action_entitlement_subscribed_cash CHECK (subscribed_cash_amount IS NULL OR subscribed_cash_amount > 0),
+  CONSTRAINT chk_stock_corporate_action_entitlement_subscription_complete CHECK (
+    status <> 'SUBSCRIBED'
+    OR (subscribed_share_quantity IS NOT NULL AND subscribed_cash_amount IS NOT NULL AND subscribed_at IS NOT NULL)
+  ),
   CONSTRAINT chk_stock_corporate_action_entitlement_value CHECK (cash_amount IS NOT NULL OR share_quantity IS NOT NULL),
-  CONSTRAINT chk_stock_corporate_action_entitlement_status CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'PAID' THEN 1 ELSE 0 END = 1)
+  CONSTRAINT chk_stock_corporate_action_entitlement_status CHECK (CASE `status` WHEN 'ANNOUNCED' THEN 1 WHEN 'SUBSCRIBED' THEN 1 WHEN 'EXPIRED' THEN 1 WHEN 'PAID' THEN 1 ELSE 0 END = 1)
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_corporate_action_entitlement_account_created ON stock_corporate_action_entitlement(account_id, created_at);
@@ -304,7 +334,7 @@ CREATE TABLE IF NOT EXISTS stock_order (
   client_order_id VARCHAR(64) NOT NULL UNIQUE,
   account_id BIGINT NOT NULL,
   symbol VARCHAR(20) NOT NULL,
-  market_type VARCHAR(30) NOT NULL DEFAULT 'VIRTUAL_PRICE',
+  market_type VARCHAR(30) NOT NULL DEFAULT 'ORDER_BOOK',
   side VARCHAR(10) NOT NULL,
   order_type VARCHAR(10) NOT NULL,
   status VARCHAR(20) NOT NULL,
@@ -315,7 +345,7 @@ CREATE TABLE IF NOT EXISTS stock_order (
   reserved_cash DECIMAL(19,2) NOT NULL,
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
-  CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_side_valid CHECK (CASE `side` WHEN 'BUY' THEN 1 WHEN 'SELL' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_type_valid CHECK (CASE `order_type` WHEN 'LIMIT' THEN 1 WHEN 'MARKET' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_status_valid CHECK (CASE `status` WHEN 'PENDING' THEN 1 WHEN 'PARTIALLY_FILLED' THEN 1 WHEN 'FILLED' THEN 1 WHEN 'CANCELLED' THEN 1 WHEN 'REJECTED' THEN 1 ELSE 0 END = 1),
@@ -357,7 +387,7 @@ CREATE TABLE IF NOT EXISTS stock_execution (
   source VARCHAR(30) NOT NULL,
   executed_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_execution_side_valid CHECK (CASE `side` WHEN 'BUY' THEN 1 WHEN 'SELL' THEN 1 ELSE 0 END = 1),
-  CONSTRAINT chk_stock_execution_source_valid CHECK (CASE `source` WHEN 'VIRTUAL_MARKET_PRICE' THEN 1 WHEN 'INTERNAL_ORDER_BOOK' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_execution_source_valid CHECK (CASE `source` WHEN 'INTERNAL_ORDER_BOOK' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_execution_quantity_positive CHECK (quantity > 0),
   CONSTRAINT chk_stock_execution_price_positive CHECK (price > 0),
   CONSTRAINT chk_stock_execution_gross_non_negative CHECK (gross_amount >= 0),
@@ -640,6 +670,18 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
     recurring_deposit_amount = 0
     OR (recurring_deposit_interval_value > 0 AND recurring_deposit_interval_unit IS NOT NULL)
   )
+);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_event_profile_config (
+  profile_type VARCHAR(40) NOT NULL PRIMARY KEY,
+  shareholder_subscription_rate DECIMAL(8,4) NOT NULL DEFAULT 0.4500,
+  public_offering_subscription_rate DECIMAL(8,4) NOT NULL DEFAULT 0.2000,
+  max_cash_allocation_rate DECIMAL(8,4) NOT NULL DEFAULT 0.2000,
+  updated_at TIMESTAMP NOT NULL,
+  CONSTRAINT chk_stock_auto_event_profile_type CHECK (profile_type <> ''),
+  CONSTRAINT chk_stock_auto_event_profile_shareholder_rate CHECK (shareholder_subscription_rate >= 0 AND shareholder_subscription_rate <= 1),
+  CONSTRAINT chk_stock_auto_event_profile_public_rate CHECK (public_offering_subscription_rate >= 0 AND public_offering_subscription_rate <= 1),
+  CONSTRAINT chk_stock_auto_event_profile_cash_rate CHECK (max_cash_allocation_rate >= 0 AND max_cash_allocation_rate <= 1)
 );
 
 CREATE TABLE IF NOT EXISTS stock_virtual_market_config (

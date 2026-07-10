@@ -7,14 +7,13 @@
 - 외부 주식 API에서 필요한 종목 시세 수집
 - Redis 최신가 캐시 갱신
 - 가격 변경 이벤트 발행
-- 미체결 주문 체결 조건 검사
+- 주문장 미체결 주문 체결 조건 검사
 - 시뮬레이션일별 평가금액, 수익률, 랭킹 정산
 
 ## 현재 API
 
 - `GET /internal/stock-batch/v1/system/status`
 - `POST /internal/stock-batch/v1/jobs/market-data/refresh`
-- `POST /internal/stock-batch/v1/jobs/virtual-price-execution/run`
 - `POST /internal/stock-batch/v1/jobs/order-book-execution/run`
 - `POST /internal/stock-batch/v1/jobs/auto-participant-cash-flow/run`
 - `GET /internal/stock-batch/v1/jobs/auto-participant-cash-flow/status`
@@ -35,7 +34,6 @@
 - `AutoMarketScheduler`: 자동 참여자 주문 생성, 자동장 미체결 주문 만료, 상장주관사 주문 공급 job을 실행
 - `MarketPriceProvider`: 실제 시세 provider 교체 지점. 현재 기본값은 `stock.batch.market-data.provider=mock`
 - `KisMarketPriceProvider`: `stock.batch.market-data.provider=kis`일 때 KIS OpenAPI 국내주식 현재가 시세를 호출
-- `VirtualPriceExecutionScheduler`: `market_type=VIRTUAL_PRICE` 미체결 주문을 현재가 기준으로 체결
 - `OrderBookExecutionScheduler`: `market_type=ORDER_BOOK` 사용자 매수/매도 주문을 가격 우선, 시간 우선으로 매칭
 - `InternalOrderBookExecutionService`: 주문장 체결 엔진
   - 지정가끼리는 교차된 호가를 체결합니다.
@@ -136,7 +134,6 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.market-data.kis.app-key`
 - `stock.batch.market-data.kis.app-secret`
 - `stock.batch.market-data.kis.market-div-code`
-- `stock.batch.virtual-price-execution.enabled`: 현재가 기준 체결 job 활성화 여부
 - `stock.batch.order-book-execution.enabled`: 주문장 체결 job 활성화 여부
 - `stock.batch.corporate-actions.enabled`: 기업 이벤트 반영 job 활성화 여부
 - `stock.batch.auto-market.enabled`: 자동 참여자 주문 생성 job 활성화 여부
@@ -247,8 +244,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 유실되면 안 되는 주문/체결 결과는 Pub/Sub이 아니라 DB 원장에 기록합니다.
 - 매도 체결은 `stock_holding.quantity`와 `reserved_quantity`를 함께 차감해 미체결 매도 예약과 실제 보유 원장을 맞춥니다.
 - 체결 중에는 0주가 된 `stock_holding`을 즉시 삭제하지 않습니다. 주문장 체결의 lock/write 비용을 줄이기 위해 `holding-cleanup` 유지보수 job이 시뮬레이션 시간 기준 보존 기간이 지난 빈 row만 제한 건수로 삭제합니다.
-- 현재가 기준 체결과 주문장 체결은 더 이상 mode 스위치로 고르지 않고 별도 job으로 동시에 존재합니다.
-- `VIRTUAL_PRICE` 주문은 현재가 기준 체결 job만 처리하고, `ORDER_BOOK` 주문은 주문장 체결 job만 처리합니다.
+- batch 서버는 주문장 체결 job만 운영합니다. 현재가 기준 자동 체결 job은 제거되었습니다.
 - 유상증자 기업 이벤트는 corporate action job이 처리합니다. 권리락일에는 이론권리락가격을 `stock_price`, `stock_price_tick`에 반영하고, 납입일에는 상태를 `PAID`로 바꾸며, 신주상장일에는 `stock_order_book_instrument.issued_shares`, `tradable_shares`를 증가시킵니다.
 - 액면분할 기업 이벤트는 효력일에 `issued_shares`, `tradable_shares`, 보유수량, 예약수량을 배율만큼 늘리고 현재가, 전일종가, 평균단가를 같은 배율로 나눕니다. 효력일에 미체결 주문이 있으면 가격/수량 기준이 꼬이지 않도록 적용을 대기합니다.
 - 현금배당 기업 이벤트는 배당락일에 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다. 현금배당 자체는 `stock_price`, `stock_price_tick`을 강제로 조정하지 않습니다.

@@ -16,7 +16,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJ
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
@@ -30,7 +29,6 @@ public class StockBatchJobLauncher {
     private final StockBatchJobRunner stockBatchJobRunner;
     private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl;
     private final MarketDataRefreshJob marketDataRefreshJob;
-    private final VirtualPriceExecutionJob virtualPriceExecutionJob;
     private final OrderBookExecutionJob orderBookExecutionJob;
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob;
     private final AutoMarketDailyRegimePreCreateJob autoMarketDailyRegimePreCreateJob;
@@ -45,10 +43,6 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse refreshMarketData() {
         return stockBatchJobRunner.run(marketDataRefreshJob);
-    }
-
-    public StockBatchJobRunResponse executeVirtualPriceOrders() {
-        return stockBatchJobRunner.run(virtualPriceExecutionJob);
     }
 
     public StockBatchJobRunResponse executeOrderBookOrders() {

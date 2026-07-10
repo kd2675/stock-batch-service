@@ -21,7 +21,6 @@
 
 - `/internal/stock-batch/v1/system/status`
 - `/internal/stock-batch/v1/jobs/market-data/refresh`
-- `/internal/stock-batch/v1/jobs/virtual-price-execution/run`
 - `/internal/stock-batch/v1/jobs/order-book-execution/run`
 - `/internal/stock-batch/v1/jobs/auto-participant-cash-flow/run`
 - `/internal/stock-batch/v1/jobs/auto-participant-cash-flow/status`
@@ -69,7 +68,7 @@
 - job 중복 실행 방지, 스케줄러 runtime 제어, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환은 `batch/common` 경계에서 공통 처리합니다.
 - 새 배치 흐름은 가능한 한 `batch/<domain>/reader`, `processor`, `writer`, `model`, `support`로 책임을 나누고, 기존 기능을 보존한 상태에서 도메인별로 점진 적용합니다.
 - 체결 로직은 시세 수집 코드와 분리해 `execution` 패키지로 둡니다.
-- 현재가 기준 체결과 내부 주문장 체결은 mode 스위치로 선택하지 않습니다. `VIRTUAL_PRICE` 주문과 `ORDER_BOOK` 주문을 분리된 job이 각각 처리합니다.
+- 내부 주문장 체결은 주문장 주문만 처리합니다. 현재가 기준 자동 체결 job은 배치 서버에서 운영하지 않습니다.
 - 스케줄러와 수동 internal job API는 같은 job service를 호출해 실행 모드 분기가 갈라지지 않게 유지합니다.
 - 내부 주문장 체결은 가격 우선, 시간 우선으로 매칭하고 같은 사용자끼리 체결하지 않습니다.
 - Redis 발행 실패는 체결/정산 원장 처리를 막지 않도록 degrade 처리합니다.

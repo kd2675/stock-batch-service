@@ -5,11 +5,18 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.corporateaction.model.AutoParticipantCapitalIncreaseCandidate;
+import stock.batch.service.batch.corporateaction.model.AutoParticipantEventProfilePolicy;
+import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscriptionActionRow;
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
@@ -34,7 +41,11 @@ public class CorporateActionService {
     private static final String BONUS_ISSUE = "BONUS_ISSUE";
     private static final String STOCK_DIVIDEND = "STOCK_DIVIDEND";
     private static final String DELISTING = "DELISTING";
+    private static final String SHAREHOLDER_ALLOCATION = "SHAREHOLDER_ALLOCATION";
+    private static final String PUBLIC_OFFERING = "PUBLIC_OFFERING";
     private static final String ANNOUNCED = "ANNOUNCED";
+    private static final String SUBSCRIBED = "SUBSCRIBED";
+    private static final String EXPIRED = "EXPIRED";
     private static final String EX_RIGHTS_APPLIED = "EX_RIGHTS_APPLIED";
     private static final String PAID = "PAID";
     private static final String LISTED = "LISTED";
@@ -62,6 +73,9 @@ public class CorporateActionService {
         if (requiredCloseDate == null || !corporateActionReader.existsCompletedMarketCloseRun(requiredCloseDate)) {
             return 0;
         }
+        int autoSubscriptionCount = session == SimulationMarketSession.AFTER_CLOSE
+                ? subscribeAutoParticipantsToCapitalIncreases(actionDate)
+                : 0;
         int exRightsCount = applyDueExRights(actionDate);
         int rightsPaymentCount = markDueRightsPayments(actionDate);
         int dividendPaymentCount = payDueCashDividends(actionDate);
@@ -70,7 +84,7 @@ public class CorporateActionService {
         int stockDividendListingCount = listDueFreeShareDistributions(actionDate, STOCK_DIVIDEND);
         int stockSplitCount = applyDueStockSplits(actionDate);
         int delistingCount = applyDueDelistings(actionDate);
-        return exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
+        return autoSubscriptionCount + exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
                 + bonusIssueListingCount + stockDividendListingCount + stockSplitCount
                 + delistingCount;
     }
@@ -100,7 +114,7 @@ public class CorporateActionService {
                 continue;
             }
             Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
-            if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row.actionType())) {
+            if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row)) {
                 continue;
             }
             LocalDateTime now = currentDateTime();
@@ -116,6 +130,9 @@ public class CorporateActionService {
             if (CASH_DIVIDEND.equals(row.actionType())) {
                 createDividendEntitlements(row, holdingSnapshotRunId, now);
             }
+            if (PAID_IN_CAPITAL_INCREASE.equals(row.actionType()) && holdingSnapshotRunId != null) {
+                createPaidInRightsEntitlements(row, holdingSnapshotRunId, now);
+            }
             if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
                 createShareEntitlements(row, holdingSnapshotRunId, now);
             }
@@ -125,7 +142,7 @@ public class CorporateActionService {
     }
 
     private Long resolveRequiredHoldingSnapshotRunId(ExRightsActionRow row) {
-        if (!requiresHoldingSnapshot(row.actionType())) {
+        if (!requiresHoldingSnapshot(row)) {
             return null;
         }
         return corporateActionReader.findLatestCompletedMarketCloseRunIdBefore(row.symbol(), row.exRightsDate()).orElse(null);
@@ -135,6 +152,12 @@ public class CorporateActionService {
         return CASH_DIVIDEND.equals(actionType)
                 || BONUS_ISSUE.equals(actionType)
                 || STOCK_DIVIDEND.equals(actionType);
+    }
+
+    private boolean requiresHoldingSnapshot(ExRightsActionRow row) {
+        return requiresHoldingSnapshot(row.actionType())
+                || (PAID_IN_CAPITAL_INCREASE.equals(row.actionType())
+                && SHAREHOLDER_ALLOCATION.equals(row.offeringType()));
     }
 
     private boolean adjustsExRightsPrice(String actionType) {
@@ -151,12 +174,215 @@ public class CorporateActionService {
     }
 
     private int markDueRightsPayments(LocalDate today) {
-        return corporateActionWriter.markDueRightsPayments(
+        int shareholderAllocationCount = corporateActionWriter.markDueRightsPayments(
                 today,
                 PAID,
                 PAID_IN_CAPITAL_INCREASE,
                 EX_RIGHTS_APPLIED,
+                SHAREHOLDER_ALLOCATION,
                 currentDateTime()
+        );
+        int publicOfferingCount = corporateActionWriter.markDueRightsPayments(
+                today,
+                PAID,
+                PAID_IN_CAPITAL_INCREASE,
+                ANNOUNCED,
+                PUBLIC_OFFERING,
+                currentDateTime()
+        );
+        return shareholderAllocationCount + publicOfferingCount;
+    }
+
+    private int subscribeAutoParticipantsToCapitalIncreases(LocalDate today) {
+        List<CapitalIncreaseSubscriptionActionRow> rows = corporateActionReader.findOpenCapitalIncreaseSubscriptions(
+                today,
+                PAID_IN_CAPITAL_INCREASE,
+                List.of(ANNOUNCED, EX_RIGHTS_APPLIED)
+        );
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies = loadEventProfilePolicies();
+        int processed = 0;
+        for (CapitalIncreaseSubscriptionActionRow row : rows) {
+            if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
+                processed += subscribeShareholderAllocation(row, policies);
+            }
+            if (PUBLIC_OFFERING.equals(row.offeringType())) {
+                processed += subscribePublicOffering(row, policies);
+            }
+        }
+        return processed;
+    }
+
+    private int subscribeShareholderAllocation(
+            CapitalIncreaseSubscriptionActionRow row,
+            Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
+    ) {
+        int processed = 0;
+        List<AutoParticipantCapitalIncreaseCandidate> candidates =
+                corporateActionReader.findShareholderAllocationAutoCandidates(row.id(), ANNOUNCED);
+        for (AutoParticipantCapitalIncreaseCandidate candidate : candidates) {
+            AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
+            long shareQuantity = desiredShareQuantity(
+                    candidate.availableShareQuantity(),
+                    row.issuePrice(),
+                    candidate.cashBalance(),
+                    policy.shareholderSubscriptionRate(),
+                    policy.maxCashAllocationRate()
+            );
+            if (shareQuantity <= 0 || candidate.entitlementId() == null) {
+                continue;
+            }
+            BigDecimal cashAmount = row.issuePrice().multiply(BigDecimal.valueOf(shareQuantity));
+            LocalDateTime now = currentDateTime();
+            if (!corporateActionAccountWriter.withdrawCashForSubscription(candidate.accountId(), cashAmount, now)) {
+                continue;
+            }
+            int updatedEntitlement = corporateActionAccountWriter.subscribeAllocatedRights(
+                    candidate.entitlementId(),
+                    shareQuantity,
+                    cashAmount,
+                    SUBSCRIBED,
+                    ANNOUNCED,
+                    now
+            );
+            if (updatedEntitlement == 0) {
+                throw new IllegalStateException("Corporate action entitlement subscription failed: " + candidate.entitlementId());
+            }
+            corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlow(candidate.accountId(), cashAmount, now);
+            processed++;
+        }
+        return processed;
+    }
+
+    private int subscribePublicOffering(
+            CapitalIncreaseSubscriptionActionRow row,
+            Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
+    ) {
+        CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
+                .findPublicOfferingSubscriptionForUpdate(row.id(), PAID_IN_CAPITAL_INCREASE, ANNOUNCED)
+                .orElse(null);
+        if (lockedRow == null) {
+            return 0;
+        }
+        long remainingShares = lockedRow.shareQuantity() - corporateActionReader.sumSubscribedShareQuantity(lockedRow.id());
+        if (remainingShares <= 0) {
+            return 0;
+        }
+        int processed = 0;
+        List<AutoParticipantCapitalIncreaseCandidate> candidates = corporateActionReader.findPublicOfferingAutoCandidates(lockedRow.id());
+        for (AutoParticipantCapitalIncreaseCandidate candidate : candidates) {
+            if (remainingShares <= 0) {
+                break;
+            }
+            AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
+            long shareQuantity = desiredShareQuantity(
+                    remainingShares,
+                    lockedRow.issuePrice(),
+                    candidate.cashBalance(),
+                    policy.publicOfferingSubscriptionRate(),
+                    policy.maxCashAllocationRate()
+            );
+            if (shareQuantity <= 0) {
+                continue;
+            }
+            BigDecimal cashAmount = lockedRow.issuePrice().multiply(BigDecimal.valueOf(shareQuantity));
+            LocalDateTime now = currentDateTime();
+            if (!corporateActionAccountWriter.withdrawCashForSubscription(candidate.accountId(), cashAmount, now)) {
+                continue;
+            }
+            int insertedEntitlement = corporateActionAccountWriter.createPublicOfferingSubscription(
+                    lockedRow.id(),
+                    candidate.accountId(),
+                    lockedRow.symbol(),
+                    shareQuantity,
+                    cashAmount,
+                    SUBSCRIBED,
+                    now
+            );
+            if (insertedEntitlement == 0) {
+                throw new IllegalStateException("Corporate action public offering subscription failed: " + lockedRow.id() + "/" + candidate.accountId());
+            }
+            corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlow(candidate.accountId(), cashAmount, now);
+            remainingShares -= shareQuantity;
+            processed++;
+        }
+        return processed;
+    }
+
+    private long desiredShareQuantity(
+            long availableShareQuantity,
+            BigDecimal issuePrice,
+            BigDecimal cashBalance,
+            BigDecimal subscriptionRate,
+            BigDecimal maxCashAllocationRate
+    ) {
+        if (availableShareQuantity <= 0
+                || issuePrice == null
+                || issuePrice.compareTo(BigDecimal.ZERO) <= 0
+                || cashBalance == null
+                || cashBalance.compareTo(issuePrice) < 0
+                || subscriptionRate == null
+                || subscriptionRate.compareTo(BigDecimal.ZERO) <= 0
+                || maxCashAllocationRate == null
+                || maxCashAllocationRate.compareTo(BigDecimal.ZERO) <= 0) {
+            return 0L;
+        }
+        long policyShares = BigDecimal.valueOf(availableShareQuantity)
+                .multiply(subscriptionRate)
+                .setScale(0, RoundingMode.FLOOR)
+                .longValue();
+        BigDecimal cashLimit = cashBalance.multiply(maxCashAllocationRate);
+        long cashLimitedShares = cashLimit.divide(issuePrice, 0, RoundingMode.FLOOR).longValue();
+        return Math.min(availableShareQuantity, Math.min(policyShares, cashLimitedShares));
+    }
+
+    private Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> loadEventProfilePolicies() {
+        Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies = defaultEventProfilePolicies();
+        for (AutoParticipantEventProfilePolicy savedPolicy : corporateActionReader.findEventProfilePolicies()) {
+            policies.put(savedPolicy.profileType(), savedPolicy);
+        }
+        return policies;
+    }
+
+    private AutoParticipantEventProfilePolicy eventPolicy(
+            Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies,
+            AutoParticipantProfileType profileType
+    ) {
+        return policies.getOrDefault(profileType, policies.get(AutoParticipantProfileType.defaultType()));
+    }
+
+    private Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> defaultEventProfilePolicies() {
+        Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies = new EnumMap<>(AutoParticipantProfileType.class);
+        for (AutoParticipantProfileType profileType : AutoParticipantProfileType.values()) {
+            policies.put(profileType, eventPolicy(profileType, "0.45", "0.20", "0.20"));
+        }
+        policies.put(AutoParticipantProfileType.LONG_TERM_HOLDER, eventPolicy(AutoParticipantProfileType.LONG_TERM_HOLDER, "0.95", "0.35", "0.40"));
+        policies.put(AutoParticipantProfileType.DIVIDEND_REINVESTOR, eventPolicy(AutoParticipantProfileType.DIVIDEND_REINVESTOR, "0.90", "0.40", "0.35"));
+        policies.put(AutoParticipantProfileType.VALUE_ANCHOR, eventPolicy(AutoParticipantProfileType.VALUE_ANCHOR, "0.85", "0.30", "0.35"));
+        policies.put(AutoParticipantProfileType.PAYDAY_ACCUMULATOR, eventPolicy(AutoParticipantProfileType.PAYDAY_ACCUMULATOR, "0.75", "0.25", "0.30"));
+        policies.put(AutoParticipantProfileType.WHALE, eventPolicy(AutoParticipantProfileType.WHALE, "0.90", "0.55", "0.50"));
+        policies.put(AutoParticipantProfileType.CASH_DEFENSIVE, eventPolicy(AutoParticipantProfileType.CASH_DEFENSIVE, "0.25", "0.08", "0.10"));
+        policies.put(AutoParticipantProfileType.OBSERVER, eventPolicy(AutoParticipantProfileType.OBSERVER, "0.05", "0.00", "0.05"));
+        policies.put(AutoParticipantProfileType.MARKET_MAKER, eventPolicy(AutoParticipantProfileType.MARKET_MAKER, "0.20", "0.05", "0.10"));
+        policies.put(AutoParticipantProfileType.SCALPER, eventPolicy(AutoParticipantProfileType.SCALPER, "0.15", "0.05", "0.08"));
+        policies.put(AutoParticipantProfileType.DAY_TRADER, eventPolicy(AutoParticipantProfileType.DAY_TRADER, "0.20", "0.08", "0.10"));
+        policies.put(AutoParticipantProfileType.PANIC_SELLER, eventPolicy(AutoParticipantProfileType.PANIC_SELLER, "0.10", "0.03", "0.05"));
+        return policies;
+    }
+
+    private AutoParticipantEventProfilePolicy eventPolicy(
+            AutoParticipantProfileType profileType,
+            String shareholderSubscriptionRate,
+            String publicOfferingSubscriptionRate,
+            String maxCashAllocationRate
+    ) {
+        return new AutoParticipantEventProfilePolicy(
+                profileType,
+                new BigDecimal(shareholderSubscriptionRate),
+                new BigDecimal(publicOfferingSubscriptionRate),
+                new BigDecimal(maxCashAllocationRate)
         );
     }
 
@@ -220,7 +446,13 @@ public class CorporateActionService {
             if (updatedAction == 0) {
                 continue;
             }
-            addIssuedAndTradableSharesOrThrow(row, now, "corporate action");
+            if (row.shareQuantity() > 0) {
+                addIssuedAndTradableSharesOrThrow(row, now, "corporate action");
+            }
+            if (PAID_IN_CAPITAL_INCREASE.equals(actionType)) {
+                creditSubscribedShareEntitlements(row.id(), now);
+                corporateActionAccountWriter.expireEntitlements(row.id(), EXPIRED, ANNOUNCED, now);
+            }
             processed += updatedAction;
         }
         return processed;
@@ -296,6 +528,10 @@ public class CorporateActionService {
         corporateActionAccountWriter.createShareEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
     }
 
+    private void createPaidInRightsEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
+        corporateActionAccountWriter.createPaidInRightsEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
+    }
+
     private void creditShareEntitlements(long actionId, LocalDateTime now) {
         List<ShareEntitlementRow> entitlements =
                 corporateActionReader.findAnnouncedShareEntitlements(actionId, ANNOUNCED);
@@ -305,6 +541,15 @@ public class CorporateActionService {
                 throw new IllegalStateException("Stock holding not found for share entitlement: " + entitlement.accountId());
             }
             corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
+        }
+    }
+
+    private void creditSubscribedShareEntitlements(long actionId, LocalDateTime now) {
+        List<ShareEntitlementRow> entitlements =
+                corporateActionReader.findAnnouncedShareEntitlements(actionId, SUBSCRIBED);
+        for (ShareEntitlementRow entitlement : entitlements) {
+            corporateActionAccountWriter.creditPaidInSubscribedShareHolding(entitlement, now);
+            corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, SUBSCRIBED, now);
         }
     }
 

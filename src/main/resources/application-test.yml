@@ -54,8 +54,6 @@ stock:
         type: none
       ready-symbol-queue:
         type: memory
-    virtual-price-execution:
-      enabled: false
     order-book-execution:
       enabled: false
     corporate-actions:

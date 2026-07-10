@@ -125,10 +125,6 @@ stock:
         type: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_TYPE:redis}
         set-key: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_SET_KEY:stock:orderbook:execution:ready-symbol-set}
         queue-key: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_QUEUE_KEY:stock:orderbook:execution:ready-symbol-queue}
-    virtual-price-execution:
-      enabled: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_ENABLED:true}
-      initial-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_INITIAL_DELAY_MS:35000}
-      fixed-delay-ms: ${STOCK_BATCH_VIRTUAL_PRICE_EXECUTION_FIXED_DELAY_MS:5000}
     order-book-execution:
       enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_INITIAL_DELAY_MS:36000}

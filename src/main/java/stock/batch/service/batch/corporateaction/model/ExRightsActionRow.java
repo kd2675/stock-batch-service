@@ -7,6 +7,9 @@ public record ExRightsActionRow(
         long id,
         String symbol,
         String actionType,
+        String offeringType,
+        long shareQuantity,
+        BigDecimal issuePrice,
         LocalDate exRightsDate,
         BigDecimal theoreticalExRightsPrice,
         BigDecimal dividendAmount

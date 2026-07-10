@@ -10,7 +10,6 @@ import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
-import stock.batch.service.batch.execution.job.VirtualPriceExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
@@ -31,7 +30,6 @@ public class BatchJobRuntimeCatalog {
     public BatchJobRuntimeCatalog(
             BatchJobRuntimeControl batchJobRuntimeControl,
             @Value("${stock.batch.market-data.enabled:true}") boolean marketDataConfigured,
-            @Value("${stock.batch.virtual-price-execution.enabled:true}") boolean virtualPriceExecutionConfigured,
             @Value("${stock.batch.order-book-execution.enabled:true}") boolean orderBookExecutionConfigured,
             @Value("${stock.batch.corporate-actions.enabled:true}") boolean corporateActionsConfigured,
             @Value("${stock.batch.auto-market.enabled:true}") boolean autoMarketConfigured,
@@ -47,7 +45,6 @@ public class BatchJobRuntimeCatalog {
         this.batchJobRuntimeControl = batchJobRuntimeControl;
         this.definitions = createDefinitions(
                 marketDataConfigured,
-                virtualPriceExecutionConfigured,
                 orderBookExecutionConfigured,
                 corporateActionsConfigured,
                 autoMarketConfigured,
@@ -111,7 +108,6 @@ public class BatchJobRuntimeCatalog {
 
     private Map<String, RuntimeDefinition> createDefinitions(
             boolean marketDataConfigured,
-            boolean virtualPriceExecutionConfigured,
             boolean orderBookExecutionConfigured,
             boolean corporateActionsConfigured,
             boolean autoMarketConfigured,
@@ -126,7 +122,6 @@ public class BatchJobRuntimeCatalog {
     ) {
         Map<String, RuntimeDefinition> createdDefinitions = new LinkedHashMap<>();
         put(createdDefinitions, MarketDataRefreshJob.JOB_NAME, marketDataConfigured);
-        put(createdDefinitions, VirtualPriceExecutionJob.JOB_NAME, virtualPriceExecutionConfigured);
         put(createdDefinitions, OrderBookExecutionJob.JOB_NAME, orderBookExecutionConfigured);
         put(createdDefinitions, CorporateActionJob.JOB_NAME, corporateActionsConfigured);
         put(createdDefinitions, AutoMarketJob.JOB_NAME, autoMarketConfigured);
