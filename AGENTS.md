@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Updated: 2026-06-17 -->
+<!-- Updated: 2026-07-10 -->
 
 # stock-batch-service
 
@@ -56,6 +56,7 @@
 - job 중복 실행 방지는 JVM 메모리 락이 아니라 `STOCK_SERVICE.stock_batch_job_lock` DB 테이블 기준입니다.
 - 서버 종료 시 `@Scheduled` 실행 중 job과 `StockBatchJobRunner` 실행 중 job은 설정된 timeout까지 완료를 기다립니다. 종료 시작 후 새 job은 실행하지 않고 `SKIPPED` 처리합니다.
 - 주문/체결/잔고 원장은 `stock-back-service`와 같은 DB 계약을 기준으로 맞춥니다.
+- MySQL business DDL은 `stock-back-service/src/main/resources/db/ddl/stock_all.sql`을 단일 canonical source로 사용하며, batch에는 full DDL 사본을 두지 않습니다. `src/main/resources/db/ddl/stock_h2.sql`은 batch test schema입니다.
 - 외부 시세 Provider 연동 전까지 가격 갱신은 mock provider로 작은 변동률을 적용합니다.
 - 자동장은 `stock_auto_participant`, `stock_auto_market_config`, `stock_auto_participant_symbol_config`를 읽어 실제 `stock_order` 원장에 주문을 생성합니다.
 - 장마감 기준가 롤오버는 `stock_price.current_price`를 `previous_close`로 복사해 다음 장 가격제한폭 기준가를 확정합니다.

@@ -1,17 +1,19 @@
 package stock.batch.service.corporateaction.biz;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.corporateaction.model.AutoParticipantCapitalIncreaseCandidate;
@@ -20,6 +22,7 @@ import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscripti
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
+import stock.batch.service.batch.corporateaction.model.ExRightsPriceSnapshot;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
 import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.StockSplitActionRow;
@@ -33,6 +36,7 @@ import web.common.core.simulation.SimulationMarketSession;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CorporateActionService {
 
     private static final String PAID_IN_CAPITAL_INCREASE = "PAID_IN_CAPITAL_INCREASE";
@@ -61,8 +65,8 @@ public class CorporateActionService {
     private final CorporateActionAccountWriter corporateActionAccountWriter;
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
+    private final CorporateActionTransactionExecutor transactionExecutor;
 
-    @Transactional
     public int applyDueCorporateActions() {
         SimulationMarketSession session = simulationMarketSessionService.currentSession();
         if (session == SimulationMarketSession.REGULAR) {
@@ -73,20 +77,55 @@ public class CorporateActionService {
         if (requiredCloseDate == null || !corporateActionReader.existsCompletedMarketCloseRun(requiredCloseDate)) {
             return 0;
         }
+        List<RuntimeException> failures = new ArrayList<>();
+        int exRightsCount = executeStage("ex-rights", failures, () -> applyDueExRights(actionDate, failures));
+        int rightsPaymentCount = executeStage(
+                "capital-increase-payment",
+                failures,
+                () -> markDueRightsPayments(actionDate, failures)
+        );
+        int dividendPaymentCount = executeStage(
+                "cash-dividend-payment",
+                failures,
+                () -> payDueCashDividends(actionDate, failures)
+        );
         int autoSubscriptionCount = session == SimulationMarketSession.AFTER_CLOSE
-                ? subscribeAutoParticipantsToCapitalIncreases(actionDate)
+                ? executeStage(
+                        "capital-increase-auto-subscription",
+                        failures,
+                        () -> subscribeAutoParticipantsToCapitalIncreases(actionDate, failures)
+                )
                 : 0;
-        int exRightsCount = applyDueExRights(actionDate);
-        int rightsPaymentCount = markDueRightsPayments(actionDate);
-        int dividendPaymentCount = payDueCashDividends(actionDate);
-        int rightsListingCount = listDueRightsShares(actionDate);
-        int bonusIssueListingCount = listDueFreeShareDistributions(actionDate, BONUS_ISSUE);
-        int stockDividendListingCount = listDueFreeShareDistributions(actionDate, STOCK_DIVIDEND);
-        int stockSplitCount = applyDueStockSplits(actionDate);
-        int delistingCount = applyDueDelistings(actionDate);
-        return autoSubscriptionCount + exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
+        int rightsListingCount = executeStage(
+                "capital-increase-listing",
+                failures,
+                () -> listDueRightsShares(actionDate, failures)
+        );
+        int bonusIssueListingCount = executeStage(
+                "bonus-issue-listing",
+                failures,
+                () -> listDueFreeShareDistributions(actionDate, BONUS_ISSUE, failures)
+        );
+        int stockDividendListingCount = executeStage(
+                "stock-dividend-listing",
+                failures,
+                () -> listDueFreeShareDistributions(actionDate, STOCK_DIVIDEND, failures)
+        );
+        int stockSplitCount = executeStage(
+                "stock-split",
+                failures,
+                () -> applyDueStockSplits(actionDate, failures)
+        );
+        int delistingCount = executeStage(
+                "delisting",
+                failures,
+                () -> applyDueDelistings(actionDate, failures)
+        );
+        int processedCount = autoSubscriptionCount + exRightsCount + rightsPaymentCount + dividendPaymentCount + rightsListingCount
                 + bonusIssueListingCount + stockDividendListingCount + stockSplitCount
                 + delistingCount;
+        throwIfAnyActionFailed(failures);
+        return processedCount;
     }
 
     private LocalDate requiredCloseDate(SimulationMarketSession session, LocalDate actionDate) {
@@ -100,7 +139,7 @@ public class CorporateActionService {
         return previousDate;
     }
 
-    private int applyDueExRights(LocalDate today) {
+    private int applyDueExRights(LocalDate today, List<RuntimeException> failures) {
         List<ExRightsActionRow> rows = corporateActionReader.findDueExRights(
                 today,
                 ANNOUNCED,
@@ -113,32 +152,110 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
-            if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row)) {
-                continue;
-            }
-            LocalDateTime now = currentDateTime();
-            int updatedAction = corporateActionWriter.markActionExRightsApplied(row.id(), EX_RIGHTS_APPLIED, ANNOUNCED, now);
-            if (updatedAction == 0) {
-                continue;
-            }
-            if (adjustsExRightsPrice(row.actionType())) {
-                String provider = resolveExRightsProvider(row.actionType());
-                corporateActionPriceWriter.upsertPrice(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
-                corporateActionPriceWriter.insertPriceTick(row.symbol(), row.theoreticalExRightsPrice(), provider, now);
-            }
-            if (CASH_DIVIDEND.equals(row.actionType())) {
-                createDividendEntitlements(row, holdingSnapshotRunId, now);
-            }
-            if (PAID_IN_CAPITAL_INCREASE.equals(row.actionType()) && holdingSnapshotRunId != null) {
-                createPaidInRightsEntitlements(row, holdingSnapshotRunId, now);
-            }
-            if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
-                createShareEntitlements(row, holdingSnapshotRunId, now);
-            }
-            processed += updatedAction;
+            processed += executeActionInTransaction(
+                    "ex-rights",
+                    row.id(),
+                    failures,
+                    () -> applyDueExRights(row, today)
+            );
         }
         return processed;
+    }
+
+    private int applyDueExRights(ExRightsActionRow row, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, row.actionType(), ANNOUNCED, "ex_rights_date")) {
+            return 0;
+        }
+        if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), ExRightsActionRow::symbol).isEmpty()) {
+            return 0;
+        }
+        Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
+        if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row)) {
+            return 0;
+        }
+        ExRightsPriceAdjustment priceAdjustment = resolveExRightsPriceAdjustment(row, holdingSnapshotRunId);
+        if (adjustsExRightsPrice(row.actionType()) && priceAdjustment == null) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int updatedAction = priceAdjustment == null
+                ? corporateActionWriter.markActionExRightsApplied(row.id(), EX_RIGHTS_APPLIED, ANNOUNCED, now)
+                : corporateActionWriter.markActionExRightsAppliedWithPrices(
+                        row.id(),
+                        EX_RIGHTS_APPLIED,
+                        ANNOUNCED,
+                        priceAdjustment.basePrice(),
+                        priceAdjustment.theoreticalExRightsPrice(),
+                        now
+                );
+        if (updatedAction == 0) {
+            return 0;
+        }
+        if (priceAdjustment != null) {
+            String provider = resolveExRightsProvider(row.actionType());
+            corporateActionPriceWriter.upsertPrice(
+                    row.symbol(),
+                    priceAdjustment.theoreticalExRightsPrice(),
+                    provider,
+                    now
+            );
+            corporateActionPriceWriter.insertPriceTick(
+                    row.symbol(),
+                    priceAdjustment.theoreticalExRightsPrice(),
+                    provider,
+                    now
+            );
+        }
+        if (CASH_DIVIDEND.equals(row.actionType())) {
+            createDividendEntitlements(row, holdingSnapshotRunId, now);
+        }
+        if (PAID_IN_CAPITAL_INCREASE.equals(row.actionType()) && holdingSnapshotRunId != null) {
+            createPaidInRightsEntitlements(row, holdingSnapshotRunId, now);
+        }
+        if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
+            createShareEntitlements(row, holdingSnapshotRunId, now);
+        }
+        return updatedAction;
+    }
+
+    private ExRightsPriceAdjustment resolveExRightsPriceAdjustment(
+            ExRightsActionRow row,
+            Long holdingSnapshotRunId
+    ) {
+        if (!adjustsExRightsPrice(row.actionType()) || holdingSnapshotRunId == null) {
+            return null;
+        }
+        return corporateActionReader.findExRightsPriceSnapshot(holdingSnapshotRunId, row.symbol())
+                .map(snapshot -> new ExRightsPriceAdjustment(
+                        snapshot.closePrice(),
+                        calculateTheoreticalExRightsPrice(row, snapshot)
+                ))
+                .orElse(null);
+    }
+
+    private BigDecimal calculateTheoreticalExRightsPrice(
+            ExRightsActionRow row,
+            ExRightsPriceSnapshot snapshot
+    ) {
+        boolean paidInCapitalIncrease = PAID_IN_CAPITAL_INCREASE.equals(row.actionType());
+        BigDecimal issuePrice = paidInCapitalIncrease
+                ? row.issuePrice()
+                : BigDecimal.ZERO;
+        if (issuePrice == null) {
+            throw new IllegalStateException("Paid-in capital increase issue price is missing: " + row.id());
+        }
+        if (paidInCapitalIncrease && snapshot.closePrice().compareTo(issuePrice) <= 0) {
+            return snapshot.closePrice();
+        }
+        BigDecimal existingValue = snapshot.closePrice().multiply(BigDecimal.valueOf(snapshot.issuedShares()));
+        BigDecimal issueValue = issuePrice.multiply(BigDecimal.valueOf(row.shareQuantity()));
+        return existingValue.add(issueValue)
+                .divide(
+                        BigDecimal.valueOf(snapshot.issuedShares() + row.shareQuantity()),
+                        0,
+                        RoundingMode.DOWN
+                );
     }
 
     private Long resolveRequiredHoldingSnapshotRunId(ExRightsActionRow row) {
@@ -173,27 +290,53 @@ public class CorporateActionService {
         return RIGHTS_PROVIDER;
     }
 
-    private int markDueRightsPayments(LocalDate today) {
-        int shareholderAllocationCount = corporateActionWriter.markDueRightsPayments(
+    private int markDueRightsPayments(LocalDate today, List<RuntimeException> failures) {
+        List<CapitalIncreaseSubscriptionActionRow> rows = corporateActionReader.findDueCapitalIncreasePayments(
                 today,
-                PAID,
                 PAID_IN_CAPITAL_INCREASE,
                 EX_RIGHTS_APPLIED,
-                SHAREHOLDER_ALLOCATION,
-                currentDateTime()
+                ANNOUNCED
         );
-        int publicOfferingCount = corporateActionWriter.markDueRightsPayments(
-                today,
-                PAID,
-                PAID_IN_CAPITAL_INCREASE,
-                ANNOUNCED,
-                PUBLIC_OFFERING,
-                currentDateTime()
-        );
-        return shareholderAllocationCount + publicOfferingCount;
+        int processed = 0;
+        for (CapitalIncreaseSubscriptionActionRow row : rows) {
+            processed += executeActionInTransaction(
+                    "capital-increase-payment",
+                    row.id(),
+                    failures,
+                    () -> markDueRightsPayment(row, today)
+            );
+        }
+        return processed;
     }
 
-    private int subscribeAutoParticipantsToCapitalIncreases(LocalDate today) {
+    private int markDueRightsPayment(CapitalIncreaseSubscriptionActionRow row, LocalDate today) {
+        String sourceStatus = SHAREHOLDER_ALLOCATION.equals(row.offeringType())
+                ? EX_RIGHTS_APPLIED
+                : ANNOUNCED;
+        CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
+                .findDueCapitalIncreasePaymentForUpdate(
+                        row.id(),
+                        today,
+                        PAID_IN_CAPITAL_INCREASE,
+                        sourceStatus,
+                        row.offeringType()
+                )
+                .orElse(null);
+        if (lockedRow == null) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int updatedAction = corporateActionWriter.markActionPaid(row.id(), PAID, sourceStatus, now);
+        if (updatedAction > 0 && SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
+            corporateActionAccountWriter.expireEntitlements(row.id(), EXPIRED, ANNOUNCED, now);
+        }
+        return updatedAction;
+    }
+
+    private int subscribeAutoParticipantsToCapitalIncreases(
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
         List<CapitalIncreaseSubscriptionActionRow> rows = corporateActionReader.findOpenCapitalIncreaseSubscriptions(
                 today,
                 PAID_IN_CAPITAL_INCREASE,
@@ -206,32 +349,74 @@ public class CorporateActionService {
         int processed = 0;
         for (CapitalIncreaseSubscriptionActionRow row : rows) {
             if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
-                processed += subscribeShareholderAllocation(row, policies);
+                processed += executeActionInTransaction(
+                        "shareholder-allocation-auto-subscription",
+                        row.id(),
+                        failures,
+                        () -> subscribeShareholderAllocation(row.id(), today, policies)
+                );
             }
             if (PUBLIC_OFFERING.equals(row.offeringType())) {
-                processed += subscribePublicOffering(row, policies);
+                processed += executeActionInTransaction(
+                        "public-offering-auto-subscription",
+                        row.id(),
+                        failures,
+                        () -> subscribePublicOffering(row.id(), today, policies)
+                );
             }
         }
         return processed;
     }
 
     private int subscribeShareholderAllocation(
-            CapitalIncreaseSubscriptionActionRow row,
+            long actionId,
+            LocalDate today,
             Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
     ) {
+        CapitalIncreaseSubscriptionActionRow row = corporateActionReader
+                .findCapitalIncreaseSubscriptionForUpdate(
+                        actionId,
+                        today,
+                        PAID_IN_CAPITAL_INCREASE,
+                        EX_RIGHTS_APPLIED,
+                        SHAREHOLDER_ALLOCATION
+                )
+                .orElse(null);
+        if (row == null) {
+            return 0;
+        }
         int processed = 0;
         List<AutoParticipantCapitalIncreaseCandidate> candidates =
                 corporateActionReader.findShareholderAllocationAutoCandidates(row.id(), ANNOUNCED);
         for (AutoParticipantCapitalIncreaseCandidate candidate : candidates) {
+            if (candidate.entitlementId() == null) {
+                continue;
+            }
+            BigDecimal cashBalance = corporateActionReader
+                    .findActiveAccountCashForUpdate(candidate.accountId())
+                    .orElse(null);
+            if (cashBalance == null) {
+                continue;
+            }
+            Long availableShareQuantity = corporateActionReader
+                    .findAnnouncedEntitlementShareQuantityForUpdate(
+                            candidate.entitlementId(),
+                            row.id(),
+                            ANNOUNCED
+                    )
+                    .orElse(null);
+            if (availableShareQuantity == null) {
+                continue;
+            }
             AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
             long shareQuantity = desiredShareQuantity(
-                    candidate.availableShareQuantity(),
+                    availableShareQuantity,
                     row.issuePrice(),
-                    candidate.cashBalance(),
+                    cashBalance,
                     policy.shareholderSubscriptionRate(),
                     policy.maxCashAllocationRate()
             );
-            if (shareQuantity <= 0 || candidate.entitlementId() == null) {
+            if (shareQuantity <= 0) {
                 continue;
             }
             BigDecimal cashAmount = row.issuePrice().multiply(BigDecimal.valueOf(shareQuantity));
@@ -257,11 +442,18 @@ public class CorporateActionService {
     }
 
     private int subscribePublicOffering(
-            CapitalIncreaseSubscriptionActionRow row,
+            long actionId,
+            LocalDate today,
             Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
     ) {
         CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
-                .findPublicOfferingSubscriptionForUpdate(row.id(), PAID_IN_CAPITAL_INCREASE, ANNOUNCED)
+                .findCapitalIncreaseSubscriptionForUpdate(
+                        actionId,
+                        today,
+                        PAID_IN_CAPITAL_INCREASE,
+                        ANNOUNCED,
+                        PUBLIC_OFFERING
+                )
                 .orElse(null);
         if (lockedRow == null) {
             return 0;
@@ -276,14 +468,21 @@ public class CorporateActionService {
             if (remainingShares <= 0) {
                 break;
             }
+            BigDecimal cashBalance = corporateActionReader
+                    .findActiveAccountCashForUpdate(candidate.accountId())
+                    .orElse(null);
+            if (cashBalance == null) {
+                continue;
+            }
             AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
-            long shareQuantity = desiredShareQuantity(
-                    remainingShares,
+            long desiredShareQuantity = desiredShareQuantity(
+                    lockedRow.shareQuantity(),
                     lockedRow.issuePrice(),
-                    candidate.cashBalance(),
+                    cashBalance,
                     policy.publicOfferingSubscriptionRate(),
                     policy.maxCashAllocationRate()
             );
+            long shareQuantity = Math.min(remainingShares, desiredShareQuantity);
             if (shareQuantity <= 0) {
                 continue;
             }
@@ -386,32 +585,49 @@ public class CorporateActionService {
         );
     }
 
-    private int payDueCashDividends(LocalDate today) {
+    private int payDueCashDividends(LocalDate today, List<RuntimeException> failures) {
         List<Long> actionIds = corporateActionReader.findDueCashDividendActionIds(today, CASH_DIVIDEND, EX_RIGHTS_APPLIED);
 
         int processed = 0;
         for (Long actionId : actionIds) {
-            LocalDateTime now = currentDateTime();
-            List<DividendEntitlementRow> entitlements =
-                    corporateActionReader.findAnnouncedDividendEntitlements(actionId, ANNOUNCED);
-            for (DividendEntitlementRow entitlement : entitlements) {
-                int updatedAccount = corporateActionAccountWriter.creditCash(entitlement.accountId(), entitlement.cashAmount(), now);
-                if (updatedAccount == 0) {
-                    throw new IllegalStateException("Stock account not found for dividend entitlement: " + entitlement.accountId());
-                }
-                corporateActionAccountWriter.recordDividendPaymentCashFlow(entitlement.accountId(), entitlement.cashAmount(), now);
-                corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
-            }
-            processed += corporateActionWriter.markActionPaid(actionId, PAID, EX_RIGHTS_APPLIED, now);
+            processed += executeActionInTransaction(
+                    "cash-dividend-payment",
+                    actionId,
+                    failures,
+                    () -> payDueCashDividend(actionId, today)
+            );
         }
         return processed;
     }
 
-    private int listDueRightsShares(LocalDate today) {
-        return listDueShareIssues(today, PAID_IN_CAPITAL_INCREASE, PAID);
+    private int payDueCashDividend(long actionId, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                actionId, today, CASH_DIVIDEND, EX_RIGHTS_APPLIED, "payment_date")) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        List<DividendEntitlementRow> entitlements =
+                corporateActionReader.findAnnouncedDividendEntitlements(actionId, ANNOUNCED);
+        for (DividendEntitlementRow entitlement : entitlements) {
+            int updatedAccount = corporateActionAccountWriter.creditCash(entitlement.accountId(), entitlement.cashAmount(), now);
+            if (updatedAccount == 0) {
+                throw new IllegalStateException("Stock account not found for dividend entitlement: " + entitlement.accountId());
+            }
+            corporateActionAccountWriter.recordDividendPaymentCashFlow(entitlement.accountId(), entitlement.cashAmount(), now);
+            corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
+        }
+        return corporateActionWriter.markActionPaid(actionId, PAID, EX_RIGHTS_APPLIED, now);
     }
 
-    private int listDueFreeShareDistributions(LocalDate today, String actionType) {
+    private int listDueRightsShares(LocalDate today, List<RuntimeException> failures) {
+        return listDueShareIssues(today, PAID_IN_CAPITAL_INCREASE, PAID, failures);
+    }
+
+    private int listDueFreeShareDistributions(
+            LocalDate today,
+            String actionType,
+            List<RuntimeException> failures
+    ) {
         List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, EX_RIGHTS_APPLIED);
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, ListingActionRow::symbol);
 
@@ -420,19 +636,40 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            LocalDateTime now = currentDateTime();
-            int updatedAction = corporateActionWriter.markActionListed(row.id(), LISTED, EX_RIGHTS_APPLIED, now);
-            if (updatedAction == 0) {
-                continue;
-            }
-            addIssuedAndTradableSharesOrThrow(row, now, "free share distribution");
-            creditShareEntitlements(row.id(), now);
-            processed += updatedAction;
+            processed += executeActionInTransaction(
+                    "free-share-listing",
+                    row.id(),
+                    failures,
+                    () -> listDueFreeShareDistribution(row, today, actionType)
+            );
         }
         return processed;
     }
 
-    private int listDueShareIssues(LocalDate today, String actionType, String sourceStatus) {
+    private int listDueFreeShareDistribution(ListingActionRow row, LocalDate today, String actionType) {
+        ListingActionRow lockedRow = corporateActionReader
+                .findDueListingForUpdate(row.id(), today, actionType, EX_RIGHTS_APPLIED)
+                .orElse(null);
+        if (lockedRow == null
+                || !orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(lockedRow), ListingActionRow::symbol).isEmpty()) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int updatedAction = corporateActionWriter.markActionListed(lockedRow.id(), LISTED, EX_RIGHTS_APPLIED, now);
+        if (updatedAction == 0) {
+            return 0;
+        }
+        addIssuedAndTradableSharesOrThrow(lockedRow, now, "free share distribution");
+        creditShareEntitlements(lockedRow.id(), now);
+        return updatedAction;
+    }
+
+    private int listDueShareIssues(
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            List<RuntimeException> failures
+    ) {
         List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, sourceStatus);
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, ListingActionRow::symbol);
 
@@ -441,24 +678,49 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            LocalDateTime now = currentDateTime();
-            int updatedAction = corporateActionWriter.markActionListed(row.id(), LISTED, sourceStatus, now);
-            if (updatedAction == 0) {
-                continue;
-            }
-            if (row.shareQuantity() > 0) {
-                addIssuedAndTradableSharesOrThrow(row, now, "corporate action");
-            }
-            if (PAID_IN_CAPITAL_INCREASE.equals(actionType)) {
-                creditSubscribedShareEntitlements(row.id(), now);
-                corporateActionAccountWriter.expireEntitlements(row.id(), EXPIRED, ANNOUNCED, now);
-            }
-            processed += updatedAction;
+            processed += executeActionInTransaction(
+                    "share-issue-listing",
+                    row.id(),
+                    failures,
+                    () -> listDueShareIssue(row, today, actionType, sourceStatus)
+            );
         }
         return processed;
     }
 
-    private int applyDueStockSplits(LocalDate today) {
+    private int listDueShareIssue(
+            ListingActionRow row,
+            LocalDate today,
+            String actionType,
+            String sourceStatus
+    ) {
+        ListingActionRow lockedRow = corporateActionReader
+                .findDueListingForUpdate(row.id(), today, actionType, sourceStatus)
+                .orElse(null);
+        if (lockedRow == null
+                || !orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(lockedRow), ListingActionRow::symbol).isEmpty()) {
+            return 0;
+        }
+        long shareQuantity = PAID_IN_CAPITAL_INCREASE.equals(actionType)
+                ? corporateActionReader.sumSubscribedShareQuantity(lockedRow.id())
+                : lockedRow.shareQuantity();
+        ListingActionRow issuanceRow = new ListingActionRow(lockedRow.id(), lockedRow.symbol(), shareQuantity);
+        LocalDateTime now = currentDateTime();
+        int updatedAction = corporateActionWriter.markActionListed(lockedRow.id(), LISTED, sourceStatus, now);
+        if (updatedAction == 0) {
+            return 0;
+        }
+        if (issuanceRow.shareQuantity() > 0) {
+            addIssuedAndTradableSharesOrThrow(issuanceRow, now, "corporate action");
+        }
+        if (PAID_IN_CAPITAL_INCREASE.equals(actionType)) {
+            creditSubscribedShareEntitlements(lockedRow.id(), now);
+            corporateActionAccountWriter.expireEntitlements(lockedRow.id(), EXPIRED, ANNOUNCED, now);
+        }
+        return updatedAction;
+    }
+
+    private int applyDueStockSplits(LocalDate today, List<RuntimeException> failures) {
         List<StockSplitActionRow> rows = corporateActionReader.findDueStockSplits(today, STOCK_SPLIT, ANNOUNCED);
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, StockSplitActionRow::symbol);
 
@@ -467,50 +729,79 @@ public class CorporateActionService {
             if (row.splitTo() % row.splitFrom() != 0 || symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            LocalDateTime now = currentDateTime();
-            int updatedAction = corporateActionWriter.markActionListed(row.id(), LISTED, ANNOUNCED, now);
-            if (updatedAction == 0) {
-                continue;
-            }
-
-            int multiplier = row.splitTo() / row.splitFrom();
-            BigDecimal priceDivisor = BigDecimal.valueOf(multiplier);
-            int updatedInstrument = corporateActionWriter.multiplyInstrumentShares(row.symbol(), multiplier, now);
-            if (updatedInstrument == 0) {
-                throw new IllegalStateException("Order book instrument not found for stock split: " + row.symbol());
-            }
-            corporateActionWriter.multiplyHoldingsForSplit(row.symbol(), multiplier, priceDivisor, now);
-            corporateActionWriter.adjustPriceForSplit(row.symbol(), priceDivisor, now);
-            corporateActionPriceWriter.insertCurrentPriceTick(row.symbol(), "corporate-action-split", now);
-            processed += updatedAction;
+            processed += executeActionInTransaction(
+                    "stock-split",
+                    row.id(),
+                    failures,
+                    () -> applyDueStockSplit(row, today)
+            );
         }
         return processed;
     }
 
-    private int applyDueDelistings(LocalDate today) {
+    private int applyDueStockSplit(StockSplitActionRow row, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, STOCK_SPLIT, ANNOUNCED, "listing_date")) {
+            return 0;
+        }
+        if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), StockSplitActionRow::symbol).isEmpty()) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int updatedAction = corporateActionWriter.markActionListed(row.id(), LISTED, ANNOUNCED, now);
+        if (updatedAction == 0) {
+            return 0;
+        }
+
+        int multiplier = row.splitTo() / row.splitFrom();
+        BigDecimal priceDivisor = BigDecimal.valueOf(multiplier);
+        int updatedInstrument = corporateActionWriter.multiplyInstrumentShares(row.symbol(), multiplier, now);
+        if (updatedInstrument == 0) {
+            throw new IllegalStateException("Order book instrument not found for stock split: " + row.symbol());
+        }
+        corporateActionWriter.multiplyHoldingsForSplit(row.symbol(), multiplier, priceDivisor, now);
+        corporateActionWriter.adjustPriceForSplit(row.symbol(), priceDivisor, now);
+        corporateActionPriceWriter.insertCurrentPriceTick(row.symbol(), "corporate-action-split", now);
+        return updatedAction;
+    }
+
+    private int applyDueDelistings(LocalDate today, List<RuntimeException> failures) {
         List<DelistingActionRow> rows = corporateActionReader.findDueDelistings(today, DELISTING, ANNOUNCED);
 
         int processed = 0;
         for (DelistingActionRow row : rows) {
-            LocalDateTime now = currentDateTime();
-            int updatedAction = corporateActionWriter.markActionDelisted(row.id(), DELISTED, ANNOUNCED, now);
-            if (updatedAction == 0) {
-                continue;
-            }
-            orderBookOrderGuard.cancelOpenOrderBookOrders(row.symbol(), now);
-            int updatedInstrument = corporateActionWriter.delistInstrument(row.symbol(), now);
-            if (updatedInstrument == 0) {
-                throw new IllegalStateException("Order book instrument not found for delisting: " + row.symbol());
-            }
-            corporateActionWriter.haltOrderBookMarket(row.symbol(), now);
-            corporateActionWriter.disableAutoMarket(row.symbol(), now);
-            corporateActionWriter.disableListingAutoAccount(row.symbol(), now);
-            corporateActionWriter.disableParticipantSymbolConfigs(row.symbol(), now);
-            corporateActionPriceWriter.upsertPrice(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
-            corporateActionPriceWriter.insertPriceTick(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
-            processed += updatedAction;
+            processed += executeActionInTransaction(
+                    "delisting",
+                    row.id(),
+                    failures,
+                    () -> applyDueDelisting(row, today)
+            );
         }
         return processed;
+    }
+
+    private int applyDueDelisting(DelistingActionRow row, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, DELISTING, ANNOUNCED, "delisting_date")) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int updatedAction = corporateActionWriter.markActionDelisted(row.id(), DELISTED, ANNOUNCED, now);
+        if (updatedAction == 0) {
+            return 0;
+        }
+        orderBookOrderGuard.cancelOpenOrderBookOrders(row.symbol(), now);
+        int updatedInstrument = corporateActionWriter.delistInstrument(row.symbol(), now);
+        if (updatedInstrument == 0) {
+            throw new IllegalStateException("Order book instrument not found for delisting: " + row.symbol());
+        }
+        corporateActionWriter.haltOrderBookMarket(row.symbol(), now);
+        corporateActionWriter.disableAutoMarket(row.symbol(), now);
+        corporateActionWriter.disableListingAutoAccount(row.symbol(), now);
+        corporateActionWriter.disableParticipantSymbolConfigs(row.symbol(), now);
+        corporateActionPriceWriter.upsertPrice(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
+        corporateActionPriceWriter.insertPriceTick(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
+        return updatedAction;
     }
 
     private void addIssuedAndTradableSharesOrThrow(ListingActionRow row, LocalDateTime now, String actionName) {
@@ -553,8 +844,71 @@ public class CorporateActionService {
         }
     }
 
+    private int executeActionInTransaction(
+            String operation,
+            long actionId,
+            List<RuntimeException> failures,
+            Supplier<Integer> action
+    ) {
+        try {
+            return transactionExecutor.execute(action);
+        } catch (RuntimeException ex) {
+            log.error(
+                    "Corporate action unit failed and was rolled back: operation={}, actionId={}, reason={}",
+                    operation,
+                    actionId,
+                    ex.getMessage(),
+                    ex
+            );
+            failures.add(new IllegalStateException(
+                    "Corporate action " + operation + " failed: " + actionId,
+                    ex
+            ));
+            return 0;
+        }
+    }
+
+    private int executeStage(
+            String operation,
+            List<RuntimeException> failures,
+            Supplier<Integer> stage
+    ) {
+        try {
+            return stage.get();
+        } catch (RuntimeException ex) {
+            log.error(
+                    "Corporate action stage failed; later stages will continue: operation={}, reason={}",
+                    operation,
+                    ex.getMessage(),
+                    ex
+            );
+            failures.add(new IllegalStateException(
+                    "Corporate action stage failed: " + operation,
+                    ex
+            ));
+            return 0;
+        }
+    }
+
+    private void throwIfAnyActionFailed(List<RuntimeException> failures) {
+        if (failures.isEmpty()) {
+            return;
+        }
+        IllegalStateException aggregate = new IllegalStateException(
+                "Corporate action processing failed for " + failures.size() + " action unit(s)"
+        );
+        failures.forEach(aggregate::addSuppressed);
+        throw aggregate;
+    }
+
     private LocalDateTime currentDateTime() {
         return simulationClockService.currentMarketDateTime();
+    }
+
+    private record ExRightsPriceAdjustment(
+            BigDecimal basePrice,
+            BigDecimal theoreticalExRightsPrice
+    ) {
     }
 
 }

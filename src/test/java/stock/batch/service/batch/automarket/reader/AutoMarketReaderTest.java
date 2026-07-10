@@ -462,6 +462,12 @@ class AutoMarketReaderTest {
         );
         realJdbcTemplate.update(
                 "insert into stock_price_tick(symbol, price, price_time) values (?, ?, ?)",
+                "STOCK002",
+                new BigDecimal("30200.00"),
+                LocalDateTime.of(2026, 6, 30, 9, 3)
+        );
+        realJdbcTemplate.update(
+                "insert into stock_price_tick(symbol, price, price_time) values (?, ?, ?)",
                 "STOCK003",
                 new BigDecimal("99999.00"),
                 LocalDateTime.of(2026, 6, 30, 9, 9)
@@ -474,7 +480,7 @@ class AutoMarketReaderTest {
         );
 
         assertThat(pricesBySymbol).containsOnlyKeys("STOCK002");
-        assertThat(pricesBySymbol.get("STOCK002")).isEqualByComparingTo(new BigDecimal("30100.00"));
+        assertThat(pricesBySymbol.get("STOCK002")).isEqualByComparingTo(new BigDecimal("30200.00"));
     }
 
     private JdbcTemplate createJdbcTemplate(String databaseName) {

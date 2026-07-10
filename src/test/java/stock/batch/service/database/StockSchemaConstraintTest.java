@@ -31,6 +31,7 @@ class StockSchemaConstraintTest {
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("delete from stock_auto_participant_event_profile_config");
         jdbcTemplate.update("delete from stock_corporate_action_entitlement");
         jdbcTemplate.update("delete from stock_corporate_action");
         jdbcTemplate.update("delete from stock_execution");
@@ -82,6 +83,28 @@ class StockSchemaConstraintTest {
     void stockOrder_unknownOrderType_isRejectedBySchema() {
         assertThatThrownBy(() -> insertStockOrder("bad-order-type", "BUY", "STOP", "PENDING"))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void stockOrder_virtualPriceMarketType_isAcceptedBySchema() {
+        int inserted = jdbcTemplate.update(
+                """
+                insert into stock_order(
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
+                  quantity, filled_quantity, reserved_cash, created_at, updated_at
+                ) values (?, ?, ?, 'VIRTUAL_PRICE', 'BUY', 'LIMIT', 'PENDING', ?, ?, 0, ?, ?, ?)
+                """,
+                "virtual-price-order",
+                1L,
+                "005930",
+                new BigDecimal("70000.00"),
+                1L,
+                new BigDecimal("70000.00"),
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+
+        assertThat(inserted).isOne();
     }
 
     @Test
@@ -149,6 +172,23 @@ class StockSchemaConstraintTest {
     }
 
     @Test
+    void stockExecution_virtualMarketPriceSource_isAcceptedBySchema() {
+        int inserted = jdbcTemplate.update(
+                stockExecutionInsertSql(),
+                1L,
+                1L,
+                "005930",
+                "BUY",
+                1L,
+                new BigDecimal("70000.00"),
+                "VIRTUAL_MARKET_PRICE",
+                LocalDateTime.now()
+        );
+
+        assertThat(inserted).isOne();
+    }
+
+    @Test
     void stockHolding_reservedQuantityGreaterThanQuantity_isRejectedBySchema() {
         assertThatThrownBy(() -> jdbcTemplate.update(
                 """
@@ -173,6 +213,56 @@ class StockSchemaConstraintTest {
                 1L,
                 new BigDecimal("1000.00"),
                 LocalDate.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void stockAutoParticipantEventProfile_unknownProfileType_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_event_profile_config(
+                  profile_type, shareholder_subscription_rate, public_offering_subscription_rate,
+                  max_cash_allocation_rate, updated_at
+                ) values ('LONG_TERM_HODLER', 0.95, 0.35, 0.40, ?)
+                """,
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void stockCorporateActionEntitlement_subscribedSharesAboveAllocation_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (1, 1, '005930', 10, 10, 500000.00,
+                          11, 550000.00, 'SUBSCRIBED', null, ?, ?, null)
+                """,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void stockCorporateAction_publicOfferingPaymentOnSubscriptionEnd_isRejectedBySchema() {
+        LocalDate subscriptionStartDate = LocalDate.now().plusDays(1);
+        LocalDate subscriptionEndDate = LocalDate.now().plusDays(2);
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into stock_corporate_action(
+                  symbol, action_type, share_quantity, issue_price, status,
+                  offering_type, subscription_start_date, subscription_end_date,
+                  payment_date, listing_date, description, created_at
+                ) values ('005930', 'PAID_IN_CAPITAL_INCREASE', 100, 50000.00, 'ANNOUNCED',
+                          'PUBLIC_OFFERING', ?, ?, ?, ?, 'invalid schedule', ?)
+                """,
+                subscriptionStartDate,
+                subscriptionEndDate,
+                subscriptionEndDate,
+                subscriptionEndDate.plusDays(1),
                 LocalDateTime.now()
         )).isInstanceOf(DataIntegrityViolationException.class);
     }
@@ -279,7 +369,7 @@ class StockSchemaConstraintTest {
     @Test
     void stockPriceTick_symbolTimeIndex_existsInSchema() throws SQLException {
         assertIndexNames("stock_price_tick")
-                .contains("idx_stock_price_tick_symbol_time");
+                .contains("idx_stock_price_tick_symbol_time_id");
     }
 
     @Test

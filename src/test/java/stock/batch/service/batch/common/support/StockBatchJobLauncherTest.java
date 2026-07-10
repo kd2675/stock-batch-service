@@ -28,6 +28,7 @@ import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
 import stock.batch.service.settlement.biz.PortfolioSettlementService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.time.LocalDate;
@@ -61,10 +62,13 @@ class StockBatchJobLauncherTest {
     private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder = mock(StockBatchJobRepositoryRecorder.class);
     private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
             mock(AutoParticipantCashFlowRuntimeControl.class);
+    private final SimulationMarketSessionService simulationMarketSessionService =
+            mock(SimulationMarketSessionService.class);
 
     private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
             new StockBatchJobRunner(createBatchJobLockRegistry("launcher-default"), stockBatchJobRepositoryRecorder),
             autoParticipantCashFlowRuntimeControl,
+            simulationMarketSessionService,
             new MarketDataRefreshJob(marketDataRefreshService),
             new OrderBookExecutionJob(internalOrderBookExecutionService),
             new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
@@ -82,6 +86,7 @@ class StockBatchJobLauncherTest {
     StockBatchJobLauncherTest() {
         when(stockBatchJobRepositoryRecorder.start(any(), any())).thenReturn(executionRecord);
         when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(true);
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(true);
     }
 
     @Test
@@ -231,6 +236,17 @@ class StockBatchJobLauncherTest {
         assertThat(response.executionMode()).isEqualTo("manual-recurring-cash");
         assertThat(response.status()).isEqualTo("SKIPPED");
         assertThat(response.message()).isEqualTo(StockBatchJobRunResponses.MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE);
+        verify(autoParticipantCashFlowService, never()).fundRecurringCashManually();
+    }
+
+    @Test
+    void fundAutoParticipantsManually_beforeMarketClose_defersManualRun() {
+        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
+
+        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.message()).isEqualTo(StockBatchJobRunResponses.MANUAL_CASH_FLOW_BEFORE_MARKET_CLOSE_MESSAGE);
         verify(autoParticipantCashFlowService, never()).fundRecurringCashManually();
     }
 

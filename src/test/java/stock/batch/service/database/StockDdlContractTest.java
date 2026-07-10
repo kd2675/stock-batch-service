@@ -42,6 +42,8 @@ class StockDdlContractTest {
             "chk_stock_corporate_action_ex_rights_price",
             "chk_stock_corporate_action_paid_dates",
             "chk_stock_corporate_action_listing_dates",
+            "chk_stock_corporate_action_subscription_dates",
+            "chk_stock_corporate_action_paid_date_order",
             "chk_stock_corporate_action_split_from",
             "chk_stock_corporate_action_split_to",
             "chk_stock_corporate_action_issue_required",
@@ -51,12 +53,29 @@ class StockDdlContractTest {
             "chk_stock_corporate_action_free_share_required",
             "chk_stock_corporate_action_delisting_required",
             "chk_stock_corporate_action_field_scope",
-            "chk_stock_corporate_action_initial_listed"
+            "chk_stock_corporate_action_initial_listed",
+            "chk_stock_corporate_action_entitlement_subscribed_share_limit"
     );
 
-    private static final List<String> CORPORATE_ACTION_DDL_RESOURCES = List.of(
-            "db/ddl/stock_all.sql",
-            "db/ddl/stock_h2.sql"
+    private static final List<String> AUTO_PARTICIPANT_PROFILE_TYPES = List.of(
+            "NEWS_REACTIVE", "MOMENTUM_FOLLOWER", "CONTRARIAN", "LOSS_AVERSE",
+            "OVERCONFIDENT", "HERD_FOLLOWER", "MARKET_MAKER", "NOISE_TRADER",
+            "VALUE_ANCHOR", "SCALPER", "DAY_TRADER", "SWING_TRADER",
+            "LONG_TERM_HOLDER", "PAYDAY_ACCUMULATOR", "DIVIDEND_REINVESTOR",
+            "LIMIT_DOWN_TRAPPED", "AVERAGE_DOWN_BUYER", "STOP_LOSS_TRADER",
+            "FOMO_BUYER", "PANIC_SELLER", "DIP_BUYER", "PROFIT_LOCKER",
+            "LIQUIDITY_AVOIDANT", "CASH_DEFENSIVE", "WHALE", "SMALL_DIVERSIFIER", "OBSERVER"
+    );
+
+    private static final Path CANONICAL_MYSQL_DDL = Path.of(
+            "../stock-back-service/src/main/resources/db/ddl/stock_all.sql"
+    );
+    private static final Path BATCH_MYSQL_DDL_DUPLICATE = Path.of(
+            "src/main/resources/db/ddl/stock_all.sql"
+    );
+    private static final List<Path> BUSINESS_DDL_FILES = List.of(
+            CANONICAL_MYSQL_DDL,
+            Path.of("src/main/resources/db/ddl/stock_h2.sql")
     );
 
     private static final List<String> DEFAULT_SEED_MARKERS = List.of(
@@ -118,6 +137,8 @@ class StockDdlContractTest {
             "idx_stock_auto_participant_profile_active",
             "idx_stock_auto_participant_symbol_lookup",
             "idx_stock_auto_order_schedule_due",
+            "idx_stock_corporate_action_created",
+            "idx_stock_corporate_action_type_created",
             "idx_stock_corporate_action_status_symbol"
     );
 
@@ -131,22 +152,28 @@ class StockDdlContractTest {
 
     @Test
     void corporateActionDdlResources_matchInitialProjectScope() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).contains(INITIAL_CORPORATE_ACTION_SCOPE.toArray(String[]::new));
-            assertThat(ddl).as(resourcePath).contains(REQUIRED_CORPORATE_ACTION_CONSTRAINTS.toArray(String[]::new));
-            assertThat(ddl).as(resourcePath).doesNotContain(DEFERRED_CORPORATE_ACTION_SCOPE.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(INITIAL_CORPORATE_ACTION_SCOPE.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(REQUIRED_CORPORATE_ACTION_CONSTRAINTS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).doesNotContain(DEFERRED_CORPORATE_ACTION_SCOPE.toArray(String[]::new));
         }
     }
 
     @Test
     void ddlResources_createSchemaWithoutDefaultMarketSeed() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).doesNotContain(DEFAULT_SEED_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).doesNotContain(DEFAULT_SEED_MARKERS.toArray(String[]::new));
         }
+    }
+
+    @Test
+    void mysqlBusinessDdl_hasSingleCanonicalBackServiceSource() {
+        assertThat(CANONICAL_MYSQL_DDL).isRegularFile();
+        assertThat(BATCH_MYSQL_DDL_DUPLICATE).doesNotExist();
     }
 
     @Test
@@ -170,10 +197,10 @@ class StockDdlContractTest {
 
     @Test
     void businessDdlResources_doNotDefineSpringBatchMetadataTables() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).doesNotContain(BATCH_METADATA_TABLE_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).doesNotContain(BATCH_METADATA_TABLE_MARKERS.toArray(String[]::new));
         }
     }
 
@@ -188,30 +215,43 @@ class StockDdlContractTest {
 
     @Test
     void ddlResources_defineSharedBatchOperationTables() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).contains(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
-            assertThat(ddl).as(resourcePath).contains(SIMULATION_CLOCK_TABLE_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(BATCH_OPERATION_TABLE_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(SIMULATION_CLOCK_TABLE_MARKERS.toArray(String[]::new));
         }
     }
 
     @Test
     void ddlResources_defineMarketCloseHoldingSnapshotTables() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).contains(MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS.toArray(String[]::new));
         }
     }
 
     @Test
     void ddlResources_defineAdminQueryPerformanceIndexes() throws IOException {
-        for (String resourcePath : CORPORATE_ACTION_DDL_RESOURCES) {
-            String ddl = readDdlResource(resourcePath);
+        for (Path ddlFile : BUSINESS_DDL_FILES) {
+            String ddl = Files.readString(ddlFile, StandardCharsets.UTF_8);
 
-            assertThat(ddl).as(resourcePath).contains(ADMIN_QUERY_INDEX_MARKERS.toArray(String[]::new));
+            assertThat(ddl).as(ddlFile.toString()).contains(ADMIN_QUERY_INDEX_MARKERS.toArray(String[]::new));
         }
+    }
+
+    @Test
+    void stockH2Ddl_matchesCanonicalSharedOrderAndExecutionValues() throws IOException {
+        String mysqlDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
+        String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
+        List<String> sharedConstraints = List.of(
+                "chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1)",
+                "chk_stock_execution_source_valid CHECK (CASE `source` WHEN 'VIRTUAL_MARKET_PRICE' THEN 1 WHEN 'INTERNAL_ORDER_BOOK' THEN 1 ELSE 0 END = 1)"
+        );
+
+        assertThat(mysqlDdl).contains(sharedConstraints.toArray(String[]::new));
+        assertThat(h2Ddl).contains(sharedConstraints.toArray(String[]::new));
     }
 
     @Test
@@ -306,8 +346,119 @@ class StockDdlContractTest {
     }
 
     @Test
+    void capitalIncreaseAlterDdl_guardsLegacyRowsAndIsSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_capital_increase_subscription_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_capital_increase_subscription_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "stock_legacy_paid_in_unsafe_count",
+                "status NOT IN ('ANNOUNCED', 'LISTED')",
+                "stock_migration_required_legacy_paid_in_entitlements",
+                "DATE_ADD(ex_rights_date, INTERVAL 1 DAY)",
+                "DATE_SUB(payment_date, INTERVAL 1 DAY)",
+                "chk_stock_corporate_action_paid_date_order",
+                "chk_stock_corporate_action_entitlement_subscribed_share_limit"
+        ).doesNotContain("SIGNAL SQLSTATE");
+    }
+
+    @Test
+    void capitalIncreaseHardeningAlterDdl_isSeparateAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_capital_increase_contract_hardening_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_capital_increase_contract_hardening_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "information_schema.statistics",
+                "idx_stock_corporate_action_created",
+                "idx_stock_corporate_action_type_created",
+                "PREPARE stock_corporate_action_created_index_stmt",
+                "PREPARE stock_corporate_action_type_created_index_stmt",
+                "stock_paid_in_invalid_schedule_count",
+                "payment_date <= subscription_end_date",
+                "stock_migration_required_paid_in_schedule",
+                "stock_auto_event_profile_invalid_type_count",
+                "stock_migration_required_event_profile_type",
+                "chk_stock_auto_event_profile_type",
+                "chk_stock_corporate_action_entitlement_subscribed_share_limit"
+        ).doesNotContain("SIGNAL SQLSTATE");
+    }
+
+    @Test
+    void schemaContractAlignmentAlterDdl_isGuardedAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_schema_contract_alignment_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_schema_contract_alignment_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "stock_migration_required_schema_contract_alignment",
+                "ALTER COLUMN market_enabled DROP DEFAULT",
+                "ALTER COLUMN regime_phase DROP DEFAULT",
+                "chk_stock_order_book_daily_snapshot_flow",
+                "chk_stock_order_book_daily_snapshot_open_order",
+                "chk_stock_order_book_daily_snapshot_holding",
+                "chk_stock_order_book_daily_regime_phase",
+                "chk_stock_order_book_daily_regime_execution_aggression",
+                "action_type NOT IN ('INITIAL_ISSUE', 'PAID_IN_CAPITAL_INCREASE')"
+        ).doesNotContain("ADDITIONAL_ISSUE", "SIGNAL SQLSTATE");
+    }
+
+    @Test
+    void priceTickLatestLookupAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_price_tick_latest_lookup_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_price_tick_latest_lookup_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "USE STOCK_SERVICE",
+                "information_schema.statistics",
+                "ADD INDEX idx_stock_price_tick_symbol_time_id (symbol, price_time, id)",
+                "DROP INDEX idx_stock_price_tick_symbol_time"
+        );
+    }
+
+    @Test
+    void eventProfileDdlResources_allowOnlyKnownAutoParticipantProfiles() throws IOException {
+        List<String> ddlResources = List.of(
+                Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8),
+                readDdlResource("db/ddl/stock_h2.sql"),
+                readDdlResource("db/ddl/stock_auto_participant_event_profile_config_alter.sql"),
+                readDdlResource("db/ddl/stock_capital_increase_contract_hardening_alter.sql")
+        );
+
+        for (String ddl : ddlResources) {
+            String eventProfileBlock = ddl.substring(ddl.indexOf("chk_stock_auto_event_profile_type"));
+            assertThat(eventProfileBlock).contains(AUTO_PARTICIPANT_PROFILE_TYPES.toArray(String[]::new));
+        }
+    }
+
+    @Test
     void stockOrderDdl_doesNotCreateRedundantStatusSymbolIndex() throws IOException {
-        String mysqlDdl = readDdlResource("db/ddl/stock_all.sql");
+        String mysqlDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
         String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
 
         assertThat(extractCreateTableBlock(mysqlDdl, "stock_order"))

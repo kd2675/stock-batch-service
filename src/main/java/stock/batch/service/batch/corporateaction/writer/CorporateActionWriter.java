@@ -1,7 +1,6 @@
 package stock.batch.service.batch.corporateaction.writer;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 import lombok.RequiredArgsConstructor;
@@ -21,30 +20,30 @@ public class CorporateActionWriter {
         return markCorporateActionTimestamp(actionId, nextStatus, sourceStatus, "applied_at", appliedAt);
     }
 
-    public int markDueRightsPayments(
-            LocalDate today,
-            String paidStatus,
-            String actionType,
+    public int markActionExRightsAppliedWithPrices(
+            long actionId,
+            String nextStatus,
             String sourceStatus,
-            String offeringType,
-            LocalDateTime paidAt
+            BigDecimal basePrice,
+            BigDecimal theoreticalExRightsPrice,
+            LocalDateTime appliedAt
     ) {
         return jdbcTemplate.update(
                 """
                 update stock_corporate_action
                    set status = ?,
-                       paid_at = ?
-	                 where action_type = ?
-	                   and status = ?
-	                   and offering_type = ?
-	                   and payment_date <= ?
-	                """,
-                paidStatus,
-                paidAt,
-                actionType,
-                sourceStatus,
-                offeringType,
-                today
+                       base_price = ?,
+                       theoretical_ex_rights_price = ?,
+                       applied_at = ?
+                 where id = ?
+                   and status = ?
+                """,
+                nextStatus,
+                basePrice,
+                theoreticalExRightsPrice,
+                appliedAt,
+                actionId,
+                sourceStatus
         );
     }
 

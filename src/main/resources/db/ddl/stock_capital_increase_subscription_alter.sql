@@ -54,6 +54,77 @@ PREPARE stock_corporate_action_subscription_end_column_stmt FROM @stock_corporat
 EXECUTE stock_corporate_action_subscription_end_column_stmt;
 DEALLOCATE PREPARE stock_corporate_action_subscription_end_column_stmt;
 
+SET @stock_legacy_paid_in_unsafe_count := (
+  SELECT COUNT(*)
+    FROM stock_corporate_action
+   WHERE action_type = 'PAID_IN_CAPITAL_INCREASE'
+     AND offering_type IS NULL
+     AND (
+       status NOT IN ('ANNOUNCED', 'LISTED')
+       OR subscription_start_date IS NOT NULL
+       OR subscription_end_date IS NOT NULL
+       OR ex_rights_date IS NULL
+       OR payment_date IS NULL
+       OR listing_date IS NULL
+       OR base_price IS NULL
+       OR theoretical_ex_rights_price IS NULL
+       OR DATE_ADD(ex_rights_date, INTERVAL 1 DAY) > DATE_SUB(payment_date, INTERVAL 1 DAY)
+       OR listing_date <= payment_date
+     )
+);
+
+-- PREPARE cannot execute SIGNAL; select a descriptive non-existent table to abort an unsafe migration.
+SET @stock_legacy_paid_in_guard_sql := IF(
+  @stock_legacy_paid_in_unsafe_count > 0,
+  'SELECT 1 FROM stock_migration_required_legacy_paid_in_entitlements',
+  'SELECT 1'
+);
+
+PREPARE stock_legacy_paid_in_guard_stmt FROM @stock_legacy_paid_in_guard_sql;
+EXECUTE stock_legacy_paid_in_guard_stmt;
+DEALLOCATE PREPARE stock_legacy_paid_in_guard_stmt;
+
+UPDATE stock_corporate_action
+   SET offering_type = 'SHAREHOLDER_ALLOCATION',
+       subscription_start_date = DATE_ADD(ex_rights_date, INTERVAL 1 DAY),
+       subscription_end_date = DATE_SUB(payment_date, INTERVAL 1 DAY)
+ WHERE action_type = 'PAID_IN_CAPITAL_INCREASE'
+   AND offering_type IS NULL
+   AND subscription_start_date IS NULL
+   AND subscription_end_date IS NULL
+   AND status IN ('ANNOUNCED', 'LISTED');
+
+SET @stock_paid_in_incomplete_contract_count := (
+  SELECT COUNT(*)
+    FROM stock_corporate_action
+   WHERE action_type = 'PAID_IN_CAPITAL_INCREASE'
+     AND (
+       offering_type IS NULL
+       OR subscription_start_date IS NULL
+       OR subscription_end_date IS NULL
+       OR payment_date IS NULL
+       OR listing_date IS NULL
+       OR subscription_end_date < subscription_start_date
+       OR payment_date <= subscription_end_date
+       OR listing_date <= payment_date
+       OR (
+         offering_type = 'SHAREHOLDER_ALLOCATION'
+         AND (ex_rights_date IS NULL OR subscription_start_date <= ex_rights_date)
+       )
+     )
+);
+
+-- PREPARE cannot execute SIGNAL; select a descriptive non-existent table to abort an unsafe migration.
+SET @stock_paid_in_incomplete_contract_guard_sql := IF(
+  @stock_paid_in_incomplete_contract_count > 0,
+  'SELECT 1 FROM stock_migration_required_paid_in_schedule',
+  'SELECT 1'
+);
+
+PREPARE stock_paid_in_incomplete_contract_guard_stmt FROM @stock_paid_in_incomplete_contract_guard_sql;
+EXECUTE stock_paid_in_incomplete_contract_guard_stmt;
+DEALLOCATE PREPARE stock_paid_in_incomplete_contract_guard_stmt;
+
 SET @stock_corporate_action_type_valid_check_exists := (
   SELECT COUNT(*)
     FROM information_schema.check_constraints
@@ -195,6 +266,34 @@ ALTER TABLE stock_corporate_action
     )
   );
 
+SET @stock_corporate_action_paid_date_order_check_exists := (
+  SELECT COUNT(*)
+    FROM information_schema.check_constraints
+   WHERE constraint_schema = DATABASE()
+     AND constraint_name = 'chk_stock_corporate_action_paid_date_order'
+);
+
+SET @stock_corporate_action_paid_date_order_check_drop_sql := IF(
+  @stock_corporate_action_paid_date_order_check_exists > 0,
+  'ALTER TABLE stock_corporate_action DROP CHECK chk_stock_corporate_action_paid_date_order',
+  'SELECT 1'
+);
+
+PREPARE stock_corporate_action_paid_date_order_check_drop_stmt FROM @stock_corporate_action_paid_date_order_check_drop_sql;
+EXECUTE stock_corporate_action_paid_date_order_check_drop_stmt;
+DEALLOCATE PREPARE stock_corporate_action_paid_date_order_check_drop_stmt;
+
+ALTER TABLE stock_corporate_action
+  ADD CONSTRAINT chk_stock_corporate_action_paid_date_order CHECK (
+    action_type <> 'PAID_IN_CAPITAL_INCREASE'
+    OR (
+      subscription_end_date >= subscription_start_date
+      AND payment_date > subscription_end_date
+      AND listing_date > payment_date
+      AND (offering_type <> 'SHAREHOLDER_ALLOCATION' OR subscription_start_date > ex_rights_date)
+    )
+  );
+
 SET @stock_corporate_action_field_scope_check_exists := (
   SELECT COUNT(*)
     FROM information_schema.check_constraints
@@ -328,6 +427,42 @@ SET @stock_entitlement_subscribed_share_check_sql := IF(
 PREPARE stock_entitlement_subscribed_share_check_stmt FROM @stock_entitlement_subscribed_share_check_sql;
 EXECUTE stock_entitlement_subscribed_share_check_stmt;
 DEALLOCATE PREPARE stock_entitlement_subscribed_share_check_stmt;
+
+SET @stock_entitlement_subscribed_share_limit_violation_count := (
+  SELECT COUNT(*)
+    FROM stock_corporate_action_entitlement
+   WHERE subscribed_share_quantity IS NOT NULL
+     AND share_quantity IS NOT NULL
+     AND subscribed_share_quantity > share_quantity
+);
+
+-- PREPARE cannot execute SIGNAL; select a descriptive non-existent table to abort an unsafe migration.
+SET @stock_entitlement_subscribed_share_limit_guard_sql := IF(
+  @stock_entitlement_subscribed_share_limit_violation_count > 0,
+  'SELECT 1 FROM stock_migration_required_entitlement_share_limit',
+  'SELECT 1'
+);
+
+PREPARE stock_entitlement_subscribed_share_limit_guard_stmt FROM @stock_entitlement_subscribed_share_limit_guard_sql;
+EXECUTE stock_entitlement_subscribed_share_limit_guard_stmt;
+DEALLOCATE PREPARE stock_entitlement_subscribed_share_limit_guard_stmt;
+
+SET @stock_entitlement_subscribed_share_limit_check_exists := (
+  SELECT COUNT(*)
+    FROM information_schema.check_constraints
+   WHERE constraint_schema = DATABASE()
+     AND constraint_name = 'chk_stock_corporate_action_entitlement_subscribed_share_limit'
+);
+
+SET @stock_entitlement_subscribed_share_limit_check_sql := IF(
+  @stock_entitlement_subscribed_share_limit_check_exists = 0,
+  'ALTER TABLE stock_corporate_action_entitlement ADD CONSTRAINT chk_stock_corporate_action_entitlement_subscribed_share_limit CHECK (subscribed_share_quantity IS NULL OR share_quantity IS NULL OR subscribed_share_quantity <= share_quantity)',
+  'SELECT 1'
+);
+
+PREPARE stock_entitlement_subscribed_share_limit_check_stmt FROM @stock_entitlement_subscribed_share_limit_check_sql;
+EXECUTE stock_entitlement_subscribed_share_limit_check_stmt;
+DEALLOCATE PREPARE stock_entitlement_subscribed_share_limit_check_stmt;
 
 SET @stock_entitlement_subscribed_cash_check_exists := (
   SELECT COUNT(*)

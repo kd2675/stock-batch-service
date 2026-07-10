@@ -30,6 +30,8 @@ class PortfolioSettlementServiceTest {
     @BeforeEach
     void setUp() {
         jdbcTemplate.update("delete from portfolio_snapshot");
+        jdbcTemplate.update("delete from stock_corporate_action_entitlement");
+        jdbcTemplate.update("delete from stock_corporate_action");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_price");
@@ -138,6 +140,33 @@ class PortfolioSettlementServiceTest {
     }
 
     @Test
+    void settleToday_capitalIncreaseSubscriptionPreservesPrincipalBeforeAndAfterListing() {
+        insertAccount("capital-settlement-user", "8000000.00", "10000000.00");
+        insertCapitalIncreaseSubscriptionCashFlow("capital-settlement-user", "2000000.00");
+        long entitlementId = insertSubscribedCapitalIncreaseEntitlement(
+                "capital-settlement-user",
+                "ZQ036",
+                40L,
+                "2000000.00"
+        );
+
+        portfolioSettlementService.settleToday();
+        String beforeListing = snapshotTotalAndReturn("capital-settlement-user");
+
+        jdbcTemplate.update(
+                "update stock_corporate_action_entitlement set status = 'PAID', paid_at = ? where id = ?",
+                LocalDateTime.now(),
+                entitlementId
+        );
+        insertPrice("ZQ036", "50000.00");
+        insertHolding("capital-settlement-user", "ZQ036", 40L, "50000.00");
+        portfolioSettlementService.settleToday();
+
+        assertThat(beforeListing + "|" + snapshotTotalAndReturn("capital-settlement-user"))
+                .isEqualTo("10000000.00:0.0000|10000000.00:0.0000");
+    }
+
+    @Test
     void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
         insertAccount("stock-listing-zq001", "1.00", "1.00");
 
@@ -224,6 +253,57 @@ class PortfolioSettlementServiceTest {
                 LocalDateTime.now(),
                 userKey
         );
+    }
+
+    private void insertCapitalIncreaseSubscriptionCashFlow(String userKey, String amount) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(account_id, flow_type, amount, reason, created_by, created_at)
+                select id, 'WITHDRAW', ?, 'CAPITAL_INCREASE_SUBSCRIPTION', 'CORPORATE_ACTION_AUTO', ?
+                  from stock_account
+                 where user_key = ?
+                """,
+                new BigDecimal(amount),
+                LocalDateTime.now(),
+                userKey
+        );
+    }
+
+    private long insertSubscribedCapitalIncreaseEntitlement(
+            String userKey,
+            String symbol,
+            long shareQuantity,
+            String cashAmount
+    ) {
+        long accountId = accountIdFor(userKey);
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (900001, ?, ?, ?, ?, ?, ?, ?, 'SUBSCRIBED', null, ?, ?, null)
+                """,
+                accountId,
+                symbol,
+                shareQuantity,
+                shareQuantity,
+                new BigDecimal(cashAmount),
+                shareQuantity,
+                new BigDecimal(cashAmount),
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+        return jdbcTemplate.queryForObject(
+                "select id from stock_corporate_action_entitlement where action_id = 900001 and account_id = ?",
+                Long.class,
+                accountId
+        );
+    }
+
+    private String snapshotTotalAndReturn(String userKey) {
+        return queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = '" + userKey + "'")
+                + ":" + queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = '" + userKey + "'");
     }
 
     private void insertPrice(String symbol, String currentPrice) {

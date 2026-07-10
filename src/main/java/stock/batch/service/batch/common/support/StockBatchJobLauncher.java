@@ -21,6 +21,7 @@ import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 @Service
 @RequiredArgsConstructor
@@ -28,6 +29,7 @@ public class StockBatchJobLauncher {
 
     private final StockBatchJobRunner stockBatchJobRunner;
     private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl;
+    private final SimulationMarketSessionService simulationMarketSessionService;
     private final MarketDataRefreshJob marketDataRefreshJob;
     private final OrderBookExecutionJob orderBookExecutionJob;
     private final AutoParticipantCashFlowJob autoParticipantCashFlowJob;
@@ -56,6 +58,9 @@ public class StockBatchJobLauncher {
     public StockBatchJobRunResponse fundAutoParticipantsManually() {
         if (!autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()) {
             return StockBatchJobRunResponses.manualCashFlowAutoEnabled(LocalDateTime.now());
+        }
+        if (!simulationMarketSessionService.isAfterCloseSession()) {
+            return StockBatchJobRunResponses.manualCashFlowBeforeMarketClose(LocalDateTime.now());
         }
         return runDelegatingJob(
                 AutoParticipantCashFlowJob.JOB_NAME,

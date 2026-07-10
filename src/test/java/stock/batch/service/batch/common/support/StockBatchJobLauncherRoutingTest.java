@@ -27,6 +27,7 @@ import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 import stock.batch.service.marketdata.biz.MarketDataRefreshService;
 import stock.batch.service.settlement.biz.PortfolioSettlementService;
+import stock.batch.service.simulation.SimulationMarketSessionService;
 
 import java.time.LocalDateTime;
 
@@ -43,6 +44,8 @@ class StockBatchJobLauncherRoutingTest {
     private final StockBatchJobRunner stockBatchJobRunner = mock(StockBatchJobRunner.class);
     private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
             mock(AutoParticipantCashFlowRuntimeControl.class);
+    private final SimulationMarketSessionService simulationMarketSessionService =
+            mock(SimulationMarketSessionService.class);
     private final MarketDataRefreshService marketDataRefreshService = mock(MarketDataRefreshService.class);
     private final InternalOrderBookExecutionService internalOrderBookExecutionService =
             mock(InternalOrderBookExecutionService.class);
@@ -82,6 +85,7 @@ class StockBatchJobLauncherRoutingTest {
     private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
             stockBatchJobRunner,
             autoParticipantCashFlowRuntimeControl,
+            simulationMarketSessionService,
             marketDataRefreshJob,
             orderBookExecutionJob,
             autoParticipantCashFlowJob,

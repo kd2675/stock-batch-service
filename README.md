@@ -86,7 +86,8 @@ scripts/stock-gateway-h2-smoke.sh
 ## 데이터베이스 / Redis
 
 - DB schema: `STOCK_SERVICE`
-- DDL: `src/main/resources/db/ddl/stock_all.sql`
+- MySQL business DDL (canonical): `../stock-back-service/src/main/resources/db/ddl/stock_all.sql`
+- H2 test DDL: `src/main/resources/db/ddl/stock_h2.sql`
 - Batch metadata schema: `STOCK_BATCH_METADATA`
 - Batch metadata DDL:
   - MySQL: `src/main/resources/db/schema/batch-metadata-mysql.sql`
@@ -245,10 +246,10 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 매도 체결은 `stock_holding.quantity`와 `reserved_quantity`를 함께 차감해 미체결 매도 예약과 실제 보유 원장을 맞춥니다.
 - 체결 중에는 0주가 된 `stock_holding`을 즉시 삭제하지 않습니다. 주문장 체결의 lock/write 비용을 줄이기 위해 `holding-cleanup` 유지보수 job이 시뮬레이션 시간 기준 보존 기간이 지난 빈 row만 제한 건수로 삭제합니다.
 - batch 서버는 주문장 체결 job만 운영합니다. 현재가 기준 자동 체결 job은 제거되었습니다.
-- 유상증자 기업 이벤트는 corporate action job이 처리합니다. 권리락일에는 이론권리락가격을 `stock_price`, `stock_price_tick`에 반영하고, 납입일에는 상태를 `PAID`로 바꾸며, 신주상장일에는 `stock_order_book_instrument.issued_shares`, `tradable_shares`를 증가시킵니다.
+- 유상증자 기업 이벤트는 주주배정과 일반공모만 corporate action job이 처리합니다. 주주배정은 권리락일 전 마지막 완료 장마감 snapshot의 권리부종가와 당시 발행주식수로 가격을 확정하고 계좌별 배정 entitlement를 만듭니다. 권리부종가가 발행가보다 높을 때만 희석 산식을 적용해 1원 미만을 절사하고, 그렇지 않으면 권리부종가를 유지합니다. 일반공모는 권리락 없이 전체 잔여수량을 공유합니다. corporate action job은 `symbol is null`인 전체 장마감 완료만 선행조건으로 인정합니다. 같은 날 현금배당 지급과 자동청약이 겹치면 배당을 먼저 지급하고, 장 마감 후 자동참여자는 일반 주문 프로필과 분리된 이벤트 프로필 정책으로 청약합니다. 납입일에는 미청약 주주 권리를 만료하고 action을 `PAID`로 전이합니다. 신주상장일에는 예정 발행수가 아니라 실제 `SUBSCRIBED` 합계만큼 `issued_shares`, `tradable_shares`와 계좌 보유수량·평균단가를 반영합니다.
 - 액면분할 기업 이벤트는 효력일에 `issued_shares`, `tradable_shares`, 보유수량, 예약수량을 배율만큼 늘리고 현재가, 전일종가, 평균단가를 같은 배율로 나눕니다. 효력일에 미체결 주문이 있으면 가격/수량 기준이 꼬이지 않도록 적용을 대기합니다.
 - 현금배당 기업 이벤트는 배당락일에 현재 보유수량 기준으로 `stock_corporate_action_entitlement` 지급 원장을 만듭니다. 지급일에는 해당 원장을 기준으로 `stock_account.cash_balance`를 증가시키고 중복 지급을 막기 위해 지급 원장을 `PAID`로 전이합니다. 현금배당 자체는 `stock_price`, `stock_price_tick`을 강제로 조정하지 않습니다.
-- 무상증자와 주식배당 기업 이벤트는 배당락일에 이론권리락가격을 반영하고 현재 보유수량 기준으로 신주 entitlement를 만듭니다. 신주상장일에는 `issued_shares`, `tradable_shares`, 보유수량을 늘리고 평균단가를 낮춘 뒤 entitlement를 `PAID`로 전이합니다.
+- 무상증자와 주식배당 기업 이벤트는 배당락일 전 마지막 완료 장마감 snapshot의 권리부종가와 당시 발행주식수로 1원 미만을 절사한 이론권리락가격을 확정하고 같은 snapshot 보유수량 기준으로 신주 entitlement를 만듭니다. 신주상장일에는 `issued_shares`, `tradable_shares`, 보유수량을 늘리고 평균단가를 낮춘 뒤 entitlement를 `PAID`로 전이합니다.
 - 체결 수수료와 매도 거래세는 체결 단위로 계산해 `stock_execution`에 `fee_amount`, `tax_amount`, `net_amount`, `realized_profit`으로 기록합니다. 매수 평균단가는 수수료 포함 원가 기준입니다.
 - 자동장 job은 자동 참여자 주문을 실제 `stock_order` 원장에 공급합니다. 내부 주문장 체결은 별도 `order-book-execution` job이 처리하므로, 브라우저 localStorage나 프론트 전용 가짜 주문 상태에 의존하지 않습니다.
 - 자동장 job은 최신 `stock_instrument_report_event`의 점수를 읽어 참여자별 성향과 섞습니다. 참여자 성향은 계속 주된 기준이고, 보고서는 관리자가 부여한 종목별 시장 해석 신호입니다.

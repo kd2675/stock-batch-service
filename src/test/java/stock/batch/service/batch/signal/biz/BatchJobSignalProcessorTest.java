@@ -144,6 +144,29 @@ class BatchJobSignalProcessorTest {
     }
 
     @Test
+    void processPendingSignals_manualCashFlowDuringRegularSession_defersSignal() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 11, 0);
+        BatchJobSignal signal = new BatchJobSignal(
+                10L,
+                "AUTO_PARTICIPANT_CASH_FLOW_RUN",
+                "auto-participant-cash-flow",
+                "manual-recurring-cash",
+                null,
+                "admin",
+                now
+        );
+        StockBatchJobRunResponse response = StockBatchJobRunResponses.manualCashFlowBeforeMarketClose(now);
+        when(signalReader.claimNext()).thenReturn(Optional.of(signal));
+        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
+
+        int processedCount = processor.processPendingSignals(20);
+
+        assertThat(processedCount).isZero();
+        verify(signalWriter).defer(10L, response);
+        verify(signalWriter, never()).complete(10L, response);
+    }
+
+    @Test
     void processPendingSignals_emptyQueueDoesNotCheckActiveJobs() {
         when(signalReader.claimNext()).thenReturn(Optional.empty());
 

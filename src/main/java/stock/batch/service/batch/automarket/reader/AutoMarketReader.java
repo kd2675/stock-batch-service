@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -391,23 +392,25 @@ public class AutoMarketReader {
         if (normalizedSymbols.isEmpty()) {
             return Map.of();
         }
-        return jdbcClient.sql(
-                """
-                select symbol,
-                       price
-                from (
-                    select symbol,
-                           price,
-                           row_number() over (partition by symbol order by price_time desc, id desc) as latest_rank
-                    from stock_price_tick
-                    where symbol in (:symbols)
-                      and price_time <= :priceTime
-                ) latest
-                where latest_rank = 1
-                """
-        )
-                .param("symbols", normalizedSymbols)
-                .param("priceTime", priceTime)
+        String sql = IntStream.range(0, normalizedSymbols.size())
+                .mapToObj(index -> """
+                        select cast(:symbol%d as varchar(20)) as symbol,
+                               (
+                                   select price
+                                   from stock_price_tick
+                                   where symbol = :symbol%d
+                                     and price_time <= :priceTime
+                                   order by price_time desc, id desc
+                                   limit 1
+                               ) as price
+                        """.formatted(index, index))
+                .collect(Collectors.joining("\nunion all\n"));
+        JdbcClient.StatementSpec statement = jdbcClient.sql(sql)
+                .param("priceTime", priceTime);
+        for (int index = 0; index < normalizedSymbols.size(); index++) {
+            statement = statement.param("symbol" + index, normalizedSymbols.get(index));
+        }
+        return statement
                 .query(rs -> {
                     Map<String, BigDecimal> pricesBySymbol = new LinkedHashMap<>();
                     while (rs.next()) {

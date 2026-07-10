@@ -1,8 +1,10 @@
 package stock.batch.service.batch.corporateaction.reader;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -16,6 +18,7 @@ import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscripti
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
+import stock.batch.service.batch.corporateaction.model.ExRightsPriceSnapshot;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
 import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.StockSplitActionRow;
@@ -114,10 +117,12 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public Optional<CapitalIncreaseSubscriptionActionRow> findPublicOfferingSubscriptionForUpdate(
+    public Optional<CapitalIncreaseSubscriptionActionRow> findCapitalIncreaseSubscriptionForUpdate(
             long actionId,
+            LocalDate today,
             String actionType,
-            String status
+            String status,
+            String offeringType
     ) {
         return jdbcClient.sql(
                 """
@@ -126,15 +131,19 @@ public class CorporateActionReader {
                  where id = :actionId
                    and action_type = :actionType
                    and status = :status
-                   and offering_type = 'PUBLIC_OFFERING'
+                   and offering_type = :offeringType
+                   and subscription_start_date <= :today
+                   and subscription_end_date >= :today
                    and share_quantity > 0
                    and issue_price > 0
                  for update
                 """
         )
                 .param("actionId", actionId)
+                .param("today", today)
                 .param("actionType", actionType)
                 .param("status", status)
+                .param("offeringType", offeringType)
                 .query((rs, rowNum) -> new CapitalIncreaseSubscriptionActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol"),
@@ -216,6 +225,112 @@ public class CorporateActionReader {
                 .list();
     }
 
+    public Optional<BigDecimal> findActiveAccountCashForUpdate(long accountId) {
+        return jdbcClient.sql(
+                """
+                select cash_balance
+                  from stock_account
+                 where id = :accountId
+                   and status = 'ACTIVE'
+                 for update
+                """
+        )
+                .param("accountId", accountId)
+                .query(BigDecimal.class)
+                .optional();
+    }
+
+    public Optional<Long> findAnnouncedEntitlementShareQuantityForUpdate(
+            long entitlementId,
+            long actionId,
+            String status
+    ) {
+        return jdbcClient.sql(
+                """
+                select share_quantity
+                  from stock_corporate_action_entitlement
+                 where id = :entitlementId
+                   and action_id = :actionId
+                   and status = :status
+                   and share_quantity > 0
+                 for update
+                """
+        )
+                .param("entitlementId", entitlementId)
+                .param("actionId", actionId)
+                .param("status", status)
+                .query(Long.class)
+                .optional();
+    }
+
+    public List<CapitalIncreaseSubscriptionActionRow> findDueCapitalIncreasePayments(
+            LocalDate today,
+            String actionType,
+            String shareholderStatus,
+            String publicOfferingStatus
+    ) {
+        return jdbcClient.sql(
+                """
+                select id, symbol, offering_type, share_quantity, issue_price
+                  from stock_corporate_action
+                 where action_type = :actionType
+                   and payment_date <= :today
+                   and (
+                       (offering_type = 'SHAREHOLDER_ALLOCATION' and status = :shareholderStatus)
+                       or (offering_type = 'PUBLIC_OFFERING' and status = :publicOfferingStatus)
+                   )
+                 order by payment_date asc, id asc
+                """
+        )
+                .param("today", today)
+                .param("actionType", actionType)
+                .param("shareholderStatus", shareholderStatus)
+                .param("publicOfferingStatus", publicOfferingStatus)
+                .query((rs, rowNum) -> new CapitalIncreaseSubscriptionActionRow(
+                        rs.getLong("id"),
+                        rs.getString("symbol"),
+                        rs.getString("offering_type"),
+                        rs.getLong("share_quantity"),
+                        rs.getBigDecimal("issue_price")
+                ))
+                .list();
+    }
+
+    public Optional<CapitalIncreaseSubscriptionActionRow> findDueCapitalIncreasePaymentForUpdate(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String status,
+            String offeringType
+    ) {
+        return jdbcClient.sql(
+                """
+                select id, symbol, offering_type, share_quantity, issue_price
+                  from stock_corporate_action
+                 where id = :actionId
+                   and action_type = :actionType
+                   and status = :status
+                   and offering_type = :offeringType
+                   and subscription_end_date < payment_date
+                   and payment_date <= :today
+                 for update
+                """
+        )
+                .param("actionId", actionId)
+                .param("today", today)
+                .param("actionType", actionType)
+                .param("status", status)
+                .param("offeringType", offeringType)
+                .query((rs, rowNum) -> new CapitalIncreaseSubscriptionActionRow(
+                        rs.getLong("id"),
+                        rs.getString("symbol"),
+                        rs.getString("offering_type"),
+                        rs.getLong("share_quantity"),
+                        rs.getBigDecimal("issue_price")
+                ))
+                .optional();
+    }
+
     public long sumSubscribedShareQuantity(long actionId) {
         Long quantity = jdbcClient.sql(
                 """
@@ -243,12 +358,20 @@ public class CorporateActionReader {
                 """
         )
                 .query((rs, rowNum) -> new AutoParticipantEventProfilePolicy(
-                        AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                        requireEventProfileType(rs.getString("profile_type")),
                         rs.getBigDecimal("shareholder_subscription_rate"),
                         rs.getBigDecimal("public_offering_subscription_rate"),
                         rs.getBigDecimal("max_cash_allocation_rate")
                 ))
                 .list();
+    }
+
+    private AutoParticipantProfileType requireEventProfileType(String profileType) {
+        try {
+            return AutoParticipantProfileType.valueOf(profileType);
+        } catch (IllegalArgumentException | NullPointerException ex) {
+            throw new IllegalStateException("Unknown auto participant event profile type: " + profileType, ex);
+        }
     }
 
     public List<DividendEntitlementRow> findAnnouncedDividendEntitlements(long actionId, String status) {
@@ -307,6 +430,65 @@ public class CorporateActionReader {
                 .list();
     }
 
+    public Optional<ListingActionRow> findDueListingForUpdate(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String sourceStatus
+    ) {
+        return jdbcClient.sql(
+                """
+                select id, symbol, coalesce(share_quantity, 0) as share_quantity
+                  from stock_corporate_action
+                 where id = :actionId
+                   and action_type = :actionType
+                   and status = :sourceStatus
+                   and listing_date <= :today
+                 for update
+                """
+        )
+                .param("actionId", actionId)
+                .param("today", today)
+                .param("actionType", actionType)
+                .param("sourceStatus", sourceStatus)
+                .query((rs, rowNum) -> new ListingActionRow(
+                        rs.getLong("id"),
+                        rs.getString("symbol"),
+                        rs.getLong("share_quantity")
+                ))
+                .optional();
+    }
+
+    public boolean lockDueActionForUpdate(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String status,
+            String dueDateColumn
+    ) {
+        if (!Set.of("ex_rights_date", "payment_date", "listing_date", "delisting_date").contains(dueDateColumn)) {
+            throw new IllegalArgumentException("Unsupported corporate action due date column: " + dueDateColumn);
+        }
+        return jdbcClient.sql(
+                """
+                select id
+                  from stock_corporate_action
+                 where id = :actionId
+                   and action_type = :actionType
+                   and status = :status
+                   and %s <= :today
+                 for update
+                """.formatted(dueDateColumn)
+        )
+                .param("actionId", actionId)
+                .param("today", today)
+                .param("actionType", actionType)
+                .param("status", status)
+                .query(Long.class)
+                .optional()
+                .isPresent();
+    }
+
     public List<StockSplitActionRow> findDueStockSplits(LocalDate today, String actionType, String status) {
         return jdbcClient.sql(
                 """
@@ -354,6 +536,26 @@ public class CorporateActionReader {
                 .list();
     }
 
+    public Optional<ExRightsPriceSnapshot> findExRightsPriceSnapshot(long closeRunId, String symbol) {
+        return jdbcClient.sql(
+                """
+                select close_price, issued_shares
+                  from stock_order_book_daily_snapshot
+                 where close_run_id = :closeRunId
+                   and symbol = :symbol
+                   and close_price > 0
+                   and issued_shares > 0
+                """
+        )
+                .param("closeRunId", closeRunId)
+                .param("symbol", symbol)
+                .query((rs, rowNum) -> new ExRightsPriceSnapshot(
+                        rs.getBigDecimal("close_price"),
+                        rs.getLong("issued_shares")
+                ))
+                .optional();
+    }
+
     public Optional<Long> findLatestCompletedMarketCloseRunIdBefore(String symbol, LocalDate actionDate) {
         return jdbcClient.sql(
                 """
@@ -379,6 +581,7 @@ public class CorporateActionReader {
                   from stock_market_close_run
                  where status = 'COMPLETED'
                    and business_date = :businessDate
+                   and symbol is null
                 """
         )
                 .param("businessDate", businessDate)

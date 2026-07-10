@@ -13,6 +13,8 @@ public final class StockBatchJobRunResponses {
     static final String SHUTTING_DOWN_MESSAGE = "Batch service is shutting down";
     public static final String MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE =
             "Manual recurring cash is allowed only when automatic cash flow is disabled";
+    public static final String MANUAL_CASH_FLOW_BEFORE_MARKET_CLOSE_MESSAGE =
+            "Manual recurring cash is deferred until market close";
     private static final String SCHEDULED_EXECUTION_MODE = "scheduled";
     private static final String SCHEDULED_DISABLED_MESSAGE = "Scheduled job is disabled";
 
@@ -48,6 +50,18 @@ public final class StockBatchJobRunResponses {
                 SKIPPED,
                 0,
                 MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE,
+                now,
+                now
+        );
+    }
+
+    public static StockBatchJobRunResponse manualCashFlowBeforeMarketClose(LocalDateTime now) {
+        return response(
+                "auto-participant-cash-flow",
+                "manual-recurring-cash",
+                SKIPPED,
+                0,
+                MANUAL_CASH_FLOW_BEFORE_MARKET_CLOSE_MESSAGE,
                 now,
                 now
         );
