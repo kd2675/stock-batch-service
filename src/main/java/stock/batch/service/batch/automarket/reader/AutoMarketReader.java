@@ -394,7 +394,7 @@ public class AutoMarketReader {
         }
         String sql = IntStream.range(0, normalizedSymbols.size())
                 .mapToObj(index -> """
-                        select cast(:symbol%d as varchar(20)) as symbol,
+                        select %d as symbol_index,
                                (
                                    select price
                                    from stock_price_tick
@@ -416,10 +416,7 @@ public class AutoMarketReader {
                     while (rs.next()) {
                         BigDecimal price = rs.getBigDecimal("price");
                         if (price != null && price.compareTo(BigDecimal.ZERO) > 0) {
-                            pricesBySymbol.put(
-                                    AutoMarketReaderMapper.normalizeSymbol(rs.getString("symbol")),
-                                    price
-                            );
+                            pricesBySymbol.put(normalizedSymbols.get(rs.getInt("symbol_index")), price);
                         }
                     }
                     return pricesBySymbol;

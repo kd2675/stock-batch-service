@@ -472,15 +472,22 @@ class AutoMarketReaderTest {
                 new BigDecimal("99999.00"),
                 LocalDateTime.of(2026, 6, 30, 9, 9)
         );
+        realJdbcTemplate.update(
+                "insert into stock_price_tick(symbol, price, price_time) values (?, ?, ?)",
+                "STOCK004",
+                new BigDecimal("41000.00"),
+                LocalDateTime.of(2026, 6, 30, 9, 2)
+        );
         AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
 
         Map<String, BigDecimal> pricesBySymbol = realReader.findLatestPricesAtOrBefore(
-                List.of("stock001", "STOCK002", "stock002", "UNKNOWN"),
+                List.of("stock001", "STOCK002", "stock002", "STOCK004", "UNKNOWN"),
                 LocalDateTime.of(2026, 6, 30, 9, 6)
         );
 
-        assertThat(pricesBySymbol).containsOnlyKeys("STOCK002");
+        assertThat(pricesBySymbol).containsOnlyKeys("STOCK002", "STOCK004");
         assertThat(pricesBySymbol.get("STOCK002")).isEqualByComparingTo(new BigDecimal("30200.00"));
+        assertThat(pricesBySymbol.get("STOCK004")).isEqualByComparingTo(new BigDecimal("41000.00"));
     }
 
     private JdbcTemplate createJdbcTemplate(String databaseName) {
