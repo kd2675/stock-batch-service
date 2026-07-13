@@ -49,8 +49,10 @@ class AutoMarketOrderExecutor {
         if (orders.isEmpty()) {
             return 0;
         }
+        lockCancellationResources(orders);
+        List<AutoOrder> lockedOrders = autoMarketOrderReader.lockOpenOrdersForUpdate(orders);
         List<AutoOrder> cancelledOrders = new ArrayList<>();
-        for (AutoOrder order : orders) {
+        for (AutoOrder order : lockedOrders) {
             if (autoMarketWriter.cancelOpenOrder(order, now)) {
                 cancelledOrders.add(order);
             }
@@ -58,6 +60,21 @@ class AutoMarketOrderExecutor {
         creditCancelledBuyReservations(cancelledOrders, now);
         releaseCancelledSellReservations(cancelledOrders, now);
         return cancelledOrders.size();
+    }
+
+    private void lockCancellationResources(List<AutoOrder> orders) {
+        orders.stream()
+                .map(AutoOrder::accountId)
+                .distinct()
+                .sorted()
+                .forEach(autoMarketWriter::lockAccountForUpdate);
+        orders.stream()
+                .filter(order -> SELL.equals(order.side()))
+                .map(order -> new SellReservationKey(order.accountId(), order.symbol()))
+                .distinct()
+                .sorted(Comparator.comparingLong(SellReservationKey::accountId)
+                        .thenComparing(SellReservationKey::symbol))
+                .forEach(key -> autoMarketWriter.lockHoldingForUpdate(key.accountId(), key.symbol()));
     }
 
     private void creditCancelledBuyReservations(List<AutoOrder> cancelledOrders, LocalDateTime now) {

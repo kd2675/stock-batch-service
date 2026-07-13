@@ -30,6 +30,7 @@ import stock.batch.service.settlement.biz.PortfolioSettlementService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.same;
@@ -133,6 +134,19 @@ class StockBatchJobLauncherRoutingTest {
                 corporateActionService,
                 holdingCleanupService
         );
+    }
+
+    @Test
+    void highFrequencyJobs_useLightweightHistoryAndOwnConcurrencyControl() {
+        assertThat(List.of(
+                orderBookExecutionJob,
+                autoMarketJob,
+                autoMarketOrderExpiryJob,
+                listingAutoMarketJob
+        )).allSatisfy(job -> {
+            assertThat(job.recordsExecutionHistory()).isFalse();
+            assertThat(job.requiresJobLock()).isFalse();
+        });
     }
 
     private void assertRoutesThroughRunner(StockBatchJob job, JobLauncherCall launcherCall) {

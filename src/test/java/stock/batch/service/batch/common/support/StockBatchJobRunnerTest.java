@@ -112,6 +112,50 @@ class StockBatchJobRunnerTest {
     }
 
     @Test
+    void run_lightweightJob_skipsRepositoryAndDatabaseJobLock() {
+        TestStockBatchJob job = new TestStockBatchJob(
+                "lightweight-job",
+                "test-mode",
+                7,
+                () -> {
+                },
+                false,
+                false
+        );
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("COMPLETED");
+        assertThat(response.processedCount()).isEqualTo(7);
+        assertThat(job.runCount()).isEqualTo(1);
+        verifyNoRepositoryInteractions();
+        verify(batchJobLockRegistry, never()).tryAcquire(any(), any());
+        verify(batchJobLockRegistry, never()).release(any());
+        verify(lockHeartbeatExecutor, never()).scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void run_lightweightJobRequiringDatabaseLock_returnsFailedConfiguration() {
+        TestStockBatchJob job = new TestStockBatchJob(
+                "invalid-lightweight-job",
+                "test-mode",
+                7,
+                () -> {
+                },
+                true,
+                false
+        );
+
+        var response = runner().run(job);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.message()).contains("must provide its own concurrency control");
+        assertThat(job.runCount()).isZero();
+        verifyNoRepositoryInteractions();
+        verify(batchJobLockRegistry, never()).tryAcquire(any(), any());
+    }
+
+    @Test
     void run_lockAcquireThrows_whenFailRecordingThrows_preservesOriginalFailureResponse() {
         TestStockBatchJob job = new TestStockBatchJob("lock-fail-recording-fail-job", "test-mode", 7);
         RuntimeException lockFailure = new IllegalStateException("lock table unavailable");
@@ -481,6 +525,13 @@ class StockBatchJobRunnerTest {
         );
     }
 
+    private void verifyNoRepositoryInteractions() {
+        verify(stockBatchJobRepositoryRecorder, never()).start(any(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).complete(any(), anyInt(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).skip(any(), any());
+        verify(stockBatchJobRepositoryRecorder, never()).fail(any(), any(RuntimeException.class), any());
+    }
+
     private static final class TestStockBatchJob implements StockBatchJob {
 
         private final String jobName;
@@ -488,6 +539,7 @@ class StockBatchJobRunnerTest {
         private final int processedCount;
         private final Runnable onRun;
         private final boolean requiresJobLock;
+        private final boolean recordsExecutionHistory;
         private int runCount;
 
         private TestStockBatchJob(String jobName, String executionMode, int processedCount) {
@@ -496,7 +548,7 @@ class StockBatchJobRunnerTest {
         }
 
         private TestStockBatchJob(String jobName, String executionMode, int processedCount, Runnable onRun) {
-            this(jobName, executionMode, processedCount, onRun, true);
+            this(jobName, executionMode, processedCount, onRun, true, true);
         }
 
         private TestStockBatchJob(
@@ -506,11 +558,23 @@ class StockBatchJobRunnerTest {
                 Runnable onRun,
                 boolean requiresJobLock
         ) {
+            this(jobName, executionMode, processedCount, onRun, requiresJobLock, true);
+        }
+
+        private TestStockBatchJob(
+                String jobName,
+                String executionMode,
+                int processedCount,
+                Runnable onRun,
+                boolean requiresJobLock,
+                boolean recordsExecutionHistory
+        ) {
             this.jobName = jobName;
             this.executionMode = executionMode;
             this.processedCount = processedCount;
             this.onRun = onRun;
             this.requiresJobLock = requiresJobLock;
+            this.recordsExecutionHistory = recordsExecutionHistory;
         }
 
         @Override
@@ -526,6 +590,11 @@ class StockBatchJobRunnerTest {
         @Override
         public boolean requiresJobLock() {
             return requiresJobLock;
+        }
+
+        @Override
+        public boolean recordsExecutionHistory() {
+            return recordsExecutionHistory;
         }
 
         @Override

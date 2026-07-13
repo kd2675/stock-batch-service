@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -59,7 +60,8 @@ class AutoMarketOrderExpiryJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "deadlockRetryMaxAttempts", 2);
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
@@ -124,7 +126,8 @@ class AutoMarketOrderExpiryJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "deadlockRetryMaxAttempts", 2);
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
@@ -179,6 +182,7 @@ class AutoMarketOrderExpiryJobServiceTest {
                 new BigDecimal("70000.00"),
                 null
         );
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AutoMarketOrderExpiryJobService service = new AutoMarketOrderExpiryJobService(
                 autoMarketReader,
                 autoMarketOrderExpiryService,
@@ -186,7 +190,8 @@ class AutoMarketOrderExpiryJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                meterRegistry
         );
         when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
                 LocalDate.of(2026, 7, 3),
@@ -209,6 +214,11 @@ class AutoMarketOrderExpiryJobServiceTest {
         int expiredCount = service.expireAutoMarketOrders();
 
         assertThat(expiredCount).isZero();
+        assertThat(meterRegistry.counter(
+                "stock.auto.market.order.expiry.symbol.lock.skips",
+                "symbol",
+                "STOCK001"
+        ).count()).isEqualTo(1.0);
         verify(autoMarketOrderExpiryService, never()).expireOldAutoOrders(any(), any());
     }
 
@@ -229,7 +239,8 @@ class AutoMarketOrderExpiryJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                new SimpleMeterRegistry()
         );
         when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
                 LocalDate.of(2026, 7, 3),

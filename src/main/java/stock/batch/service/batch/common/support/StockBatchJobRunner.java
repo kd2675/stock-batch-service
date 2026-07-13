@@ -133,6 +133,9 @@ public class StockBatchJobRunner implements SmartLifecycle {
 
     private StockBatchJobRunResponse runEnteredJob(StockBatchJob job) {
         LocalDateTime startedAt = LocalDateTime.now();
+        if (!job.recordsExecutionHistory()) {
+            return runLightweightJob(job, startedAt);
+        }
         StockBatchJobExecutionRecord executionRecord;
         try {
             executionRecord = stockBatchJobRepositoryRecorder.start(job, startedAt);
@@ -217,6 +220,41 @@ public class StockBatchJobRunner implements SmartLifecycle {
         } finally {
             lockHeartbeatFuture.cancel(false);
             lockHeartbeat.release(job);
+        }
+    }
+
+    private StockBatchJobRunResponse runLightweightJob(StockBatchJob job, LocalDateTime startedAt) {
+        if (job.requiresJobLock()) {
+            IllegalStateException ex = new IllegalStateException(
+                    "Lightweight stock batch job must provide its own concurrency control: " + job.jobName()
+            );
+            LocalDateTime endedAt = LocalDateTime.now();
+            log.warn(
+                    "Lightweight stock batch job configuration is invalid: job={}, mode={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    ex.getMessage()
+            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
+        }
+        try {
+            logJobStarted(job, startedAt);
+            int processedCount = job.run();
+            requireNonNegativeProcessedCount(job, processedCount);
+            LocalDateTime endedAt = LocalDateTime.now();
+            logJobCompleted(job, processedCount, startedAt, endedAt);
+            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
+        } catch (RuntimeException ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            log.warn(
+                    "Lightweight stock batch job failed: job={}, mode={}, elapsedMs={}, reason={}",
+                    job.jobName(),
+                    job.executionMode(),
+                    elapsedMillis(startedAt, endedAt),
+                    ex.getMessage(),
+                    ex
+            );
+            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
         }
     }
 

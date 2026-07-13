@@ -7,6 +7,10 @@ public record AutoParticipantTradingSnapshot(
         BigDecimal cashBalance,
         long availableQuantity,
         BigDecimal averagePrice,
-        BigDecimal recentDividendCashAmount
+        BigDecimal recentDividendCashAmount,
+        BigDecimal ownBestBid,
+        BigDecimal ownBestAsk,
+        long openBuyQuantity,
+        long openSellQuantity
 ) {
 }

@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.Executor;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -72,7 +73,8 @@ class AutoMarketServiceUnitTest {
                 }),
                 readyProfileQueue,
                 Runnable::run,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
 
@@ -112,7 +114,8 @@ class AutoMarketServiceUnitTest {
                 }),
                 readyProfileQueue,
                 Runnable::run,
-                generationSlotLimiter
+                generationSlotLimiter,
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
 
@@ -137,6 +140,7 @@ class AutoMarketServiceUnitTest {
         AutoMarketProfileLock autoMarketProfileLock = profileType -> Optional.of(() -> {
         });
         Executor directExecutor = Runnable::run;
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AutoMarketService service = new AutoMarketService(
                 autoMarketReader,
                 autoMarketDailyRegimeService,
@@ -149,7 +153,8 @@ class AutoMarketServiceUnitTest {
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
                 directExecutor,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                meterRegistry
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -246,7 +251,8 @@ class AutoMarketServiceUnitTest {
                 autoMarketProfileLock,
                 readyProfileQueue,
                 directExecutor,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
@@ -313,6 +319,7 @@ class AutoMarketServiceUnitTest {
         AutoMarketProfileLock autoMarketProfileLock = profileType -> Optional.of(() -> {
         });
         Executor directExecutor = Runnable::run;
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AutoMarketService service = new AutoMarketService(
                 autoMarketReader,
                 autoMarketDailyRegimeService,
@@ -325,7 +332,8 @@ class AutoMarketServiceUnitTest {
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
                 directExecutor,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                meterRegistry
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -394,6 +402,7 @@ class AutoMarketServiceUnitTest {
         AutoMarketProfileLock autoMarketProfileLock = profileType -> Optional.of(() -> {
         });
         Executor directExecutor = Runnable::run;
+        SimpleMeterRegistry deadlockMeterRegistry = new SimpleMeterRegistry();
         AutoMarketService service = new AutoMarketService(
                 autoMarketReader,
                 autoMarketDailyRegimeService,
@@ -406,7 +415,8 @@ class AutoMarketServiceUnitTest {
                 autoMarketProfileLock,
                 readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
                 directExecutor,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                deadlockMeterRegistry
         );
         ReflectionTestUtils.setField(service, "generationDueLimitPerSymbol", 100);
         ReflectionTestUtils.setField(service, "generationParticipantChunkSize", 25);
@@ -477,6 +487,7 @@ class AutoMarketServiceUnitTest {
         int processedCount = service.runAutoMarketStep();
 
         assertThat(processedCount).isEqualTo(1);
+        assertThat(deadlockMeterRegistry.counter("stock.auto.market.order.deadlock.retries").count()).isEqualTo(1.0);
         verify(autoParticipantOrderService, times(2)).placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0);
         verify(scheduleService, times(1)).completeStrategies(List.of(strategy), profilePolicies, now);
     }
@@ -505,7 +516,8 @@ class AutoMarketServiceUnitTest {
                 autoMarketProfileLock,
                 readyProfileQueue(),
                 Runnable::run,
-                new AutoMarketGenerationSlotLimiter(12)
+                new AutoMarketGenerationSlotLimiter(12),
+                new SimpleMeterRegistry()
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         SimulationClockSnapshot clock = new SimulationClockSnapshot(

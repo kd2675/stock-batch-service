@@ -16,6 +16,8 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,6 +60,7 @@ public class AutoMarketService {
     private final AutoMarketReadyProfileQueue readyProfileQueue;
     private final Executor autoMarketGenerationTaskExecutor;
     private final AutoMarketGenerationSlotLimiter generationSlotLimiter;
+    private final Counter deadlockRetryCounter;
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
     private int generationParticipantChunkSize;
@@ -98,7 +101,8 @@ public class AutoMarketService {
             AutoMarketProfileLock autoMarketProfileLock,
             AutoMarketReadyProfileQueue readyProfileQueue,
             @Qualifier(AutoMarketGenerationExecutorConfig.AUTO_MARKET_GENERATION_TASK_EXECUTOR) Executor autoMarketGenerationTaskExecutor,
-            AutoMarketGenerationSlotLimiter generationSlotLimiter
+            AutoMarketGenerationSlotLimiter generationSlotLimiter,
+            MeterRegistry meterRegistry
     ) {
         this.autoMarketReader = autoMarketReader;
         this.autoMarketDailyRegimeService = autoMarketDailyRegimeService;
@@ -112,6 +116,7 @@ public class AutoMarketService {
         this.readyProfileQueue = readyProfileQueue;
         this.autoMarketGenerationTaskExecutor = autoMarketGenerationTaskExecutor;
         this.generationSlotLimiter = generationSlotLimiter;
+        this.deadlockRetryCounter = meterRegistry.counter("stock.auto.market.order.deadlock.retries");
     }
 
     public int runAutoMarketStep() {
@@ -869,6 +874,7 @@ public class AutoMarketService {
             try {
                 return runInTransaction(action);
             } catch (CannotAcquireLockException ex) {
+                deadlockRetryCounter.increment();
                 lastException = ex;
                 if (attempt >= attempts) {
                     break;

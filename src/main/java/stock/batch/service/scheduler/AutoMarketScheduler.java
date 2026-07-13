@@ -71,7 +71,7 @@ public class AutoMarketScheduler {
         try {
             autoMarketRunTaskExecutor.execute(this::runAutoMarketIfEnabled);
         } catch (RejectedExecutionException ex) {
-            log.warn("Auto-market run dispatch skipped because dispatcher is saturated: reason={}", ex.getMessage());
+            log.debug("Auto-market run dispatch skipped because the previous run is still active");
         }
     }
 

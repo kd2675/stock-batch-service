@@ -19,6 +19,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
 import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
+import stock.batch.service.batch.execution.model.OrderBookMatchCandidate;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.batch.execution.reader.OrderBookExecutionReader;
 import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
@@ -72,6 +73,9 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.symbol-chunk-limit:50}")
     private int symbolChunkLimit;
 
+    @Value("${stock.batch.execution.symbol-chunk-max-duration-ms:500}")
+    private long symbolChunkMaxDurationMillis;
+
     @Value("${stock.batch.execution.ready-symbol-fallback-scan-limit:8}")
     private int readySymbolFallbackScanLimit;
 
@@ -85,18 +89,26 @@ public class InternalOrderBookExecutionService {
     private long slowSymbolLogThresholdMillis;
 
     public int executeEligibleOrders() {
+        return executeEligibleOrders(true);
+    }
+
+    public int executeReadyOrders() {
+        return executeEligibleOrders(false);
+    }
+
+    private int executeEligibleOrders(boolean allowDatabaseFallback) {
         int maxMatches = Math.max(0, scanLimit);
         if (maxMatches <= 0) {
             return 0;
         }
         AtomicInteger remainingMatches = new AtomicInteger(maxMatches);
-        return executeNextReadySymbol(remainingMatches);
+        return executeNextReadySymbol(remainingMatches, allowDatabaseFallback);
     }
 
-    private int executeNextReadySymbol(AtomicInteger remainingMatches) {
+    private int executeNextReadySymbol(AtomicInteger remainingMatches, boolean allowDatabaseFallback) {
         Set<String> attemptedSymbols = new LinkedHashSet<>();
         while (remainingMatches.get() > 0) {
-            String symbol = findNextReadySymbol();
+            String symbol = findNextReadySymbol(allowDatabaseFallback);
             if (symbol == null || !attemptedSymbols.add(symbol)) {
                 return 0;
             }
@@ -108,15 +120,18 @@ public class InternalOrderBookExecutionService {
         return 0;
     }
 
-    private String findNextReadySymbol() {
-        return readySymbolQueue.poll()
-                .or(() -> {
-                    List<String> candidates = orderBookExecutionReader.findExecutableSymbolCandidates(
-                            Math.max(1, readySymbolFallbackScanLimit)
-                    );
-                    if (candidates.isEmpty()) {
-                        return Optional.empty();
-                    }
+    private String findNextReadySymbol(boolean allowDatabaseFallback) {
+        Optional<String> queuedSymbol = readySymbolQueue.poll();
+        if (queuedSymbol.isPresent() || !allowDatabaseFallback) {
+            return queuedSymbol.orElse(null);
+        }
+        return Optional.ofNullable(
+                orderBookExecutionReader.findExecutableSymbolCandidates(
+                        Math.max(1, readySymbolFallbackScanLimit)
+                )
+        )
+                .filter(candidates -> !candidates.isEmpty())
+                .flatMap(candidates -> {
                     readySymbolQueue.enqueueAll(candidates);
                     return readySymbolQueue.poll().or(() -> Optional.of(candidates.getFirst()));
                 })
@@ -126,10 +141,9 @@ public class InternalOrderBookExecutionService {
     private int executePolledSymbol(String symbol, AtomicInteger remainingMatches) {
         return orderBookSymbolLock.tryLock(symbol)
                 .map(lock -> {
+                    int matchCount;
                     try (lock) {
-                        int matchCount = executeLockedSymbolChunk(symbol, remainingMatches);
-                        requeueIfStillExecutable(symbol);
-                        return matchCount;
+                        matchCount = executeLockedSymbolChunk(symbol, remainingMatches);
                     } catch (CannotAcquireLockException ex) {
                         readySymbolQueue.enqueue(symbol);
                         log.warn(
@@ -142,6 +156,8 @@ public class InternalOrderBookExecutionService {
                         readySymbolQueue.enqueue(symbol);
                         throw ex;
                     }
+                    requeueIfStillExecutable(symbol);
+                    return matchCount;
                 })
                 .orElseGet(() -> {
                     readySymbolQueue.enqueue(symbol);
@@ -167,8 +183,11 @@ public class InternalOrderBookExecutionService {
         long startedNanos = System.nanoTime();
         int localMatchCount = 0;
         int maxSymbolMatches = Math.max(1, symbolChunkLimit);
+        long maxDurationNanos = Math.max(1L, symbolChunkMaxDurationMillis) * 1_000_000L;
         try {
-            while (localMatchCount < maxSymbolMatches && reserveMatchSlot(remainingMatches)) {
+            while (localMatchCount < maxSymbolMatches
+                    && System.nanoTime() - startedNanos < maxDurationNanos
+                    && reserveMatchSlot(remainingMatches)) {
                 try {
                     if (!matchNextWithRetry(symbol)) {
                         remainingMatches.incrementAndGet();
@@ -249,29 +268,65 @@ public class InternalOrderBookExecutionService {
 
     private boolean matchNext(String symbol) {
         int candidateLimit = Math.max(1, Math.min(scanLimit, buyCandidateScanLimit));
-        int skippedBuyLockCount = 0;
-        for (Long buyOrderId : orderBookExecutionReader.findBestBuyCandidateIds(symbol, candidateLimit)) {
-            OrderBookOrderRow buyOrder = orderBookExecutionReader.findBuyCandidateForUpdate(buyOrderId);
-            if (buyOrder == null) {
-                skippedBuyLockCount++;
-                continue;
-            }
-            OrderBookOrderRow sellOrder = orderBookExecutionReader.findBestSell(symbol, buyOrder);
-            if (sellOrder != null) {
-                return matchOrders(buyOrder, sellOrder);
-            }
+        Optional<OrderBookMatchCandidate> candidate = orderBookExecutionReader.findBestMatchCandidate(symbol, candidateLimit);
+        if (candidate.isEmpty()) {
+            return false;
         }
-        if (skippedBuyLockCount > 0) {
-            log.warn(
-                    "Order book buy candidates skipped because rows were locked or no longer executable: symbol={}, skippedCount={}",
-                    symbol,
-                    skippedBuyLockCount
-            );
+        OrderBookMatchCandidate selectedCandidate = candidate.get();
+        orderBookExecutionWriter.lockAccountsForUpdate(
+                selectedCandidate.buyAccountId(),
+                selectedCandidate.sellAccountId()
+        );
+        OrderBookHoldingRow sellHolding = orderBookExecutionReader.findHoldingForUpdate(
+                selectedCandidate.sellAccountId(),
+                symbol
+        );
+        List<OrderBookOrderRow> lockedOrders = orderBookExecutionReader.findMatchOrdersForUpdate(selectedCandidate);
+        if (lockedOrders.size() != 2) {
+            return false;
         }
-        return false;
+        OrderBookOrderRow buyOrder = findLockedOrder(lockedOrders, selectedCandidate.buyOrderId(), "BUY");
+        OrderBookOrderRow sellOrder = findLockedOrder(lockedOrders, selectedCandidate.sellOrderId(), "SELL");
+        if (!isExecutablePair(symbol, buyOrder, sellOrder)) {
+            return false;
+        }
+        return matchOrders(buyOrder, sellOrder, sellHolding);
     }
 
-    private boolean matchOrders(OrderBookOrderRow buyOrder, OrderBookOrderRow sellOrder) {
+    private OrderBookOrderRow findLockedOrder(List<OrderBookOrderRow> orders, long orderId, String side) {
+        return orders.stream()
+                .filter(order -> order.id() == orderId && side.equals(order.side()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean isExecutablePair(String symbol, OrderBookOrderRow buyOrder, OrderBookOrderRow sellOrder) {
+        if (buyOrder == null || sellOrder == null) {
+            return false;
+        }
+        if (!symbol.equals(buyOrder.symbol()) || !symbol.equals(sellOrder.symbol())) {
+            return false;
+        }
+        if (buyOrder.accountId() == sellOrder.accountId()) {
+            return false;
+        }
+        if ("MARKET".equals(buyOrder.orderType())) {
+            return "LIMIT".equals(sellOrder.orderType()) && sellOrder.limitPrice() != null;
+        }
+        if (!"LIMIT".equals(buyOrder.orderType()) || buyOrder.limitPrice() == null) {
+            return false;
+        }
+        return "MARKET".equals(sellOrder.orderType())
+                || ("LIMIT".equals(sellOrder.orderType())
+                && sellOrder.limitPrice() != null
+                && sellOrder.limitPrice().compareTo(buyOrder.limitPrice()) <= 0);
+    }
+
+    private boolean matchOrders(
+            OrderBookOrderRow buyOrder,
+            OrderBookOrderRow sellOrder,
+            OrderBookHoldingRow sellHolding
+    ) {
         long quantity = Math.min(buyOrder.remainingQuantity(), sellOrder.remainingQuantity());
         if (quantity <= 0) {
             return false;
@@ -283,12 +338,11 @@ public class InternalOrderBookExecutionService {
         }
         LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
         ExecutionCostCalculator.ExecutionAmounts buyAmounts = executionCostCalculator.buy(quantity, executionPrice);
-        ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellOrder, quantity, executionPrice);
+        ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellHolding, quantity, executionPrice);
         if (sellAmounts == null) {
             rejectSellOrder(sellOrder, executedAt);
             return false;
         }
-        orderBookExecutionWriter.lockAccountsForUpdate(buyOrder.accountId(), sellOrder.accountId());
         if (!hasEnoughBuyCash(buyOrder, quantity, executionPrice, buyAmounts)) {
             rejectBuyOrder(buyOrder, executedAt);
             return false;
@@ -377,11 +431,10 @@ public class InternalOrderBookExecutionService {
     }
 
     private ExecutionCostCalculator.ExecutionAmounts resolveSellAmounts(
-            OrderBookOrderRow order,
+            OrderBookHoldingRow holding,
             long quantity,
             BigDecimal executionPrice
     ) {
-        OrderBookHoldingRow holding = orderBookExecutionReader.findHoldingForUpdate(order.accountId(), order.symbol());
         if (holding == null || holding.quantity() < quantity || holding.reservedQuantity() < quantity) {
             return null;
         }

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +33,7 @@ public class AutoMarketOrderExpiryJobService {
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
+    private final MeterRegistry meterRegistry;
 
     @Value("${stock.batch.auto-market-order-expiry.deadlock-retry-max-attempts:5}")
     private int deadlockRetryMaxAttempts = 5;
@@ -87,7 +89,12 @@ public class AutoMarketOrderExpiryJobService {
                     }
                 })
                 .orElseGet(() -> {
-                    log.warn("Auto market order expiry skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    meterRegistry.counter(
+                            "stock.auto.market.order.expiry.symbol.lock.skips",
+                            "symbol",
+                            config.symbol()
+                    ).increment();
+                    log.debug("Auto market order expiry skipped because order-book symbol is busy: symbol={}", config.symbol());
                     return 0;
                 });
     }

@@ -1415,8 +1415,10 @@ class CorporateActionServiceTest {
                 """
                 insert into stock_listing_auto_account_config(
                     symbol, user_key, display_name, enabled, position_side, max_order_quantity,
-                    order_ttl_seconds, price_offset_ticks, created_at, updated_at
-                ) values (?, ?, '상장주관사', true, 'SELL_ONLY', 10, 30, 3, ?, ?)
+                    order_ttl_seconds, price_offset_ticks, target_buy_quantity, target_sell_quantity, target_holding_quantity,
+                    inventory_band_quantity,
+                    buy_price_offset_direction, sell_price_offset_direction, created_at, updated_at
+                ) values (?, ?, '상장주관사', true, 'SELL_ONLY', 10, 30, 3, 0, 10, 0, 0, 'DOWN', 'UP', ?, ?)
                 """,
                 symbol,
                 "stock-listing-" + symbol.toLowerCase(Locale.ROOT),

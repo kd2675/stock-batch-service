@@ -4,6 +4,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,10 +23,13 @@ public class AutoMarketOrderReader {
 
     private final JdbcClient jdbcClient;
     private final String lockClause;
+    private final String lockedOrderTable;
 
     public AutoMarketOrderReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
-        this.lockClause = resolveLockClause(jdbcTemplate);
+        boolean mysql = isMySql(jdbcTemplate);
+        this.lockClause = mysql ? "for update skip locked" : "for update";
+        this.lockedOrderTable = mysql ? "stock_order force index (primary)" : "stock_order";
     }
 
     public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime candidateThreshold, int limit) {
@@ -84,6 +90,29 @@ public class AutoMarketOrderReader {
                 .list();
     }
 
+    public List<AutoOrder> findOpenListingAutoOrders(ListingAutoAccountConfig config, String side) {
+        return jdbcClient.sql(
+                """
+                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity,
+                       o.reserved_cash, o.created_at
+                  from stock_order o
+                 where o.symbol = :symbol
+                   and o.account_id = :accountId
+                   and o.side = :side
+                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and o.market_type = 'ORDER_BOOK'
+                   and o.quantity > o.filled_quantity
+                 order by o.created_at asc, o.id asc
+                 limit 200
+                """
+        )
+                .param("symbol", config.symbol())
+                .param("accountId", config.accountId())
+                .param("side", side)
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
+                .list();
+    }
+
     private List<Long> findExpiredAutoOrderIds(String symbol, LocalDateTime candidateThreshold, int limit) {
         return jdbcClient.sql(
                 """
@@ -96,8 +125,7 @@ public class AutoMarketOrderReader {
                   and o.created_at < :candidateThreshold
                 order by o.created_at asc, o.id asc
                 limit :limit
-                %s
-                """.formatted(lockClause)
+                """
         )
                 .param("symbol", symbol)
                 .param("candidateThreshold", candidateThreshold)
@@ -119,8 +147,7 @@ public class AutoMarketOrderReader {
                   and o.created_at < :threshold
                 order by o.created_at asc, o.id asc
                 limit 200
-                %s
-                """.formatted(lockClause)
+                """
         )
                 .param("symbol", config.symbol())
                 .param("accountId", config.accountId())
@@ -129,11 +156,73 @@ public class AutoMarketOrderReader {
                 .list();
     }
 
+    public List<AutoOrder> lockOpenOrdersForUpdate(List<AutoOrder> candidates) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, AutoOrder> candidateById = candidates.stream()
+                .collect(Collectors.toMap(AutoOrder::id, Function.identity(), (left, right) -> left));
+        return jdbcClient.sql(
+                """
+                select id, account_id, symbol, side, quantity, filled_quantity, reserved_cash
+                  from %s
+                 where id in (:orderIds)
+                   and status in ('PENDING', 'PARTIALLY_FILLED')
+                   and market_type = 'ORDER_BOOK'
+                   and quantity > filled_quantity
+                 order by id asc
+                %s
+                """.formatted(lockedOrderTable, lockClause)
+        )
+                .param("orderIds", candidateById.keySet())
+                .query((rs, rowNum) -> {
+                    AutoOrder candidate = candidateById.get(rs.getLong("id"));
+                    return new AutoOrder(
+                            rs.getLong("id"),
+                            rs.getLong("account_id"),
+                            rs.getString("symbol"),
+                            rs.getString("side"),
+                            rs.getLong("quantity"),
+                            rs.getLong("filled_quantity"),
+                            rs.getBigDecimal("reserved_cash"),
+                            candidate == null ? null : candidate.profileType(),
+                            candidate == null ? null : candidate.createdAt()
+                    );
+                })
+                .list();
+    }
+
     public BigDecimal findBestPrice(String symbol, String side) {
         if ("BUY".equals(side)) {
             return findBestBuyPrice(symbol);
         }
         return findBestSellPrice(symbol);
+    }
+
+    public BigDecimal findBestPrice(long accountId, String symbol, String side) {
+        String sortDirection = "BUY".equals(side) ? "desc" : "asc";
+        return jdbcClient.sql(
+                """
+                select limit_price
+                  from stock_order
+                 where account_id = :accountId
+                   and symbol = :symbol
+                   and side = :side
+                   and market_type = 'ORDER_BOOK'
+                   and order_type = 'LIMIT'
+                   and status in ('PENDING', 'PARTIALLY_FILLED')
+                   and limit_price is not null
+                   and quantity > filled_quantity
+                 order by limit_price %s, created_at asc
+                 limit 1
+                """.formatted(sortDirection)
+        )
+                .param("accountId", accountId)
+                .param("symbol", symbol)
+                .param("side", side)
+                .query(BigDecimal.class)
+                .optional()
+                .orElse(null);
     }
 
     private BigDecimal findBestBuyPrice(String symbol) {
@@ -220,13 +309,10 @@ public class AutoMarketOrderReader {
         return quantity == null ? 0L : Math.max(0L, quantity);
     }
 
-    private String resolveLockClause(JdbcTemplate jdbcTemplate) {
+    private boolean isMySql(JdbcTemplate jdbcTemplate) {
         String productName = jdbcTemplate.execute(
                 (ConnectionCallback<String>) connection -> connection.getMetaData().getDatabaseProductName()
         );
-        if (productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql")) {
-            return "for update skip locked";
-        }
-        return "for update";
+        return productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql");
     }
 }

@@ -75,6 +75,24 @@ class AutoParticipantOrderPricing {
         return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
+    BigDecimal avoidSelfCross(
+            AutoMarketConfig config,
+            String side,
+            BigDecimal proposedPrice,
+            BigDecimal ownBestBid,
+            BigDecimal ownBestAsk
+    ) {
+        BigDecimal adjustedPrice = proposedPrice;
+        if (BUY.equals(side) && ownBestAsk != null && adjustedPrice.compareTo(ownBestAsk) >= 0) {
+            adjustedPrice = moveByTicks(config.market(), ownBestAsk, -1);
+        }
+        if (SELL.equals(side) && ownBestBid != null && adjustedPrice.compareTo(ownBestBid) <= 0) {
+            adjustedPrice = moveByTicks(config.market(), ownBestBid, 1);
+        }
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), adjustedPrice);
+        return normalizePriceWithinDailyLimit(adjustedPrice.max(tick), config, tick);
+    }
+
     private BigDecimal createMarketMakingPrice(
             AutoMarketConfig config,
             String side,

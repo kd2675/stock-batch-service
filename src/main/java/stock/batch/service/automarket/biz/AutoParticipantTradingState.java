@@ -14,19 +14,31 @@ final class AutoParticipantTradingState {
     private long availableQuantity;
     private final BigDecimal averagePrice;
     private final BigDecimal recentDividendCashAmount;
+    private BigDecimal ownBestBid;
+    private BigDecimal ownBestAsk;
+    private long openBuyQuantity;
+    private long openSellQuantity;
 
     private AutoParticipantTradingState(
             long accountId,
             BigDecimal cashBalance,
             long availableQuantity,
             BigDecimal averagePrice,
-            BigDecimal recentDividendCashAmount
+            BigDecimal recentDividendCashAmount,
+            BigDecimal ownBestBid,
+            BigDecimal ownBestAsk,
+            long openBuyQuantity,
+            long openSellQuantity
     ) {
         this.accountId = accountId;
         this.cashBalance = zeroIfNull(cashBalance);
         this.availableQuantity = Math.max(0L, availableQuantity);
         this.averagePrice = zeroIfNull(averagePrice);
         this.recentDividendCashAmount = zeroIfNull(recentDividendCashAmount);
+        this.ownBestBid = ownBestBid;
+        this.ownBestAsk = ownBestAsk;
+        this.openBuyQuantity = Math.max(0L, openBuyQuantity);
+        this.openSellQuantity = Math.max(0L, openSellQuantity);
     }
 
     static AutoParticipantTradingState from(AutoParticipantTradingSnapshot snapshot) {
@@ -35,12 +47,26 @@ final class AutoParticipantTradingState {
                 snapshot.cashBalance(),
                 snapshot.availableQuantity(),
                 snapshot.averagePrice(),
-                snapshot.recentDividendCashAmount()
+                snapshot.recentDividendCashAmount(),
+                snapshot.ownBestBid(),
+                snapshot.ownBestAsk(),
+                snapshot.openBuyQuantity(),
+                snapshot.openSellQuantity()
         );
     }
 
     static AutoParticipantTradingState empty(long accountId) {
-        return new AutoParticipantTradingState(accountId, BigDecimal.ZERO, 0L, BigDecimal.ZERO, BigDecimal.ZERO);
+        return new AutoParticipantTradingState(
+                accountId,
+                BigDecimal.ZERO,
+                0L,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                null,
+                null,
+                0L,
+                0L
+        );
     }
 
     long accountId() {
@@ -63,13 +89,34 @@ final class AutoParticipantTradingState {
         return recentDividendCashAmount;
     }
 
+    BigDecimal ownBestBid() {
+        return ownBestBid;
+    }
+
+    BigDecimal ownBestAsk() {
+        return ownBestAsk;
+    }
+
+    long remainingOpenCapacity(String side, long maxOpenQuantity) {
+        long currentOpenQuantity = BUY.equals(side) ? openBuyQuantity : openSellQuantity;
+        return Math.max(0L, maxOpenQuantity - currentOpenQuantity);
+    }
+
     void reserve(String side, BigDecimal price, long quantity) {
         if (BUY.equals(side)) {
             cashBalance = cashBalance.subtract(price.multiply(BigDecimal.valueOf(quantity))).max(BigDecimal.ZERO);
+            openBuyQuantity += quantity;
+            if (ownBestBid == null || price.compareTo(ownBestBid) > 0) {
+                ownBestBid = price;
+            }
             return;
         }
         if (SELL.equals(side)) {
             availableQuantity = Math.max(0L, availableQuantity - quantity);
+            openSellQuantity += quantity;
+            if (ownBestAsk == null || price.compareTo(ownBestAsk) < 0) {
+                ownBestAsk = price;
+            }
         }
     }
 

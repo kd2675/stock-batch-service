@@ -26,6 +26,16 @@ public class ListingAutoMarketJob implements StockBatchJob {
     }
 
     @Override
+    public boolean requiresJobLock() {
+        return false;
+    }
+
+    @Override
+    public boolean recordsExecutionHistory() {
+        return false;
+    }
+
+    @Override
     public int run() {
         return listingAutoMarketJobService.runListingAutoMarket();
     }

@@ -9,7 +9,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -21,12 +22,24 @@ import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSuppo
 import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
 
 @Component
-@RequiredArgsConstructor
 public class AutoMarketWriter {
 
     private final JdbcTemplate jdbcTemplate;
     private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
     private final OrderBookReadySymbolQueue readySymbolQueue;
+    private final Counter orderInsertFailureCounter;
+
+    public AutoMarketWriter(
+            JdbcTemplate jdbcTemplate,
+            StockHoldingReservationJdbcSupport holdingReservationJdbcSupport,
+            OrderBookReadySymbolQueue readySymbolQueue,
+            MeterRegistry meterRegistry
+    ) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.holdingReservationJdbcSupport = holdingReservationJdbcSupport;
+        this.readySymbolQueue = readySymbolQueue;
+        this.orderInsertFailureCounter = meterRegistry.counter("stock.auto.market.order.insert.failures");
+    }
 
     public void creditCash(long accountId, BigDecimal amount, LocalDateTime updatedAt) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -37,6 +50,23 @@ public class AutoMarketWriter {
                 amount,
                 updatedAt,
                 accountId
+        );
+    }
+
+    public void lockAccountForUpdate(long accountId) {
+        jdbcTemplate.queryForList(
+                "select id from stock_account where id = ? for update",
+                Long.class,
+                accountId
+        );
+    }
+
+    public void lockHoldingForUpdate(long accountId, String symbol) {
+        jdbcTemplate.queryForList(
+                "select id from stock_holding where account_id = ? and symbol = ? for update",
+                Long.class,
+                accountId,
+                symbol
         );
     }
 
@@ -156,36 +186,42 @@ public class AutoMarketWriter {
         if (orders.isEmpty()) {
             return 0;
         }
-        int[] updatedRows = jdbcTemplate.batchUpdate(
-                """
-                insert into stock_order(
-                    client_order_id, account_id, symbol, market_type, side, order_type, status,
-                    limit_price, quantity, filled_quantity, average_fill_price,
-                    reserved_cash, created_at, updated_at
-                )
-                values (?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)
-                """,
-                new BatchPreparedStatementSetter() {
-                    @Override
-                    public void setValues(PreparedStatement ps, int i) throws SQLException {
-                        LimitOrderInsert order = orders.get(i);
-                        ps.setString(1, order.clientOrderId());
-                        ps.setLong(2, order.accountId());
-                        ps.setString(3, order.symbol());
-                        ps.setString(4, order.side());
-                        ps.setBigDecimal(5, order.price());
-                        ps.setLong(6, order.quantity());
-                        ps.setBigDecimal(7, order.reservedCash());
-                        ps.setObject(8, createdAt);
-                        ps.setObject(9, createdAt);
-                    }
+        int[] updatedRows;
+        try {
+            updatedRows = jdbcTemplate.batchUpdate(
+                    """
+                    insert into stock_order(
+                        client_order_id, account_id, symbol, market_type, side, order_type, status,
+                        limit_price, quantity, filled_quantity, average_fill_price,
+                        reserved_cash, created_at, updated_at
+                    )
+                    values (?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)
+                    """,
+                    new BatchPreparedStatementSetter() {
+                        @Override
+                        public void setValues(PreparedStatement ps, int i) throws SQLException {
+                            LimitOrderInsert order = orders.get(i);
+                            ps.setString(1, order.clientOrderId());
+                            ps.setLong(2, order.accountId());
+                            ps.setString(3, order.symbol());
+                            ps.setString(4, order.side());
+                            ps.setBigDecimal(5, order.price());
+                            ps.setLong(6, order.quantity());
+                            ps.setBigDecimal(7, order.reservedCash());
+                            ps.setObject(8, createdAt);
+                            ps.setObject(9, createdAt);
+                        }
 
-                    @Override
-                    public int getBatchSize() {
-                        return orders.size();
+                        @Override
+                        public int getBatchSize() {
+                            return orders.size();
+                        }
                     }
-                }
-        );
+            );
+        } catch (RuntimeException ex) {
+            orderInsertFailureCounter.increment();
+            throw ex;
+        }
         int insertedCount = 0;
         for (int updatedRow : updatedRows) {
             if (updatedRow > 0 || updatedRow == Statement.SUCCESS_NO_INFO) {

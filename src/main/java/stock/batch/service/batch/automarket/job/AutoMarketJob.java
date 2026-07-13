@@ -31,6 +31,11 @@ public class AutoMarketJob implements StockBatchJob {
     }
 
     @Override
+    public boolean recordsExecutionHistory() {
+        return false;
+    }
+
+    @Override
     public int run() {
         return autoMarketService.runAutoMarketStep();
     }

@@ -287,6 +287,7 @@ class AutoMarketReaderTest {
                     created_at timestamp not null
                 )
                 """);
+        createSnapshotOrderTable(realJdbcTemplate);
         LocalDateTime since = LocalDateTime.of(2026, 6, 29, 9, 0);
         realJdbcTemplate.update("insert into stock_account(id, cash_balance) values (?, ?)", 10L, new BigDecimal("100000.00"));
         realJdbcTemplate.update("insert into stock_account(id, cash_balance) values (?, ?)", 20L, new BigDecimal("50000.00"));
@@ -310,6 +311,8 @@ class AutoMarketReaderTest {
                 new BigDecimal("9999.00"),
                 since.minusMinutes(1)
         );
+        insertSnapshotOrder(realJdbcTemplate, 1L, 10L, "BUY", new BigDecimal("51000.00"), 6L, 1L);
+        insertSnapshotOrder(realJdbcTemplate, 2L, 10L, "SELL", new BigDecimal("52000.00"), 4L, 1L);
         AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
 
         List<AutoParticipantTradingSnapshot> snapshots = realReader.findTradingSnapshots(List.of(10L, 20L), "STOCK001", since);
@@ -321,6 +324,10 @@ class AutoMarketReaderTest {
         assertThat(snapshot.availableQuantity()).isEqualTo(7L);
         assertThat(snapshot.averagePrice()).isEqualByComparingTo(new BigDecimal("50000.00"));
         assertThat(snapshot.recentDividendCashAmount()).isEqualByComparingTo(new BigDecimal("3000.00"));
+        assertThat(snapshot.ownBestBid()).isEqualByComparingTo(new BigDecimal("51000.00"));
+        assertThat(snapshot.ownBestAsk()).isEqualByComparingTo(new BigDecimal("52000.00"));
+        assertThat(snapshot.openBuyQuantity()).isEqualTo(5L);
+        assertThat(snapshot.openSellQuantity()).isEqualTo(3L);
         AutoParticipantTradingSnapshot emptyHoldingSnapshot = snapshots.get(1);
         assertThat(emptyHoldingSnapshot.accountId()).isEqualTo(20L);
         assertThat(emptyHoldingSnapshot.availableQuantity()).isZero();
@@ -354,6 +361,7 @@ class AutoMarketReaderTest {
                     created_at timestamp not null
                 )
                 """);
+        createSnapshotOrderTable(realJdbcTemplate);
         List<Long> accountIds = IntStream.rangeClosed(1, 42)
                 .mapToObj(accountId -> (long) accountId)
                 .toList();
@@ -378,6 +386,49 @@ class AutoMarketReaderTest {
         assertThat(snapshots).hasSize(42);
         assertThat(snapshots.getLast().accountId()).isEqualTo(42L);
         assertThat(snapshots.getLast().recentDividendCashAmount()).isEqualByComparingTo(new BigDecimal("4200.00"));
+    }
+
+    private void createSnapshotOrderTable(JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.execute("""
+                create table stock_order (
+                    id bigint not null,
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    market_type varchar(20) not null,
+                    side varchar(10) not null,
+                    order_type varchar(20) not null,
+                    status varchar(30) not null,
+                    limit_price decimal(19, 2),
+                    quantity bigint not null,
+                    filled_quantity bigint not null
+                )
+                """);
+    }
+
+    private void insertSnapshotOrder(
+            JdbcTemplate jdbcTemplate,
+            long id,
+            long accountId,
+            String side,
+            BigDecimal price,
+            long quantity,
+            long filledQuantity
+    ) {
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                    id, account_id, symbol, market_type, side, order_type, status,
+                    limit_price, quantity, filled_quantity
+                )
+                values (?, ?, 'STOCK001', 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, ?)
+                """,
+                id,
+                accountId,
+                side,
+                price,
+                quantity,
+                filledQuantity
+        );
     }
 
     @Test

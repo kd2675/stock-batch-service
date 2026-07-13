@@ -122,8 +122,7 @@ class AutoParticipantCashFlowSchedulerTest {
                 new OrderBookExecutionScheduler(
                         stockBatchJobLauncher,
                         scheduledJobGuard,
-                        simulationMarketSessionService,
-                        command -> command.run()
+                        simulationMarketSessionService
                 );
         batchJobRuntimeControl.update(OrderBookExecutionJob.JOB_NAME, true, false, "stock-admin");
 

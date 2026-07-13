@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
+import stock.batch.service.batch.execution.model.OrderBookMatchCandidate;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
@@ -74,14 +75,19 @@ class OrderBookExecutionReaderTest {
     }
 
     @Test
-    void findExecutableSymbols_returnsOpenOrderBookSymbolsOnlyForOpenMarkets() {
+    void findExecutableSymbols_returnsOnlyOpenMarketsWithCrossableDifferentAccountPair() {
         jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK001', true, 'OPEN')");
         jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK002', true, 'CLOSED')");
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK003', true, 'OPEN')");
         jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK001', true)");
         jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK002', true)");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK003', true)");
         insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
-        insertOrder(2L, 20L, "STOCK002", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 2);
-        insertOrder(3L, 30L, "STOCK001", "BUY", "LIMIT", "FILLED", new BigDecimal("70100.00"), 10L, 10L, 3);
+        insertOrder(2L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 2);
+        insertOrder(3L, 30L, "STOCK002", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 3);
+        insertOrder(4L, 40L, "STOCK002", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 4);
+        insertOrder(5L, 50L, "STOCK003", "BUY", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 5);
+        insertOrder(6L, 60L, "STOCK003", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 6);
 
         List<String> symbols = reader.findExecutableSymbols();
 
@@ -89,64 +95,62 @@ class OrderBookExecutionReaderTest {
     }
 
     @Test
-    void findBestBuyCandidateIds_prioritizesMarketThenHigherLimitThenOlderOrder() {
+    void findBestMatchCandidate_prioritizesMarketBuyAndBestLimitSell() {
         insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
         insertOrder(2L, 20L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70100.00"), 10L, 0L, 2);
         insertOrder(3L, 30L, "STOCK001", "BUY", "MARKET", "PENDING", null, 10L, 0L, 3);
         insertOrder(4L, 40L, "STOCK001", "BUY", "LIMIT", "FILLED", new BigDecimal("80000.00"), 10L, 10L, 4);
         insertOrder(5L, 50L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 5);
 
-        List<Long> candidateIds = reader.findBestBuyCandidateIds("STOCK001", 10);
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 10).orElseThrow();
 
-        assertThat(candidateIds).containsExactly(3L, 2L, 1L);
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(3L, 30L, 5L, 50L));
     }
 
     @Test
-    void findBestBuyCandidateIds_includesNextBuyWhenTopBuyCanOnlySelfTrade() {
+    void findBestMatchCandidate_skipsSelfTradeAndUsesNextCrossableBuy() {
         insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
         insertOrder(2L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 2);
         insertOrder(3L, 20L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("69500.00"), 10L, 0L, 3);
 
-        List<Long> candidateIds = reader.findBestBuyCandidateIds("STOCK001", 10);
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 10).orElseThrow();
 
-        assertThat(candidateIds).containsExactly(1L, 3L);
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(3L, 20L, 2L, 10L));
     }
 
     @Test
-    void findBuyCandidateForUpdate_revalidatesExecutableBuyOrder() {
+    void findMatchOrdersForUpdate_revalidatesBothOrdersAndReturnsPrimaryKeyOrder() {
         insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
-        insertOrder(2L, 20L, "STOCK001", "BUY", "LIMIT", "FILLED", new BigDecimal("70100.00"), 10L, 10L, 2);
+        insertOrder(2L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 2);
 
-        OrderBookOrderRow buy = reader.findBuyCandidateForUpdate(1L);
-        OrderBookOrderRow filledBuy = reader.findBuyCandidateForUpdate(2L);
+        List<OrderBookOrderRow> orders = reader.findMatchOrdersForUpdate(new OrderBookMatchCandidate(1L, 10L, 2L, 20L));
 
-        assertThat(buy.id()).isEqualTo(1L);
-        assertThat(filledBuy).isNull();
+        assertThat(orders).extracting(OrderBookOrderRow::id).containsExactly(1L, 2L);
     }
 
     @Test
-    void findBestSell_forMarketBuy_usesLowestLimitSellAndIgnoresMarketSell() {
-        OrderBookOrderRow marketBuy = orderRow(100L, 10L, "BUY", "MARKET", null);
+    void findBestMatchCandidate_forMarketBuy_usesLowestLimitSellAndIgnoresMarketSell() {
+        insertOrder(100L, 10L, "STOCK001", "BUY", "MARKET", "PENDING", null, 10L, 0L, 0);
         insertOrder(1L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 1);
         insertOrder(2L, 20L, "STOCK001", "SELL", "MARKET", "PENDING", null, 10L, 0L, 2);
         insertOrder(3L, 30L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 3);
         insertOrder(4L, 40L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 4);
 
-        OrderBookOrderRow sell = reader.findBestSell("STOCK001", marketBuy);
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 10).orElseThrow();
 
-        assertThat(sell.id()).isEqualTo(4L);
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(100L, 10L, 4L, 40L));
     }
 
     @Test
-    void findBestSell_forLimitBuy_prioritizesMarketSellThenCrossableLowestLimit() {
-        OrderBookOrderRow limitBuy = orderRow(100L, 10L, "BUY", "LIMIT", new BigDecimal("70000.00"));
+    void findBestMatchCandidate_forLimitBuy_prioritizesMarketSellThenCrossableLowestLimit() {
+        insertOrder(100L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 0);
         insertOrder(1L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69900.00"), 10L, 0L, 1);
         insertOrder(2L, 30L, "STOCK001", "SELL", "MARKET", "PENDING", null, 10L, 0L, 2);
         insertOrder(3L, 40L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70100.00"), 10L, 0L, 3);
 
-        OrderBookOrderRow sell = reader.findBestSell("STOCK001", limitBuy);
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 10).orElseThrow();
 
-        assertThat(sell.id()).isEqualTo(2L);
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(100L, 10L, 2L, 30L));
     }
 
     @Test
@@ -199,18 +203,4 @@ class OrderBookExecutionReaderTest {
         );
     }
 
-    private OrderBookOrderRow orderRow(long id, long accountId, String side, String orderType, BigDecimal limitPrice) {
-        return new OrderBookOrderRow(
-                id,
-                accountId,
-                "STOCK001",
-                side,
-                orderType,
-                limitPrice,
-                10L,
-                0L,
-                null,
-                BigDecimal.ZERO
-        );
-    }
 }

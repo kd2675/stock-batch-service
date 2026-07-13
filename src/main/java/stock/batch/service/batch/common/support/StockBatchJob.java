@@ -10,5 +10,9 @@ public interface StockBatchJob {
         return true;
     }
 
+    default boolean recordsExecutionHistory() {
+        return true;
+    }
+
     int run();
 }

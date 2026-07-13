@@ -3,6 +3,7 @@ package stock.batch.service.automarket.biz;
 import java.util.List;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +29,7 @@ public class ListingAutoMarketJobService {
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
+    private final MeterRegistry meterRegistry;
 
     @Value("${stock.batch.listing-auto-market.deadlock-retry-max-attempts:5}")
     private int deadlockRetryMaxAttempts = 5;
@@ -69,7 +71,12 @@ public class ListingAutoMarketJobService {
                     }
                 })
                 .orElseGet(() -> {
-                    log.warn("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
+                    meterRegistry.counter(
+                            "stock.listing.auto.market.symbol.lock.skips",
+                            "symbol",
+                            config.symbol()
+                    ).increment();
+                    log.debug("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
                     return 0;
                 });
     }

@@ -30,6 +30,12 @@ public class ListingAutoAccountReader {
                        c.max_order_quantity,
                        c.order_ttl_seconds,
                        c.price_offset_ticks,
+                       c.target_buy_quantity,
+                       c.target_sell_quantity,
+                       c.target_holding_quantity,
+                       c.inventory_band_quantity,
+                       c.buy_price_offset_direction,
+                       c.sell_price_offset_direction,
                        i.tick_size,
                        i.price_limit_rate,
                        p.current_price,
@@ -62,6 +68,21 @@ public class ListingAutoAccountReader {
                 .query(Long.class)
                 .single();
         return quantity == null ? 0L : quantity;
+    }
+
+    public long getHoldingQuantity(long accountId, String symbol) {
+        Long quantity = jdbcClient.sql(
+                """
+                select coalesce(max(quantity), 0)
+                  from stock_holding
+                 where account_id = ?
+                   and symbol = ?
+                """
+        )
+                .params(accountId, symbol)
+                .query(Long.class)
+                .single();
+        return quantity == null ? 0L : Math.max(0L, quantity);
     }
 
     public BigDecimal getCashBalance(long accountId) {

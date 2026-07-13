@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -45,7 +46,8 @@ class ListingAutoMarketJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                new SimpleMeterRegistry()
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
@@ -85,7 +87,8 @@ class ListingAutoMarketJobServiceTest {
                 simulationClockService,
                 simulationMarketSessionService,
                 transactionTemplate,
-                orderBookSymbolLock
+                orderBookSymbolLock,
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
         AutoMarketConfig config = config("LST001");

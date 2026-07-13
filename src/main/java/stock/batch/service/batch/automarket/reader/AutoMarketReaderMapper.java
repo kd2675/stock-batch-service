@@ -123,6 +123,12 @@ final class AutoMarketReaderMapper {
                 Math.max(1, rs.getInt("max_order_quantity")),
                 Math.max(1, rs.getInt("order_ttl_seconds")),
                 Math.max(0, rs.getInt("price_offset_ticks")),
+                Math.max(0L, rs.getLong("target_buy_quantity")),
+                Math.max(0L, rs.getLong("target_sell_quantity")),
+                Math.max(0L, rs.getLong("target_holding_quantity")),
+                Math.max(0L, rs.getLong("inventory_band_quantity")),
+                rs.getString("buy_price_offset_direction"),
+                rs.getString("sell_price_offset_direction"),
                 positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
                 rs.getBigDecimal("current_price"),
                 positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
@@ -162,7 +168,11 @@ final class AutoMarketReaderMapper {
                 zeroIfNull(rs.getBigDecimal("cash_balance")),
                 Math.max(0L, rs.getLong("available_quantity")),
                 zeroIfNull(rs.getBigDecimal("average_price")),
-                zeroIfNull(rs.getBigDecimal("recent_dividend_cash_amount"))
+                zeroIfNull(rs.getBigDecimal("recent_dividend_cash_amount")),
+                rs.getBigDecimal("own_best_bid"),
+                rs.getBigDecimal("own_best_ask"),
+                Math.max(0L, rs.getLong("open_buy_quantity")),
+                Math.max(0L, rs.getLong("open_sell_quantity"))
         );
     }
 

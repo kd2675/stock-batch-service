@@ -305,6 +305,26 @@ class StockDdlContractTest {
     }
 
     @Test
+    void stockH2Ddl_definesInstitutionalListingAutoPolicy() throws IOException {
+        String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
+
+        assertThat(extractCreateTableBlock(h2Ddl, "stock_listing_auto_account_config"))
+                .contains(
+                        "target_buy_quantity BIGINT NOT NULL",
+                        "target_sell_quantity BIGINT NOT NULL",
+                        "target_holding_quantity BIGINT NOT NULL",
+                        "inventory_band_quantity BIGINT NOT NULL",
+                        "buy_price_offset_direction VARCHAR(10) NOT NULL",
+                        "sell_price_offset_direction VARCHAR(10) NOT NULL",
+                        "WHEN 'TWO_SIDED' THEN 1",
+                        "chk_stock_listing_auto_account_target_buy",
+                        "chk_stock_listing_auto_account_target_sell",
+                        "chk_stock_listing_auto_account_target_holding",
+                        "chk_stock_listing_auto_account_inventory_band"
+                );
+    }
+
+    @Test
     void alterDdlFiles_selectStockServiceSchemaBeforeChanges() throws IOException {
         List<Path> alterFiles = listAlterDdlFiles();
 
@@ -343,6 +363,40 @@ class StockDdlContractTest {
                         "DROP INDEX idx_stock_order_status_symbol"
                 );
         assertThat(batchDdl).doesNotContain("ALTER TABLE stock_order\n  ADD INDEX");
+    }
+
+    @Test
+    void listingAutoInstitutionPolicyAlterDdl_isSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_listing_auto_institution_policy_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_institution_policy_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+    }
+
+    @Test
+    void listingAutoInventoryBandAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_listing_auto_inventory_band_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_inventory_band_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "USE STOCK_SERVICE;",
+                "information_schema.columns",
+                "inventory_band_quantity",
+                "chk_stock_listing_auto_account_inventory_band"
+        );
     }
 
     @Test
@@ -438,6 +492,28 @@ class StockDdlContractTest {
                 "information_schema.statistics",
                 "ADD INDEX idx_stock_price_tick_symbol_time_id (symbol, price_time, id)",
                 "DROP INDEX idx_stock_price_tick_symbol_time"
+        );
+    }
+
+    @Test
+    void activityLatestLookupAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_activity_latest_lookup_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_activity_latest_lookup_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "USE STOCK_SERVICE",
+                "information_schema.statistics",
+                "ADD INDEX idx_stock_order_account_market_created (account_id, market_type, created_at)",
+                "ADD INDEX idx_stock_execution_account_source_time (account_id, source, executed_at)",
+                "ADD INDEX idx_stock_execution_candle (source, symbol, side, executed_at, id, price, quantity, gross_amount)",
+                "SELECT 1"
         );
     }
 

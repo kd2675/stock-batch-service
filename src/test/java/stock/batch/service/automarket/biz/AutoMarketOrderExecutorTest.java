@@ -171,7 +171,7 @@ class AutoMarketOrderExecutorTest {
     }
 
     @Test
-    void expireOrders_releasesCashAndHoldingsInAccountOrderAfterCancellingOrders() {
+    void expireOrders_locksResourcesBeforeOrdersThenReleasesReservations() {
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketWriter writer = mock(AutoMarketWriter.class);
         SimulationClockService clockService = mock(SimulationClockService.class);
@@ -181,15 +181,22 @@ class AutoMarketOrderExecutorTest {
         AutoOrder sellLowSymbolB = new AutoOrder(2L, 2L, "STOCK002", "SELL", 8, 2, BigDecimal.ZERO);
         AutoOrder buyLowAccount = new AutoOrder(3L, 1L, "STOCK001", "BUY", 10, 0, new BigDecimal("1000.00"));
         AutoOrder sellLowSymbolA = new AutoOrder(4L, 2L, "STOCK001", "SELL", 5, 0, BigDecimal.ZERO);
+        List<AutoOrder> orders = List.of(buyHighAccount, sellLowSymbolB, buyLowAccount, sellLowSymbolA);
+        when(orderReader.lockOpenOrdersForUpdate(orders)).thenReturn(orders);
         when(writer.cancelOpenOrder(buyHighAccount, now)).thenReturn(true);
         when(writer.cancelOpenOrder(sellLowSymbolB, now)).thenReturn(true);
         when(writer.cancelOpenOrder(buyLowAccount, now)).thenReturn(true);
         when(writer.cancelOpenOrder(sellLowSymbolA, now)).thenReturn(true);
 
-        int expiredCount = executor.expireOrders(List.of(buyHighAccount, sellLowSymbolB, buyLowAccount, sellLowSymbolA), now);
+        int expiredCount = executor.expireOrders(orders, now);
 
         assertThat(expiredCount).isEqualTo(4);
         InOrder inOrder = org.mockito.Mockito.inOrder(writer);
+        inOrder.verify(writer).lockAccountForUpdate(1L);
+        inOrder.verify(writer).lockAccountForUpdate(2L);
+        inOrder.verify(writer).lockAccountForUpdate(3L);
+        inOrder.verify(writer).lockHoldingForUpdate(2L, "STOCK001");
+        inOrder.verify(writer).lockHoldingForUpdate(2L, "STOCK002");
         inOrder.verify(writer).cancelOpenOrder(buyHighAccount, now);
         inOrder.verify(writer).cancelOpenOrder(sellLowSymbolB, now);
         inOrder.verify(writer).cancelOpenOrder(buyLowAccount, now);

@@ -5,6 +5,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,6 +14,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
+import stock.batch.service.batch.execution.model.OrderBookMatchCandidate;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 
 @Component
@@ -20,10 +22,13 @@ public class OrderBookExecutionReader {
 
     private final JdbcClient jdbcClient;
     private final String lockClause;
+    private final String lockedOrderTable;
 
     public OrderBookExecutionReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
-        this.lockClause = resolveLockClause(jdbcTemplate);
+        boolean mysql = isMySql(jdbcTemplate);
+        this.lockClause = mysql ? "for update skip locked" : "for update";
+        this.lockedOrderTable = mysql ? "stock_order force index (primary)" : "stock_order";
     }
 
     public List<String> findExecutableSymbols() {
@@ -33,14 +38,45 @@ public class OrderBookExecutionReader {
     public List<String> findExecutableSymbolCandidates(int limit) {
         return jdbcClient.sql(
                 """
-                select distinct o.symbol
-                from stock_order o
-                join stock_order_book_market_config c on c.symbol = o.symbol and c.enabled = true and c.market_status = 'OPEN'
-                join stock_order_book_instrument i on i.symbol = o.symbol and i.enabled = true
-                where o.status in ('PENDING', 'PARTIALLY_FILLED')
-                  and o.market_type = 'ORDER_BOOK'
-                  and o.order_type in ('LIMIT', 'MARKET')
-                order by o.symbol asc
+                select distinct b.symbol
+                  from stock_order b
+                  join stock_order_book_market_config c
+                    on c.symbol = b.symbol
+                   and c.enabled = true
+                   and c.market_status = 'OPEN'
+                  join stock_order_book_instrument i
+                    on i.symbol = b.symbol
+                   and i.enabled = true
+                 where b.side = 'BUY'
+                   and b.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and b.market_type = 'ORDER_BOOK'
+                   and b.order_type in ('LIMIT', 'MARKET')
+                   and b.quantity > b.filled_quantity
+                   and (b.order_type = 'MARKET' or b.limit_price is not null)
+                   and exists (
+                       select 1
+                         from stock_order s
+                        where s.symbol = b.symbol
+                          and s.side = 'SELL'
+                          and s.market_type = 'ORDER_BOOK'
+                          and s.order_type in ('LIMIT', 'MARKET')
+                          and s.status in ('PENDING', 'PARTIALLY_FILLED')
+                          and s.quantity > s.filled_quantity
+                          and s.account_id <> b.account_id
+                          and (
+                              (b.order_type = 'MARKET'
+                                  and s.order_type = 'LIMIT'
+                                  and s.limit_price is not null)
+                              or
+                              (b.order_type = 'LIMIT'
+                                  and b.limit_price is not null
+                                  and (
+                                      s.order_type = 'MARKET'
+                                      or (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
+                                  ))
+                          )
+                   )
+                 order by b.symbol asc
                 limit :limit
                 """
         )
@@ -92,119 +128,108 @@ public class OrderBookExecutionReader {
         return executableOrderId != null;
     }
 
-    public List<Long> findBestBuyCandidateIds(String symbol, int scanLimit) {
+    public Optional<OrderBookMatchCandidate> findBestMatchCandidate(String symbol, int scanLimit) {
         return jdbcClient.sql(
                 """
-                select id
-                from stock_order
-                where symbol = :symbol
-                  and side = 'BUY'
-                  and market_type = 'ORDER_BOOK'
-                  and order_type in ('LIMIT', 'MARKET')
-                  and status in ('PENDING', 'PARTIALLY_FILLED')
-                  and quantity > filled_quantity
-                  and (order_type = 'MARKET' or limit_price is not null)
-                order by case when order_type = 'MARKET' then 1 else 0 end desc,
-                         limit_price desc,
-                         created_at asc
-                limit :scanLimit
+                with buy_candidates as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'BUY'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type in ('LIMIT', 'MARKET')
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and (order_type = 'MARKET' or limit_price is not null)
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price desc,
+                              created_at asc,
+                              id asc
+                     limit :scanLimit
+                ),
+                sell_candidates as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'SELL'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type in ('LIMIT', 'MARKET')
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and (order_type = 'MARKET' or limit_price is not null)
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price asc,
+                              created_at asc,
+                              id asc
+                     limit :scanLimit
+                )
+                select b.id as buy_order_id,
+                       b.account_id as buy_account_id,
+                       s.id as sell_order_id,
+                       s.account_id as sell_account_id
+                  from buy_candidates b
+                  join sell_candidates s
+                    on s.account_id <> b.account_id
+                   and (
+                       (b.order_type = 'MARKET'
+                           and s.order_type = 'LIMIT'
+                           and s.limit_price is not null)
+                       or
+                       (b.order_type = 'LIMIT'
+                           and b.limit_price is not null
+                           and (
+                               s.order_type = 'MARKET'
+                               or (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
+                           ))
+                   )
+                 order by case when b.order_type = 'MARKET' then 1 else 0 end desc,
+                          b.limit_price desc,
+                          b.created_at asc,
+                          b.id asc,
+                          case when s.order_type = 'MARKET' then 1 else 0 end desc,
+                          s.limit_price asc,
+                          s.created_at asc,
+                          s.id asc
+                 limit 1
                 """
         )
                 .param("symbol", symbol)
                 .param("scanLimit", scanLimit)
-                .query(Long.class)
-                .list();
+                .query((rs, rowNum) -> new OrderBookMatchCandidate(
+                        rs.getLong("buy_order_id"),
+                        rs.getLong("buy_account_id"),
+                        rs.getLong("sell_order_id"),
+                        rs.getLong("sell_account_id")
+                ))
+                .optional();
     }
 
-    public OrderBookOrderRow findBuyCandidateForUpdate(long orderId) {
+    public List<OrderBookOrderRow> findMatchOrdersForUpdate(OrderBookMatchCandidate candidate) {
         return jdbcClient.sql(
                 """
                 select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity, average_fill_price, reserved_cash
-                from stock_order
-                where id = :orderId
-                  and side = 'BUY'
+                  from %s
+                 where id in (:buyOrderId, :sellOrderId)
                   and market_type = 'ORDER_BOOK'
                   and order_type in ('LIMIT', 'MARKET')
                   and status in ('PENDING', 'PARTIALLY_FILLED')
                   and quantity > filled_quantity
                   and (order_type = 'MARKET' or limit_price is not null)
+                 order by id asc
                 %s
-                """.formatted(lockClause)
+                """.formatted(lockedOrderTable, lockClause)
         )
-                .param("orderId", orderId)
+                .param("buyOrderId", candidate.buyOrderId())
+                .param("sellOrderId", candidate.sellOrderId())
                 .query((rs, rowNum) -> mapOrderRow(rs))
-                .optional()
-                .orElse(null);
+                .list();
     }
 
-    public OrderBookOrderRow findBestSell(String symbol, OrderBookOrderRow buyOrder) {
-        if ("MARKET".equals(buyOrder.orderType())) {
-            return findBestLimitSellForMarketBuy(symbol, buyOrder.accountId());
-        }
-        return findBestSellForLimitBuy(symbol, buyOrder.accountId(), buyOrder.limitPrice());
-    }
-
-    private OrderBookOrderRow findBestLimitSellForMarketBuy(String symbol, long buyAccountId) {
-        return jdbcClient.sql(
-                """
-                select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity, average_fill_price, reserved_cash
-                from stock_order
-                where symbol = :symbol
-                  and side = 'SELL'
-                  and market_type = 'ORDER_BOOK'
-                  and order_type = 'LIMIT'
-                  and status in ('PENDING', 'PARTIALLY_FILLED')
-                  and quantity > filled_quantity
-                  and account_id <> :buyAccountId
-                  and limit_price is not null
-                order by limit_price asc, created_at asc
-                limit 1
-                %s
-                """.formatted(lockClause)
-        )
-                .param("symbol", symbol)
-                .param("buyAccountId", buyAccountId)
-                .query((rs, rowNum) -> mapOrderRow(rs))
-                .optional()
-                .orElse(null);
-    }
-
-    private OrderBookOrderRow findBestSellForLimitBuy(String symbol, long buyAccountId, BigDecimal buyLimitPrice) {
-        return jdbcClient.sql(
-                """
-                select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity, average_fill_price, reserved_cash
-                from stock_order
-                where symbol = :symbol
-                  and side = 'SELL'
-                  and market_type = 'ORDER_BOOK'
-                  and order_type in ('LIMIT', 'MARKET')
-                  and status in ('PENDING', 'PARTIALLY_FILLED')
-                  and quantity > filled_quantity
-                  and account_id <> :buyAccountId
-                  and ((order_type = 'LIMIT' and limit_price <= :buyLimitPrice) or order_type = 'MARKET')
-                order by case when order_type = 'MARKET' then 1 else 0 end desc,
-                         limit_price asc,
-                         created_at asc
-                limit 1
-                %s
-                """.formatted(lockClause)
-        )
-                .param("symbol", symbol)
-                .param("buyAccountId", buyAccountId)
-                .param("buyLimitPrice", buyLimitPrice)
-                .query((rs, rowNum) -> mapOrderRow(rs))
-                .optional()
-                .orElse(null);
-    }
-
-    private String resolveLockClause(JdbcTemplate jdbcTemplate) {
+    private boolean isMySql(JdbcTemplate jdbcTemplate) {
         String productName = jdbcTemplate.execute(
                 (ConnectionCallback<String>) connection -> connection.getMetaData().getDatabaseProductName()
         );
-        if (productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql")) {
-            return "for update skip locked";
-        }
-        return "for update";
+        return productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql");
     }
 
     public boolean hasEnoughCash(long accountId, BigDecimal shortfall) {

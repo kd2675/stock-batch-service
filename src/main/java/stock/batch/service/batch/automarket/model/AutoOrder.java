@@ -14,6 +14,10 @@ public record AutoOrder(
         AutoParticipantProfileType profileType,
         LocalDateTime createdAt
 ) {
+    public long remainingQuantity() {
+        return Math.max(0L, quantity - filledQuantity);
+    }
+
     public AutoOrder(
             long id,
             long accountId,

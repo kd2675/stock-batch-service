@@ -187,8 +187,8 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void autoMarketScheduler_dispatchesRunsWithoutWaitingForEarlierRunsAndSkipsWhenSaturated() {
-        RecordingExecutor executor = new RecordingExecutor(3);
+    void autoMarketScheduler_allowsOnlyOneOverlappingRun() {
+        RecordingExecutor executor = new RecordingExecutor(1);
         AutoMarketScheduler scheduler = newAutoMarketScheduler(executor);
         when(batchJobRuntimeControl.shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true)).thenReturn(true);
 
@@ -202,8 +202,8 @@ class SchedulerRuntimeControlBehaviorTest {
 
         executor.runAll();
 
-        verify(batchJobRuntimeControl, times(3)).shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true);
-        verify(stockBatchJobLauncher, times(3)).runAutoMarket();
+        verify(batchJobRuntimeControl).shouldRunScheduledJob(AutoMarketJob.JOB_NAME, true);
+        verify(stockBatchJobLauncher).runAutoMarket();
     }
 
     @Test
@@ -266,7 +266,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void orderBookExecutionScheduler_checksRuntimeControlBeforeLaunching() {
-        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler(command -> command.run());
+        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
 
         assertSimpleSchedulerGate(
                 OrderBookExecutionJob.JOB_NAME,
@@ -277,7 +277,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void orderBookExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
-        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler(command -> command.run());
+        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
         when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
 
         scheduler.executeOrderBookOrders();
@@ -286,9 +286,8 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void orderBookExecutionScheduler_dispatchesRunsWithoutWaitingForEarlierRunsAndSkipsWhenSaturated() {
-        RecordingExecutor executor = new RecordingExecutor(3);
-        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler(executor);
+    void orderBookExecutionScheduler_runsFallbackSynchronouslyWithoutDispatcherDrops() {
+        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
         when(batchJobRuntimeControl.shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true)).thenReturn(true);
 
         scheduler.executeOrderBookOrders();
@@ -296,13 +295,8 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.executeOrderBookOrders();
         scheduler.executeOrderBookOrders();
 
-        verify(batchJobRuntimeControl, never()).shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true);
-        verify(stockBatchJobLauncher, never()).executeOrderBookOrders();
-
-        executor.runAll();
-
-        verify(batchJobRuntimeControl, times(3)).shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true);
-        verify(stockBatchJobLauncher, times(3)).executeOrderBookOrders();
+        verify(batchJobRuntimeControl, times(4)).shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true);
+        verify(stockBatchJobLauncher, times(4)).executeOrderBookOrders();
     }
 
     @Test
@@ -619,12 +613,11 @@ class SchedulerRuntimeControlBehaviorTest {
         );
     }
 
-    private OrderBookExecutionScheduler newOrderBookExecutionScheduler(Executor orderBookExecutionRunTaskExecutor) {
+    private OrderBookExecutionScheduler newOrderBookExecutionScheduler() {
         return new OrderBookExecutionScheduler(
                 stockBatchJobLauncher,
                 scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookExecutionRunTaskExecutor
+                simulationMarketSessionService
         );
     }
 

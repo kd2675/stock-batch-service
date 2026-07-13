@@ -69,6 +69,32 @@ class AutoParticipantOrderPricingTest {
         assertThat(price).isLessThanOrEqualTo(new BigDecimal("99.00"));
     }
 
+    @Test
+    void avoidSelfCross_buyMovesBelowOwnBestAsk() {
+        BigDecimal price = pricing.avoidSelfCross(
+                maxExecutionAggressionConfig(),
+                "BUY",
+                new BigDecimal("105.00"),
+                null,
+                new BigDecimal("101.00")
+        );
+
+        assertThat(price).isLessThan(new BigDecimal("101.00"));
+    }
+
+    @Test
+    void avoidSelfCross_sellMovesAboveOwnBestBid() {
+        BigDecimal price = pricing.avoidSelfCross(
+                maxExecutionAggressionConfig(),
+                "SELL",
+                new BigDecimal("95.00"),
+                new BigDecimal("99.00"),
+                null
+        );
+
+        assertThat(price).isGreaterThan(new BigDecimal("99.00"));
+    }
+
     private AutoMarketConfig maxExecutionAggressionConfig() {
         return new AutoMarketConfig(
                 "ZQ001",

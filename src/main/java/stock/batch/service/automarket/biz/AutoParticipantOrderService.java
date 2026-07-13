@@ -10,6 +10,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.automarket.profile.AutoProfileBehavior;
@@ -40,6 +41,9 @@ class AutoParticipantOrderService {
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
 
+    @Value("${stock.batch.auto-market.max-open-order-quantity-multiplier:10}")
+    private int maxOpenOrderQuantityMultiplier;
+
     AutoParticipantOrderGenerationResult placeAutoOrders(
             List<AutoParticipantStrategy> strategies,
             AutoMarketConfig config,
@@ -48,6 +52,7 @@ class AutoParticipantOrderService {
     ) {
         Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config);
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
+        double initialOrderPressure = orderBookState.orderPressure();
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
         for (AutoParticipantStrategy strategy : strategies) {
             AutoParticipantTradingState tradingState = tradingStates.getOrDefault(
@@ -77,7 +82,15 @@ class AutoParticipantOrderService {
                     continue;
                 }
                 BigDecimal price = autoParticipantOrderPricing.createAutoPrice(config, effectiveIntensity, side, policy, orderBookState);
+                price = autoParticipantOrderPricing.avoidSelfCross(
+                        config,
+                        side,
+                        price,
+                        tradingState.ownBestBid(),
+                        tradingState.ownBestAsk()
+                );
                 long quantity = createQuantity(tradingState, side, price, policy, behavior, config.maxOrderQuantity());
+                quantity = adjustQuantityForOrderPressure(side, quantity, initialOrderPressure);
                 if (quantity <= 0) {
                     continue;
                 }
@@ -151,6 +164,11 @@ class AutoParticipantOrderService {
             int maxOrderQuantity
     ) {
         int maxQuantity = Math.max(1, maxOrderQuantity);
+        long maxOpenQuantity = (long) maxQuantity * Math.max(1, maxOpenOrderQuantityMultiplier);
+        long remainingOpenCapacity = tradingState.remainingOpenCapacity(side, maxOpenQuantity);
+        if (remainingOpenCapacity <= 0) {
+            return 0;
+        }
         long profileQuantity;
         if (policy.quantityMultiplier() >= 1.5 && maxQuantity > 1) {
             profileQuantity = nextInt(Math.max(1, maxQuantity / 2), behavior.quantityUpperBound(maxQuantity, policy));
@@ -165,9 +183,18 @@ class AutoParticipantOrderService {
             long affordableQuantity = tradingState.cashBalance()
                     .divide(price, 0, RoundingMode.DOWN)
                     .longValue();
-            return Math.min(profileQuantity, affordableQuantity);
+            return Math.min(Math.min(profileQuantity, affordableQuantity), remainingOpenCapacity);
         }
-        return Math.min(profileQuantity, tradingState.availableQuantity());
+        return Math.min(Math.min(profileQuantity, tradingState.availableQuantity()), remainingOpenCapacity);
+    }
+
+    private long adjustQuantityForOrderPressure(String side, long quantity, double orderPressure) {
+        if (quantity <= 1) {
+            return quantity;
+        }
+        boolean addsToDominantSide = orderPressure >= 0.85 && BUY.equals(side)
+                || orderPressure <= -0.85 && SELL.equals(side);
+        return addsToDominantSide ? Math.max(1L, quantity / 4L) : quantity;
     }
 
     private int scaledOrderCount(int baseOrderCount, AutoMarketConfig config) {

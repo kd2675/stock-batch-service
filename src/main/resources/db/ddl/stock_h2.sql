@@ -374,6 +374,7 @@ CREATE TABLE IF NOT EXISTS stock_order (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_order_account_created ON stock_order(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_stock_order_account_market_created ON stock_order(account_id, market_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_stock_order_account_status_created ON stock_order(account_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_stock_order_account_symbol_created ON stock_order(account_id, symbol, created_at);
 CREATE INDEX IF NOT EXISTS idx_stock_order_market_status_symbol ON stock_order(market_type, status, symbol);
@@ -413,12 +414,14 @@ CREATE TABLE IF NOT EXISTS stock_execution (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_execution_account_time ON stock_execution(account_id, executed_at);
+CREATE INDEX IF NOT EXISTS idx_stock_execution_account_source_time ON stock_execution(account_id, source, executed_at);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_account_symbol_time ON stock_execution(account_id, symbol, executed_at);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_time_account ON stock_execution(executed_at, account_id);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_source_account_time ON stock_execution(source, account_id, executed_at);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_source_account_symbol_time ON stock_execution(source, account_id, symbol, executed_at);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_source_time_account ON stock_execution(source, executed_at, account_id);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_source_symbol_time ON stock_execution(source, symbol, executed_at);
+CREATE INDEX IF NOT EXISTS idx_stock_execution_candle ON stock_execution(source, symbol, side, executed_at, id, price, quantity, gross_amount);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_source_time ON stock_execution(source, executed_at);
 CREATE INDEX IF NOT EXISTS idx_stock_execution_order ON stock_execution(order_id);
 
@@ -825,12 +828,24 @@ CREATE TABLE IF NOT EXISTS stock_listing_auto_account_config (
   max_order_quantity INT NOT NULL,
   order_ttl_seconds INT NOT NULL,
   price_offset_ticks INT NOT NULL,
+  target_buy_quantity BIGINT NOT NULL,
+  target_sell_quantity BIGINT NOT NULL,
+  target_holding_quantity BIGINT NOT NULL,
+  inventory_band_quantity BIGINT NOT NULL,
+  buy_price_offset_direction VARCHAR(10) NOT NULL,
+  sell_price_offset_direction VARCHAR(10) NOT NULL,
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
-  CONSTRAINT chk_stock_listing_auto_account_position CHECK (CASE `position_side` WHEN 'SELL_ONLY' THEN 1 WHEN 'BUY_ONLY' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_listing_auto_account_position CHECK (CASE `position_side` WHEN 'SELL_ONLY' THEN 1 WHEN 'BUY_ONLY' THEN 1 WHEN 'TWO_SIDED' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_listing_auto_account_max_order_quantity CHECK (max_order_quantity > 0),
   CONSTRAINT chk_stock_listing_auto_account_order_ttl_seconds CHECK (order_ttl_seconds > 0),
-  CONSTRAINT chk_stock_listing_auto_account_price_offset CHECK (price_offset_ticks >= 0)
+  CONSTRAINT chk_stock_listing_auto_account_price_offset CHECK (price_offset_ticks >= 0),
+  CONSTRAINT chk_stock_listing_auto_account_target_buy CHECK (target_buy_quantity >= 0),
+  CONSTRAINT chk_stock_listing_auto_account_target_sell CHECK (target_sell_quantity >= 0),
+  CONSTRAINT chk_stock_listing_auto_account_target_holding CHECK (target_holding_quantity >= 0),
+  CONSTRAINT chk_stock_listing_auto_account_inventory_band CHECK (inventory_band_quantity >= 0),
+  CONSTRAINT chk_stock_listing_auto_account_buy_direction CHECK (buy_price_offset_direction IN ('UP', 'DOWN', 'RANDOM')),
+  CONSTRAINT chk_stock_listing_auto_account_sell_direction CHECK (sell_price_offset_direction IN ('UP', 'DOWN', 'RANDOM'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_listing_auto_account_enabled ON stock_listing_auto_account_config(enabled, symbol);

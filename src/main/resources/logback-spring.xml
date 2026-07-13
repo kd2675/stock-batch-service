@@ -4,10 +4,12 @@
     <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
     <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="stock-batch-service"/>
+    <springProperty scope="context" name="SERVER_PORT" source="server.port" defaultValue="unknown"/>
 
-    <property name="LOG_DIR" value="${STOCK_BATCH_LOG_DIR:-logs/stock-batch-service}"/>
+    <property name="LOG_ROOT" value="${STOCK_LOG_ROOT:-logs}"/>
+    <property name="LOG_DIR" value="${STOCK_BATCH_LOG_DIR:-${LOG_ROOT}/stock-batch-service}"/>
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level ${APP_NAME} [%thread] %logger{48} trace=%X{traceId:-} span=%X{spanId:-} - %msg%n%wEx"/>
+              value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level ${APP_NAME} pid=${PID:-unknown} port=${SERVER_PORT} instance=${STOCK_INSTANCE_ID:-default} [%thread] %logger{48} trace=%X{traceId:-} span=%X{spanId:-} - %msg%n%wEx"/>
     <property name="MAX_FILE_SIZE" value="${STOCK_LOG_MAX_FILE_SIZE:-100MB}"/>
     <property name="APP_MAX_HISTORY" value="${STOCK_LOG_APP_MAX_HISTORY:-30}"/>
     <property name="ERROR_MAX_HISTORY" value="${STOCK_LOG_ERROR_MAX_HISTORY:-90}"/>
@@ -48,8 +50,10 @@
     </appender>
 
     <appender name="JOB_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
             <level>WARN</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
         </filter>
         <encoder>
             <pattern>${LOG_PATTERN}</pattern>
@@ -63,8 +67,10 @@
     </appender>
 
     <appender name="DB_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
             <level>WARN</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
         </filter>
         <encoder>
             <pattern>${LOG_PATTERN}</pattern>
@@ -78,8 +84,10 @@
     </appender>
 
     <appender name="LOCK_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
             <level>WARN</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
         </filter>
         <encoder>
             <pattern>${LOG_PATTERN}</pattern>
@@ -94,40 +102,6 @@
 
     <logger name="org.springframework.context.support.PostProcessorRegistrationDelegate$BeanPostProcessorChecker"
             level="ERROR"/>
-    <logger name="org.springframework.jdbc" level="INFO">
-        <appender-ref ref="DB_FILE"/>
-    </logger>
-    <logger name="org.hibernate.orm.jdbc.error" level="WARN">
-        <appender-ref ref="DB_FILE"/>
-    </logger>
-    <logger name="com.zaxxer.hikari" level="INFO">
-        <appender-ref ref="DB_FILE"/>
-    </logger>
-    <logger name="com.mysql.cj" level="INFO">
-        <appender-ref ref="DB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.batch.common.support" level="INFO">
-        <appender-ref ref="JOB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.scheduler" level="INFO">
-        <appender-ref ref="JOB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.execution" level="INFO">
-        <appender-ref ref="JOB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.automarket" level="INFO">
-        <appender-ref ref="JOB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.marketclose" level="INFO">
-        <appender-ref ref="JOB_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.execution.lock" level="INFO">
-        <appender-ref ref="LOCK_FILE"/>
-    </logger>
-    <logger name="stock.batch.service.automarket.lock" level="INFO">
-        <appender-ref ref="LOCK_FILE"/>
-    </logger>
-
     <springProfile name="test">
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
@@ -135,6 +109,61 @@
     </springProfile>
 
     <springProfile name="!test">
+        <logger name="org.springframework.jdbc" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="DB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="org.hibernate.orm.jdbc.error" level="WARN" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="DB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="com.zaxxer.hikari" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="DB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="com.mysql.cj" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="DB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.batch.common.support" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JOB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.scheduler" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JOB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.execution" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JOB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.automarket" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JOB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.marketclose" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="JOB_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.execution.lock" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="LOCK_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
+        <logger name="stock.batch.service.automarket.lock" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="LOCK_FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </logger>
         <root level="${STOCK_ROOT_LOG_LEVEL:-INFO}">
             <appender-ref ref="CONSOLE"/>
             <appender-ref ref="WARN_FILE"/>

@@ -114,6 +114,21 @@ class AutoMarketOrderReaderTest {
     }
 
     @Test
+    void lockOpenOrdersForUpdate_revalidatesCandidatesAndReturnsPrimaryKeyOrder() {
+        LocalDateTime createdAt = LocalDateTime.of(2026, 6, 29, 9, 0);
+        insertOrder(300L, 30L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, new BigDecimal("700000.00"), createdAt);
+        insertOrder(301L, 31L, "STOCK001", "SELL", "LIMIT", "FILLED", new BigDecimal("70000.00"), 10L, 10L, BigDecimal.ZERO, createdAt);
+        List<AutoOrder> candidates = List.of(
+                new AutoOrder(301L, 31L, "STOCK001", "SELL", 10L, 0L, BigDecimal.ZERO),
+                new AutoOrder(300L, 30L, "STOCK001", "BUY", 10L, 0L, new BigDecimal("700000.00"))
+        );
+
+        List<AutoOrder> lockedOrders = reader.lockOpenOrdersForUpdate(candidates);
+
+        assertThat(lockedOrders).extracting(AutoOrder::id).containsExactly(300L);
+    }
+
+    @Test
     void scalarOrderBookQueries_readBestPriceAndOpenQuantityWithJdbcClient() {
         jdbcTemplate.update(
                 """

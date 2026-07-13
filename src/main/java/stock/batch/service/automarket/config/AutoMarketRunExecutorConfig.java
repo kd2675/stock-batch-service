@@ -15,8 +15,8 @@ public class AutoMarketRunExecutorConfig {
 
     @Bean(name = AUTO_MARKET_RUN_TASK_EXECUTOR)
     public Executor autoMarketRunTaskExecutor(
-            @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.core-size:3}") int coreSize,
-            @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.max-size:3}") int maxSize,
+            @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.core-size:1}") int coreSize,
+            @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.max-size:1}") int maxSize,
             @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity:0}") int queueCapacity
     ) {
         if (coreSize <= 0) {

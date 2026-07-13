@@ -26,6 +26,16 @@ public class AutoMarketOrderExpiryJob implements StockBatchJob {
     }
 
     @Override
+    public boolean requiresJobLock() {
+        return false;
+    }
+
+    @Override
+    public boolean recordsExecutionHistory() {
+        return false;
+    }
+
+    @Override
     public int run() {
         return autoMarketOrderExpiryJobService.expireAutoMarketOrders();
     }

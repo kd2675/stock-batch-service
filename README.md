@@ -148,14 +148,17 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms`: Redis ready profile queue reconcile 주기입니다. 기본값은 600000ms(10분)이며, 서버 시작 시에는 별도로 1회 reconcile을 수행합니다. 수동 복구는 `POST /internal/stock-batch/v1/jobs/auto-market-profile-queue/reconcile` endpoint를 사용합니다.
 - `stock.batch.auto-market.generation-lease-seconds`: 주문 생성 대상으로 claim한 참여자-종목 스케줄의 lease 시간입니다. 주문 생성 실패 시 lease 만료 후 재시도할 수 있게 둡니다.
 - `stock.batch.auto-market.generation-due-limit-per-symbol`: 한 회차에서 종목별로 조회할 주문 생성 대상 최대 수입니다. 기본값은 100입니다.
+- `stock.batch.auto-market.max-open-order-quantity-multiplier`: 자동 참여자 계좌·종목·방향별 미체결 누적 수량 상한을 종목 `max_order_quantity`의 몇 배로 둘지 정합니다. 기본값은 10이며, 극단적으로 한쪽 잔량이 몰리면 같은 방향 신규 주문 수량도 축소합니다.
 - `stock.batch.auto-market.deadlock-retry-max-attempts` / `deadlock-retry-backoff-ms`: 자동장 주문 생성 중 계좌/보유 예약 update에서 deadlock이 발생했을 때 같은 chunk 트랜잭션을 짧게 재시도하는 횟수와 backoff입니다.
 - `stock.batch.auto-market.thread-pool.core-size` / `max-size` / `queue-capacity`: 자동장 주문 생성 profile shard를 처리하는 execution thread pool입니다. 기본값은 12/12/0이며, 전체 profile 작업 동시 실행 상한도 `max-size`와 같습니다. run thread는 executor 포화 시 profile 작업을 직접 실행하지 않고, 실행 slot을 확보한 뒤에만 Redis profile을 claim합니다.
-- `stock.batch.auto-market.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: auto-market run 단위를 병렬 제출하는 dispatcher pool입니다. 기본값은 3/3/0이며, 4번째 동시 회차는 큐에 쌓지 않고 스킵합니다.
+- `stock.batch.auto-market.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: auto-market 전체 run을 제출하는 dispatcher pool입니다. 기본값은 1/1/0으로 전체 run 중첩을 막고, 한 run 내부의 profile worker 병렬성만 사용합니다.
 - `stock.batch.auto-market-order-expiry.enabled`: 자동장이 낸 미체결 주문 만료 job 활성화 여부
 - `stock.batch.auto-market-order-expiry.fixed-delay-ms`: 자동장 미체결 주문 만료 검사 주기
 - `stock.batch.auto-market-order-expiry.expiry-chunk-limit`: 한 회차에서 취소할 자동장 만료 주문 후보 최대 수
 - `stock.batch.listing-auto-market.enabled`: 상장주관사 자동계정 주문 공급 job 활성화 여부
 - `stock.batch.listing-auto-market.fixed-delay-ms`: 상장주관사 자동계정 주문 공급 주기
+
+상장주관사 자동계정은 기관형 유동성 공급 정책으로 운용합니다. `SELL_ONLY`, `BUY_ONLY`, `TWO_SIDED` 중 활성 방향을 선택하고, 매수·매도별 목표 미체결 잔량을 유지합니다. 실제 신규 주문은 `유효 목표 잔량 - 현재 미체결 잔량`만큼만 생성하며 한 주문의 크기는 `max_order_quantity`를 넘지 않습니다. `TWO_SIDED`는 `target_holding_quantity ± inventory_band_quantity`를 재고 허용 구간으로 사용합니다. 매수 유효 목표는 `min(target_buy_quantity, 재고 상한 - 현재 보유량)`, 매도 유효 목표는 `min(target_sell_quantity, 현재 보유량 - 재고 하한)`이므로 밴드 안에서는 양쪽 호가가 함께 유지되고, 밴드 밖에서는 목표 쪽으로 재고를 줄이는 방향만 남습니다. 각 방향의 미체결 전량이 단독 체결돼도 재고 구간을 넘지 않도록 독립적으로 제한합니다. `BUY_ONLY`와 `SELL_ONLY`는 기존처럼 목표 보유 수량을 단방향 도달 한도로 사용합니다. 목표·밴드·방향이 바뀌면 초과 호가를 취소한 뒤 필요한 수량만 다시 채웁니다. 매수·매도별 가격 분산 방향은 `UP`, `DOWN`, `RANDOM`으로 설정하며, 같은 주관사 계정의 반대 호가와 자기교차하지 않도록 최종 가격을 한 틱 밖으로 보정합니다.
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부
 - `stock.batch.auto-participant-cash-flow.fixed-delay-ms`: 자동 참여자 주기 입금 검사 주기. 기본값은 300000ms(5분)입니다. 지급 여부는 시뮬레이션 시간 기준으로 판단하지만, 이 값은 실제 서버 시간이 기준인 polling 간격입니다. 초 단위 주기 입금을 즉시성 있게 테스트해야 할 때만 환경값으로 더 낮춥니다.
 - `stock.batch.market-close.enabled`: 장 마감 기준가 롤오버 job 활성화 여부
@@ -181,15 +184,18 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.scheduler-pools.shutdown-await-seconds`: 전용 scheduler pool 종료 대기 시간. 기본값은 120초입니다.
 - `stock.batch.jdbc.query-timeout-seconds`: 업무 DB용 `JdbcTemplate` statement query timeout입니다. 기본값은 30초이며 0 이하 값은 시작 시 거부합니다.
 - `stock.batch.execution.scan-limit`: 한 번의 체결 job 실행에서 처리할 최대 체결 횟수입니다. 기본값은 300입니다.
-- `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 잠글 매수 후보 수입니다. 기본값은 20입니다. `EXISTS ... FOR UPDATE`로 매수/매도 범위를 한 번에 잠그지 않고, 매수 후보를 짧게 잠근 뒤 최우선 매도를 별도로 찾습니다.
-- `stock.batch.execution.symbol-chunk-limit`: 한 종목 lock을 잡고 연속 처리할 최대 체결 횟수입니다. 기본값은 50입니다. lock을 오래 점유하지 않도록 `scan-limit`보다 작게 둡니다.
-- `stock.batch.order-book-execution.fixed-rate-ms`: 주문장 체결 run dispatch 주기입니다. 기본값은 5000ms이며, 이전 체결 run이 실행 중이어도 다음 run을 전용 dispatcher에 제출합니다.
-- `stock.batch.order-book-execution.run-dispatcher.thread-pool.core-size` / `max-size` / `queue-capacity`: 주문장 체결 run 단위를 병렬 제출하는 dispatcher pool입니다. 기본값은 3/3/0이며, 4번째 동시 회차는 큐에 쌓지 않고 스킵합니다.
+- `stock.batch.execution.buy-candidate-scan-limit`: 주문장 매칭 1회에서 한 SQL로 비교할 매수·매도 상위 후보 수입니다. 기본값은 20입니다. 후보 탐색에서는 잠금을 잡지 않고, 선택된 주문 PK 2개만 오름차순으로 잠근 뒤 재검증합니다.
+- `stock.batch.execution.symbol-chunk-limit`: 한 종목 lock을 잡고 연속 처리할 최대 체결 횟수입니다. 기본값은 5입니다.
+- `stock.batch.execution.symbol-chunk-max-duration-ms`: 한 종목 lock을 유지할 최대 목표 시간입니다. 기본값은 500ms이며 횟수 또는 시간 제한에 먼저 도달하면 종목을 재등록합니다.
+- `stock.batch.order-book-execution.worker.*`: Redis ready-symbol 큐를 상시 소비하는 체결 worker 설정입니다. 기본 worker 수는 2, 빈 큐 대기는 100ms입니다. 체결 성공 청크 뒤에는 기본 5ms(`match-yield-ms`) 동안 양보해 상장주관사 유동성 공급과 자동 주문 만료가 같은 종목 lock을 얻을 기회를 보장합니다.
+- `stock.batch.order-book-execution.fixed-delay-ms`: Redis 장애나 서버 재시작 중 누락된 체결 가능 종목을 DB에서 복구하는 fallback 주기이며 기본값은 5000ms입니다.
+- 주문 체결, 자동 주문 생성, 자동 주문 만료, 상장사 유동성 공급은 고빈도 경량 작업으로 실행해 Spring Batch `BATCH_*` 실행 이력을 매회 생성하지 않습니다. 장마감·정산·기업 이벤트 같은 저빈도 업무 배치는 기존 JobRepository 기록을 유지합니다.
 - `stock.batch.execution.symbol-lock.type`: 동일 종목 중복 체결 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.execution.symbol-lock.ttl-seconds`: Redis symbol lock TTL입니다. 기본값은 120초입니다. 한 번의 symbol chunk가 이 시간 안에 끝나도록 `symbol-chunk-limit`과 함께 조정합니다.
 - `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
+- 파일 로그의 공통 루트는 `STOCK_LOG_ROOT`, 배치 전용 경로는 `STOCK_BATCH_LOG_DIR`, 실행 인스턴스 표시는 `STOCK_INSTANCE_ID`로 지정합니다. 파일 로그에는 PID·포트·인스턴스가 포함되고 테스트 프로필은 파일 로그를 기록하지 않습니다. 종목 lock 경합은 매회 WARN 대신 `stock.listing.auto.market.symbol.lock.skips`, `stock.auto.market.order.expiry.symbol.lock.skips` 카운터로 확인합니다.
 - `stock.batch.auto-market.profile-lock.type`: 자동 참여자 주문 생성 profile shard 중복 실행 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.auto-market.symbol-selection.*`: 한 프로필 내부 참여자가 같은 종목으로 과도하게 몰리지 않도록 종목 선택 분산 강도, 참여자별 종목 affinity, 프로필별 최대 종목 점유율을 조정합니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
