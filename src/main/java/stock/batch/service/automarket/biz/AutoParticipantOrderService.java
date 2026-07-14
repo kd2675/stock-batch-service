@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -54,6 +55,8 @@ class AutoParticipantOrderService {
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         double initialOrderPressure = orderBookState.orderPressure();
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
+        EnumMap<AutoMarketOrderDropReason, Integer> planningDropCounts = new EnumMap<>(AutoMarketOrderDropReason.class);
+        int decisionCount = 0;
         for (AutoParticipantStrategy strategy : strategies) {
             AutoParticipantTradingState tradingState = tradingStates.getOrDefault(
                     strategy.accountId(),
@@ -75,10 +78,12 @@ class AutoParticipantOrderService {
                     orderBookState
             );
             int orderCount = scaledOrderCount(behavior.orderCount(baseContext), config);
+            decisionCount += orderCount;
             for (int index = 0; index < orderCount; index++) {
                 ProfileSignalContext context = baseContext.withOrderIndex(index);
                 String side = behavior.chooseSide(context);
                 if (side == null) {
+                    incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.SIDE_NOT_SELECTED);
                     continue;
                 }
                 BigDecimal price = autoParticipantOrderPricing.createAutoPrice(config, effectiveIntensity, side, policy, orderBookState);
@@ -89,17 +94,26 @@ class AutoParticipantOrderService {
                         tradingState.ownBestBid(),
                         tradingState.ownBestAsk()
                 );
-                long quantity = createQuantity(tradingState, side, price, policy, behavior, config.maxOrderQuantity());
-                quantity = adjustQuantityForOrderPressure(side, quantity, initialOrderPressure);
-                if (quantity <= 0) {
+                QuantityDecision quantityDecision = createQuantity(
+                        tradingState,
+                        side,
+                        price,
+                        policy,
+                        behavior,
+                        config.maxOrderQuantity()
+                );
+                if (!quantityDecision.accepted()) {
+                    incrementDropCount(planningDropCounts, quantityDecision.dropReason());
                     continue;
                 }
+                long quantity = adjustQuantityForOrderPressure(side, quantityDecision.quantity(), initialOrderPressure);
                 plannedOrders.add(new AutoMarketPlannedOrder(strategy.accountId(), config.symbol(), side, price, quantity));
                 orderBookState = orderBookState.withPlacedOrder(side, price, quantity);
                 tradingState.reserve(side, price, quantity);
             }
         }
-        return autoMarketOrderExecutor.placeOrders(plannedOrders);
+        return autoMarketOrderExecutor.placeOrders(plannedOrders)
+                .withPlanning(decisionCount, planningDropCounts);
     }
 
     private Map<Long, AutoParticipantTradingState> loadTradingStates(
@@ -155,7 +169,7 @@ class AutoParticipantOrderService {
         );
     }
 
-    private long createQuantity(
+    private QuantityDecision createQuantity(
             AutoParticipantTradingState tradingState,
             String side,
             BigDecimal price,
@@ -167,7 +181,7 @@ class AutoParticipantOrderService {
         long maxOpenQuantity = (long) maxQuantity * Math.max(1, maxOpenOrderQuantityMultiplier);
         long remainingOpenCapacity = tradingState.remainingOpenCapacity(side, maxOpenQuantity);
         if (remainingOpenCapacity <= 0) {
-            return 0;
+            return QuantityDecision.dropped(AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT);
         }
         long profileQuantity;
         if (policy.quantityMultiplier() >= 1.5 && maxQuantity > 1) {
@@ -178,14 +192,29 @@ class AutoParticipantOrderService {
         }
         if (BUY.equals(side)) {
             if (price.compareTo(BigDecimal.ZERO) <= 0) {
-                return 0;
+                return QuantityDecision.dropped(AutoMarketOrderDropReason.INVALID_PRICE);
             }
             long affordableQuantity = tradingState.cashBalance()
                     .divide(price, 0, RoundingMode.DOWN)
                     .longValue();
-            return Math.min(Math.min(profileQuantity, affordableQuantity), remainingOpenCapacity);
+            if (affordableQuantity <= 0) {
+                return QuantityDecision.dropped(AutoMarketOrderDropReason.INSUFFICIENT_CASH);
+            }
+            return QuantityDecision.accepted(Math.min(Math.min(profileQuantity, affordableQuantity), remainingOpenCapacity));
         }
-        return Math.min(Math.min(profileQuantity, tradingState.availableQuantity()), remainingOpenCapacity);
+        if (tradingState.availableQuantity() <= 0) {
+            return QuantityDecision.dropped(AutoMarketOrderDropReason.INSUFFICIENT_HOLDING);
+        }
+        return QuantityDecision.accepted(
+                Math.min(Math.min(profileQuantity, tradingState.availableQuantity()), remainingOpenCapacity)
+        );
+    }
+
+    private void incrementDropCount(
+            Map<AutoMarketOrderDropReason, Integer> dropCounts,
+            AutoMarketOrderDropReason reason
+    ) {
+        dropCounts.merge(reason, 1, Integer::sum);
     }
 
     private long adjustQuantityForOrderPressure(String side, long quantity, double orderPressure) {
@@ -217,6 +246,21 @@ class AutoParticipantOrderService {
                 .subtract(averagePrice)
                 .divide(averagePrice, 6, RoundingMode.HALF_UP)
                 .doubleValue();
+    }
+
+    private record QuantityDecision(long quantity, AutoMarketOrderDropReason dropReason) {
+
+        private static QuantityDecision accepted(long quantity) {
+            return new QuantityDecision(quantity, null);
+        }
+
+        private static QuantityDecision dropped(AutoMarketOrderDropReason dropReason) {
+            return new QuantityDecision(0, dropReason);
+        }
+
+        private boolean accepted() {
+            return quantity > 0 && dropReason == null;
+        }
     }
 
 }

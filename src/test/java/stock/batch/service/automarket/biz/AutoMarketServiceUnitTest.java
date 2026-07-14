@@ -478,12 +478,35 @@ class AutoMarketServiceUnitTest {
         });
         when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0))
                 .thenThrow(new CannotAcquireLockException("deadlock"))
-                .thenReturn(new AutoParticipantOrderGenerationResult(1, 1, 0, 0));
+                .thenReturn(new AutoParticipantOrderGenerationResult(
+                        3,
+                        2,
+                        1,
+                        1,
+                        0,
+                        Map.of(
+                                AutoMarketOrderDropReason.SIDE_NOT_SELECTED, 1,
+                                AutoMarketOrderDropReason.BUY_RESERVATION_FAILED, 1
+                        )
+                ));
 
         int processedCount = service.runAutoMarketStep();
 
         assertThat(processedCount).isEqualTo(1);
         assertThat(deadlockMeterRegistry.counter("stock.auto.market.order.deadlock.retries").count()).isEqualTo(1.0);
+        assertThat(deadlockMeterRegistry.counter("stock.auto.market.order.decisions").count()).isEqualTo(3.0);
+        assertThat(deadlockMeterRegistry.counter("stock.auto.market.order.planned").count()).isEqualTo(2.0);
+        assertThat(deadlockMeterRegistry.counter("stock.auto.market.order.stored").count()).isEqualTo(1.0);
+        assertThat(deadlockMeterRegistry.counter(
+                "stock.auto.market.order.dropped",
+                "reason",
+                AutoMarketOrderDropReason.SIDE_NOT_SELECTED.metricTag()
+        ).count()).isEqualTo(1.0);
+        assertThat(deadlockMeterRegistry.counter(
+                "stock.auto.market.order.dropped",
+                "reason",
+                AutoMarketOrderDropReason.BUY_RESERVATION_FAILED.metricTag()
+        ).count()).isEqualTo(1.0);
         verify(autoParticipantOrderService, times(2)).placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0);
         verify(scheduleService, times(1)).completeStrategies(List.of(strategy), profilePolicies, now);
     }

@@ -1,0 +1,21 @@
+package stock.batch.service.automarket.biz;
+
+enum AutoMarketOrderDropReason {
+    SIDE_NOT_SELECTED("side_not_selected"),
+    OPEN_QUANTITY_LIMIT("open_quantity_limit"),
+    INVALID_PRICE("invalid_price"),
+    INSUFFICIENT_CASH("insufficient_cash"),
+    INSUFFICIENT_HOLDING("insufficient_holding"),
+    BUY_RESERVATION_FAILED("buy_reservation_failed"),
+    SELL_RESERVATION_FAILED("sell_reservation_failed");
+
+    private final String metricTag;
+
+    AutoMarketOrderDropReason(String metricTag) {
+        this.metricTag = metricTag;
+    }
+
+    String metricTag() {
+        return metricTag;
+    }
+}

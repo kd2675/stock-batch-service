@@ -118,17 +118,24 @@ class AutoMarketOrderExecutor {
 
     AutoParticipantOrderGenerationResult placeOrders(List<AutoMarketPlannedOrder> plannedOrders) {
         if (plannedOrders.isEmpty()) {
-            return new AutoParticipantOrderGenerationResult(0, 0, 0, 0);
+            return AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0);
         }
         LocalDateTime now = simulationClockService.currentMarketDateTime();
         Set<AutoMarketPlannedOrder> acceptedOrderSet = Collections.newSetFromMap(new IdentityHashMap<>());
-        int failedReserveCount = reserveBuyOrders(plannedOrders, acceptedOrderSet, now)
-                + reserveSellOrders(plannedOrders, acceptedOrderSet, now);
+        int failedBuyReserveCount = reserveBuyOrders(plannedOrders, acceptedOrderSet, now);
+        int failedSellReserveCount = reserveSellOrders(plannedOrders, acceptedOrderSet, now);
         List<AutoMarketPlannedOrder> acceptedOrders = plannedOrders.stream()
                 .filter(acceptedOrderSet::contains)
                 .toList();
         if (acceptedOrders.isEmpty()) {
-            return new AutoParticipantOrderGenerationResult(0, 0, 0, failedReserveCount);
+            return AutoParticipantOrderGenerationResult.execution(
+                    plannedOrders.size(),
+                    0,
+                    0,
+                    0,
+                    failedBuyReserveCount,
+                    failedSellReserveCount
+            );
         }
         List<AutoMarketWriter.LimitOrderInsert> inserts = acceptedOrders.stream()
                 .map(order -> new AutoMarketWriter.LimitOrderInsert(
@@ -155,11 +162,13 @@ class AutoMarketOrderExecutor {
                 reservedSellCount++;
             }
         }
-        return new AutoParticipantOrderGenerationResult(
+        return AutoParticipantOrderGenerationResult.execution(
+                plannedOrders.size(),
                 insertedCount,
                 reservedBuyCount,
                 reservedSellCount,
-                failedReserveCount
+                failedBuyReserveCount,
+                failedSellReserveCount
         );
     }
 

@@ -196,6 +196,7 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
 - 파일 로그의 공통 루트는 `STOCK_LOG_ROOT`, 배치 전용 경로는 `STOCK_BATCH_LOG_DIR`, 실행 인스턴스 표시는 `STOCK_INSTANCE_ID`로 지정합니다. 파일 로그에는 PID·포트·인스턴스가 포함되고 테스트 프로필은 파일 로그를 기록하지 않습니다. 종목 lock 경합은 매회 WARN 대신 `stock.listing.auto.market.symbol.lock.skips`, `stock.auto.market.order.expiry.symbol.lock.skips` 카운터로 확인합니다.
+- 자동 참여자 주문의 계획 대비 저장 탈락은 `/actuator/metrics`의 `stock.auto.market.order.decisions`, `stock.auto.market.order.planned`, `stock.auto.market.order.stored`, `stock.auto.market.order.dropped`로 확인합니다. `dropped`의 `reason`은 `side_not_selected`, `open_quantity_limit`, `invalid_price`, `insufficient_cash`, `insufficient_holding`, `buy_reservation_failed`, `sell_reservation_failed` 중 하나이며 계좌·종목·프로필은 지표 태그로 사용하지 않습니다. DB 저장 예외는 기존 `stock.auto.market.order.insert.failures`에서 별도로 확인합니다.
 - `stock.batch.auto-market.profile-lock.type`: 자동 참여자 주문 생성 profile shard 중복 실행 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.auto-market.symbol-selection.*`: 한 프로필 내부 참여자가 같은 종목으로 과도하게 몰리지 않도록 종목 선택 분산 강도, 참여자별 종목 affinity, 프로필별 최대 종목 점유율을 조정합니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.

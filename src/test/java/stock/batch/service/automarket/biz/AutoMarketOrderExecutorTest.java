@@ -143,12 +143,31 @@ class AutoMarketOrderExecutorTest {
         assertThat(result.generatedOrderCount()).isEqualTo(1);
         assertThat(result.reservedBuyCount()).isEqualTo(1);
         assertThat(result.failedReserveCount()).isEqualTo(1);
+        assertThat(result.droppedOrderCount(AutoMarketOrderDropReason.BUY_RESERVATION_FAILED)).isEqualTo(1);
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<AutoMarketWriter.LimitOrderInsert>> insertsCaptor = ArgumentCaptor.forClass(List.class);
         verify(writer).insertLimitOrders(insertsCaptor.capture(), eq(now));
         assertThat(insertsCaptor.getValue())
                 .extracting(AutoMarketWriter.LimitOrderInsert::accountId)
                 .containsExactly(2L);
+    }
+
+    @Test
+    void placeOrders_sellReservationFailure_recordsSellReservationDropReason() {
+        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
+        AutoMarketWriter writer = mock(AutoMarketWriter.class);
+        SimulationClockService clockService = mock(SimulationClockService.class);
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+        AutoMarketOrderExecutor executor = new AutoMarketOrderExecutor(orderReader, writer, clockService);
+        List<AutoMarketPlannedOrder> orders = List.of(
+                new AutoMarketPlannedOrder(1L, "STOCK001", "SELL", new BigDecimal("1000.00"), 2)
+        );
+        when(clockService.currentMarketDateTime()).thenReturn(now);
+        when(writer.reserveSellQuantity(1L, "STOCK001", 2L, now)).thenReturn(false);
+
+        AutoParticipantOrderGenerationResult result = executor.placeOrders(orders);
+
+        assertThat(result.droppedOrderCount(AutoMarketOrderDropReason.SELL_RESERVATION_FAILED)).isEqualTo(1);
     }
 
     @Test

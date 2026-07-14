@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +62,10 @@ public class AutoMarketService {
     private final Executor autoMarketGenerationTaskExecutor;
     private final AutoMarketGenerationSlotLimiter generationSlotLimiter;
     private final Counter deadlockRetryCounter;
+    private final Counter orderDecisionCounter;
+    private final Counter plannedOrderCounter;
+    private final Counter storedOrderCounter;
+    private final Map<AutoMarketOrderDropReason, Counter> droppedOrderCounters;
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
     private int generationParticipantChunkSize;
@@ -117,6 +122,17 @@ public class AutoMarketService {
         this.autoMarketGenerationTaskExecutor = autoMarketGenerationTaskExecutor;
         this.generationSlotLimiter = generationSlotLimiter;
         this.deadlockRetryCounter = meterRegistry.counter("stock.auto.market.order.deadlock.retries");
+        this.orderDecisionCounter = meterRegistry.counter("stock.auto.market.order.decisions");
+        this.plannedOrderCounter = meterRegistry.counter("stock.auto.market.order.planned");
+        this.storedOrderCounter = meterRegistry.counter("stock.auto.market.order.stored");
+        EnumMap<AutoMarketOrderDropReason, Counter> dropCounters = new EnumMap<>(AutoMarketOrderDropReason.class);
+        for (AutoMarketOrderDropReason reason : AutoMarketOrderDropReason.values()) {
+            dropCounters.put(
+                    reason,
+                    meterRegistry.counter("stock.auto.market.order.dropped", "reason", reason.metricTag())
+            );
+        }
+        this.droppedOrderCounters = Map.copyOf(dropCounters);
     }
 
     public int runAutoMarketStep() {
@@ -178,14 +194,18 @@ public class AutoMarketService {
             throw ex;
         }
         log.info(
-                "Auto market step completed: symbols={}, participants={}, profileShards={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
+                "Auto market step completed: symbols={}, participants={}, profileShards={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, orderDecisions={}, plannedOrders={}, generatedOrders={}, droppedOrders={}, dropReasons={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
                 configs.size(),
                 activeParticipantCount,
                 totalCount.profileShards,
                 totalCount.symbolShards,
                 totalCount.scheduledStrategies,
                 totalCount.dueStrategies,
+                totalCount.orderDecisions,
+                totalCount.plannedOrders,
                 totalCount.generatedOrders,
+                totalCount.totalDroppedOrders(),
+                totalCount.droppedOrders,
                 totalCount.reservedBuyOrders,
                 totalCount.reservedSellOrders,
                 totalCount.failedReserveOrders,
@@ -784,6 +804,7 @@ public class AutoMarketService {
                 );
                 return result;
             });
+            recordOrderGenerationMetrics(generationResult);
             count.addGeneration(generationResult);
             count.generationChunks++;
         }
@@ -911,12 +932,16 @@ public class AutoMarketService {
             return;
         }
         log.info(
-                "Auto market profile generation shard completed: profileType={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, generatedOrders={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
+                "Auto market profile generation shard completed: profileType={}, symbolShards={}, scheduledStrategies={}, dueStrategies={}, orderDecisions={}, plannedOrders={}, generatedOrders={}, droppedOrders={}, dropReasons={}, reservedBuyOrders={}, reservedSellOrders={}, failedReserveOrders={}, generationChunks={}, processedCount={}, elapsedMs={}",
                 profileType,
                 count.symbolShards,
                 count.scheduledStrategies,
                 count.dueStrategies,
+                count.orderDecisions,
+                count.plannedOrders,
                 count.generatedOrders,
+                count.totalDroppedOrders(),
+                count.droppedOrders,
                 count.reservedBuyOrders,
                 count.reservedSellOrders,
                 count.failedReserveOrders,
@@ -924,6 +949,24 @@ public class AutoMarketService {
                 count.processedCount(),
                 elapsedMillis
         );
+    }
+
+    private void recordOrderGenerationMetrics(AutoParticipantOrderGenerationResult generationResult) {
+        if (generationResult == null) {
+            return;
+        }
+        increment(orderDecisionCounter, generationResult.decisionCount());
+        increment(plannedOrderCounter, generationResult.plannedOrderCount());
+        increment(storedOrderCounter, generationResult.generatedOrderCount());
+        generationResult.droppedOrderCounts().forEach((reason, count) ->
+                increment(droppedOrderCounters.get(reason), count)
+        );
+    }
+
+    private void increment(Counter counter, int count) {
+        if (counter != null && count > 0) {
+            counter.increment(count);
+        }
     }
 
     private long elapsedMillis(long startedNanos) {
@@ -935,11 +978,15 @@ public class AutoMarketService {
         private int symbolShards;
         private int scheduledStrategies;
         private int dueStrategies;
+        private int orderDecisions;
+        private int plannedOrders;
         private int generatedOrders;
         private int generationChunks;
         private int reservedBuyOrders;
         private int reservedSellOrders;
         private int failedReserveOrders;
+        private final EnumMap<AutoMarketOrderDropReason, Integer> droppedOrders =
+                new EnumMap<>(AutoMarketOrderDropReason.class);
 
         private int processedCount() {
             return generatedOrders;
@@ -950,21 +997,33 @@ public class AutoMarketService {
             symbolShards += other.symbolShards;
             scheduledStrategies += other.scheduledStrategies;
             dueStrategies += other.dueStrategies;
+            orderDecisions += other.orderDecisions;
+            plannedOrders += other.plannedOrders;
             generatedOrders += other.generatedOrders;
             generationChunks += other.generationChunks;
             reservedBuyOrders += other.reservedBuyOrders;
             reservedSellOrders += other.reservedSellOrders;
             failedReserveOrders += other.failedReserveOrders;
+            other.droppedOrders.forEach((reason, count) -> droppedOrders.merge(reason, count, Integer::sum));
         }
 
         private void addGeneration(AutoParticipantOrderGenerationResult generationResult) {
             if (generationResult == null) {
                 return;
             }
+            orderDecisions += generationResult.decisionCount();
+            plannedOrders += generationResult.plannedOrderCount();
             generatedOrders += generationResult.generatedOrderCount();
             reservedBuyOrders += generationResult.reservedBuyCount();
             reservedSellOrders += generationResult.reservedSellCount();
             failedReserveOrders += generationResult.failedReserveCount();
+            generationResult.droppedOrderCounts().forEach((reason, count) ->
+                    droppedOrders.merge(reason, count, Integer::sum)
+            );
+        }
+
+        private int totalDroppedOrders() {
+            return droppedOrders.values().stream().mapToInt(Integer::intValue).sum();
         }
     }
 
