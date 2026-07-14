@@ -36,6 +36,7 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_execution");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding_snapshot");
+        jdbcTemplate.update("delete from stock_execution_daily_account_snapshot");
         jdbcTemplate.update("delete from stock_order_book_daily_snapshot");
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_holding");
@@ -96,17 +97,17 @@ class MarketCloseRolloverServiceTest {
         setSimulationDate(simulationDate);
         insertOrderBookInstrument("MC001");
         insertPrice("MC001", "73500.00", "70000.00", "internal-order-book");
-        insertExecution("MC001", "BUY", 1L, "73500.00", "73500.00", simulationDate.atTime(10, 0));
-        insertExecution("MC001", "SELL", 2L, "73500.00", "147000.00", simulationDate.atTime(11, 0));
         insertAccount("market-close-buyer", "1000000.00");
         insertAccount("market-close-seller", "500000.00");
+        insertExecution("market-close-buyer", "MC001", "BUY", 1L, "73500.00", "73500.00", simulationDate.atTime(10, 0));
+        insertExecution("market-close-seller", "MC001", "SELL", 2L, "73500.00", "147000.00", simulationDate.atTime(11, 0));
         insertHolding("market-close-seller", "MC001", 10L, 4L, "70000.00");
         insertReservedBuyOrder("market-close-buy-order", "market-close-buyer", "MC001", "147000.00");
         insertReservedSellOrder("market-close-sell-order", "market-close-seller", "MC001", 4L);
 
         int processedCount = marketCloseRolloverService.rolloverClosingPrices();
 
-        assertThat(processedCount).isEqualTo(5);
+        assertThat(processedCount).isEqualTo(7);
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
         assertThat(queryLong("select cancelled_order_count from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo(2L);
@@ -131,6 +132,16 @@ class MarketCloseRolloverServiceTest {
         assertThat(queryLong("select buy_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(1L);
         assertThat(queryLong("select sell_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(2L);
+        assertThat(queryDecimal("select open_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("73500.00"));
+        assertThat(queryDecimal("select high_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("73500.00"));
+        assertThat(queryDecimal("select low_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("73500.00"));
+        assertThat(queryDecimal("select last_execution_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("73500.00"));
+        assertThat(queryLong("select count(*) from stock_execution_daily_account_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(2L);
         assertThat(queryLong("select open_order_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isZero();
@@ -448,6 +459,7 @@ class MarketCloseRolloverServiceTest {
     }
 
     private void insertExecution(
+            String userKey,
             String symbol,
             String side,
             long quantity,
@@ -461,7 +473,9 @@ class MarketCloseRolloverServiceTest {
                     order_id, account_id, symbol, side, quantity, price, gross_amount, net_amount,
                     fee_amount, tax_amount, realized_profit, source, executed_at
                 )
-                values (?, 1, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'INTERNAL_ORDER_BOOK', ?)
+                select ?, id, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'INTERNAL_ORDER_BOOK', ?
+                  from stock_account
+                 where user_key = ?
                 """,
                 Math.abs((symbol + side + executedAt).hashCode()),
                 symbol,
@@ -470,7 +484,8 @@ class MarketCloseRolloverServiceTest {
                 new BigDecimal(price),
                 new BigDecimal(grossAmount),
                 new BigDecimal(grossAmount),
-                executedAt
+                executedAt,
+                userKey
         );
     }
 

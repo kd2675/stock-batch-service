@@ -189,6 +189,130 @@ public class MarketCloseRolloverWriter {
         );
     }
 
+    private void snapshotDailyExecutionPrices(
+            long closeRunId,
+            String symbol,
+            LocalDateTime executionRangeStart,
+            LocalDateTime executionRangeEnd
+    ) {
+        jdbcTemplate.update(
+                """
+                update stock_order_book_daily_snapshot snapshot
+                   set open_price = coalesce((
+                           select execution.price
+                             from stock_execution execution
+                            where execution.symbol = snapshot.symbol
+                              and execution.source = 'INTERNAL_ORDER_BOOK'
+                              and execution.side = 'BUY'
+                              and execution.executed_at >= ?
+                              and execution.executed_at < ?
+                            order by execution.executed_at asc, execution.id asc
+                            limit 1
+                       ), 0),
+                       high_price = coalesce((
+                           select max(execution.price)
+                             from stock_execution execution
+                            where execution.symbol = snapshot.symbol
+                              and execution.source = 'INTERNAL_ORDER_BOOK'
+                              and execution.side = 'BUY'
+                              and execution.executed_at >= ?
+                              and execution.executed_at < ?
+                       ), 0),
+                       low_price = coalesce((
+                           select min(execution.price)
+                             from stock_execution execution
+                            where execution.symbol = snapshot.symbol
+                              and execution.source = 'INTERNAL_ORDER_BOOK'
+                              and execution.side = 'BUY'
+                              and execution.executed_at >= ?
+                              and execution.executed_at < ?
+                       ), 0),
+                       last_execution_price = coalesce((
+                           select execution.price
+                             from stock_execution execution
+                            where execution.symbol = snapshot.symbol
+                              and execution.source = 'INTERNAL_ORDER_BOOK'
+                              and execution.side = 'BUY'
+                              and execution.executed_at >= ?
+                              and execution.executed_at < ?
+                            order by execution.executed_at desc, execution.id desc
+                            limit 1
+                       ), 0)
+                 where snapshot.close_run_id = ?
+                   and (? is null or snapshot.symbol = ?)
+                """,
+                executionRangeStart,
+                executionRangeEnd,
+                executionRangeStart,
+                executionRangeEnd,
+                executionRangeStart,
+                executionRangeEnd,
+                executionRangeStart,
+                executionRangeEnd,
+                closeRunId,
+                symbol,
+                symbol
+        );
+    }
+
+    public int snapshotDailyAccountExecutions(
+            long closeRunId,
+            String symbol,
+            LocalDate simulationTradeDate,
+            LocalDateTime snapshotAt,
+            LocalDateTime executionRangeStart,
+            LocalDateTime executionRangeEnd
+    ) {
+        return jdbcTemplate.update(
+                """
+                insert into stock_execution_daily_account_snapshot(
+                    close_run_id, symbol, simulation_trade_date, account_id, participant_category,
+                    execution_count, buy_quantity, sell_quantity, buy_amount, sell_amount,
+                    net_cash_flow, execution_amount, created_at
+                )
+                select ?,
+                       execution.symbol,
+                       ?,
+                       execution.account_id,
+                       case
+                         when listing_config.user_key is not null then 'LISTING_UNDERWRITER'
+                         when participant.user_key is not null then 'AUTO_PARTICIPANT'
+                         else 'MANUAL_PARTICIPANT'
+                       end,
+                       count(*),
+                       sum(case when execution.side = 'BUY' then execution.quantity else 0 end),
+                       sum(case when execution.side = 'SELL' then execution.quantity else 0 end),
+                       sum(case when execution.side = 'BUY' then execution.gross_amount else 0 end),
+                       sum(case when execution.side = 'SELL' then execution.gross_amount else 0 end),
+                       sum(case when execution.side = 'BUY' then -execution.net_amount else execution.net_amount end),
+                       sum(execution.gross_amount),
+                       ?
+                  from stock_execution execution
+                  join stock_account account on account.id = execution.account_id
+                  left join stock_listing_auto_account_config listing_config
+                    on listing_config.user_key = account.user_key
+                   and listing_config.symbol = execution.symbol
+                  left join stock_auto_participant participant
+                    on participant.user_key = account.user_key
+                 where execution.source = 'INTERNAL_ORDER_BOOK'
+                   and execution.executed_at >= ?
+                   and execution.executed_at < ?
+                   and (? is null or execution.symbol = ?)
+                 group by execution.symbol,
+                          execution.account_id,
+                          listing_config.user_key,
+                          participant.user_key
+                """,
+                closeRunId,
+                simulationTradeDate,
+                snapshotAt,
+                executionRangeStart,
+                executionRangeEnd,
+                symbol,
+                symbol
+        );
+    }
+
     public int snapshotHoldings(long closeRunId, String symbol, LocalDateTime snapshotAt) {
         return jdbcTemplate.update(
                 """
@@ -215,7 +339,7 @@ public class MarketCloseRolloverWriter {
             LocalDateTime executionRangeStart,
             LocalDateTime executionRangeEnd
     ) {
-        return jdbcTemplate.update(
+        int insertedCount = jdbcTemplate.update(
                 """
                 insert into stock_order_book_daily_snapshot(
                     close_run_id, symbol, simulation_trade_date, snapshot_at, created_at,
@@ -226,7 +350,8 @@ public class MarketCloseRolloverWriter {
                     execution_count, execution_quantity, turnover_amount,
                     buy_quantity, sell_quantity, buy_net_amount, sell_net_amount,
                     open_order_count, open_buy_order_count, open_sell_order_count, reserved_buy_cash,
-                    holder_count, holding_quantity, pending_corporate_action_count, last_executed_at
+                    holder_count, holding_quantity, pending_corporate_action_count,
+                    first_executed_at, last_executed_at
                 )
                 select ?,
                        i.symbol,
@@ -270,6 +395,7 @@ public class MarketCloseRolloverWriter {
                        coalesce(h.holder_count, 0),
                        coalesce(h.holding_quantity, 0),
                        coalesce(c.pending_corporate_action_count, 0),
+                       e.first_executed_at,
                        e.last_executed_at
                   from stock_order_book_instrument i
                   left join stock_order_book_market_config m on m.symbol = i.symbol
@@ -283,6 +409,7 @@ public class MarketCloseRolloverWriter {
                               sum(case when side = 'SELL' then quantity else 0 end) as sell_quantity,
                               sum(case when side = 'BUY' then net_amount else 0 end) as buy_net_amount,
                               sum(case when side = 'SELL' then net_amount else 0 end) as sell_net_amount,
+                              min(executed_at) as first_executed_at,
                               max(executed_at) as last_executed_at
                          from stock_execution
                         where source = 'INTERNAL_ORDER_BOOK'
@@ -339,6 +466,8 @@ public class MarketCloseRolloverWriter {
                 symbol,
                 symbol
         );
+        snapshotDailyExecutionPrices(closeRunId, symbol, executionRangeStart, executionRangeEnd);
+        return insertedCount;
     }
 
     public void completeCloseRun(

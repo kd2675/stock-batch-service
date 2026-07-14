@@ -18,7 +18,7 @@ spring:
       validation-timeout: 5000
       idle-timeout: 240000
       max-lifetime: 300000
-      keepalive-time: 120000
+      keepalive-time: 30000
   data:
     redis:
       host: kimd0.iptime.org
@@ -43,4 +43,4 @@ stock:
           validation-timeout: 5000
           idle-timeout: 240000
           max-lifetime: 300000
-          keepalive-time: 120000
+          keepalive-time: 30000

@@ -146,6 +146,10 @@ class StockDdlContractTest {
             "stock_market_close_run",
             "stock_holding_snapshot",
             "stock_order_book_daily_snapshot",
+            "stock_execution_daily_account_snapshot",
+            "stock_execution_account_day_summary",
+            "open_price",
+            "first_executed_at",
             "uk_stock_order_book_daily_snapshot_run_symbol",
             "holding_snapshot_run_id"
     );

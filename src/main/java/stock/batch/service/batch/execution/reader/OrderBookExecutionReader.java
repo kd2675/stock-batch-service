@@ -38,45 +38,48 @@ public class OrderBookExecutionReader {
     public List<String> findExecutableSymbolCandidates(int limit) {
         return jdbcClient.sql(
                 """
-                select distinct b.symbol
-                  from stock_order b
-                  join stock_order_book_market_config c
-                    on c.symbol = b.symbol
-                   and c.enabled = true
-                   and c.market_status = 'OPEN'
+                select c.symbol
+                  from stock_order_book_market_config c
                   join stock_order_book_instrument i
-                    on i.symbol = b.symbol
+                    on i.symbol = c.symbol
                    and i.enabled = true
-                 where b.side = 'BUY'
-                   and b.status in ('PENDING', 'PARTIALLY_FILLED')
-                   and b.market_type = 'ORDER_BOOK'
-                   and b.order_type in ('LIMIT', 'MARKET')
-                   and b.quantity > b.filled_quantity
-                   and (b.order_type = 'MARKET' or b.limit_price is not null)
+                 where c.enabled = true
+                   and c.market_status = 'OPEN'
                    and exists (
                        select 1
-                         from stock_order s
-                        where s.symbol = b.symbol
-                          and s.side = 'SELL'
-                          and s.market_type = 'ORDER_BOOK'
-                          and s.order_type in ('LIMIT', 'MARKET')
-                          and s.status in ('PENDING', 'PARTIALLY_FILLED')
-                          and s.quantity > s.filled_quantity
-                          and s.account_id <> b.account_id
-                          and (
-                              (b.order_type = 'MARKET'
-                                  and s.order_type = 'LIMIT'
-                                  and s.limit_price is not null)
-                              or
-                              (b.order_type = 'LIMIT'
-                                  and b.limit_price is not null
-                                  and (
-                                      s.order_type = 'MARKET'
-                                      or (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
-                                  ))
+                         from stock_order b
+                        where b.symbol = c.symbol
+                          and b.side = 'BUY'
+                          and b.status in ('PENDING', 'PARTIALLY_FILLED')
+                          and b.market_type = 'ORDER_BOOK'
+                          and b.order_type in ('LIMIT', 'MARKET')
+                          and b.quantity > b.filled_quantity
+                          and (b.order_type = 'MARKET' or b.limit_price is not null)
+                          and exists (
+                              select 1
+                                from stock_order s
+                               where s.symbol = b.symbol
+                                 and s.side = 'SELL'
+                                 and s.market_type = 'ORDER_BOOK'
+                                 and s.order_type in ('LIMIT', 'MARKET')
+                                 and s.status in ('PENDING', 'PARTIALLY_FILLED')
+                                 and s.quantity > s.filled_quantity
+                                 and s.account_id <> b.account_id
+                                 and (
+                                     (b.order_type = 'MARKET'
+                                         and s.order_type = 'LIMIT'
+                                         and s.limit_price is not null)
+                                     or
+                                     (b.order_type = 'LIMIT'
+                                         and b.limit_price is not null
+                                         and (
+                                             s.order_type = 'MARKET'
+                                             or (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
+                                         ))
+                                 )
                           )
                    )
-                 order by b.symbol asc
+                 order by c.symbol asc
                 limit :limit
                 """
         )

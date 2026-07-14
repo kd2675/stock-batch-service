@@ -41,6 +41,7 @@ public class InternalOrderBookExecutionService {
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
     private final OrderBookReadySymbolQueue readySymbolQueue;
+    private final ExecutionAccountDaySummaryAccumulator executionAccountDaySummaryAccumulator;
 
     public InternalOrderBookExecutionService(
             ExecutionCostCalculator executionCostCalculator,
@@ -51,7 +52,8 @@ public class InternalOrderBookExecutionService {
             SimulationClockService simulationClockService,
             TransactionTemplate transactionTemplate,
             OrderBookSymbolLock orderBookSymbolLock,
-            OrderBookReadySymbolQueue readySymbolQueue
+            OrderBookReadySymbolQueue readySymbolQueue,
+            ExecutionAccountDaySummaryAccumulator executionAccountDaySummaryAccumulator
     ) {
         this.executionCostCalculator = executionCostCalculator;
         this.orderBookExecutionReader = orderBookExecutionReader;
@@ -62,6 +64,7 @@ public class InternalOrderBookExecutionService {
         this.transactionTemplate = transactionTemplate;
         this.orderBookSymbolLock = orderBookSymbolLock;
         this.readySymbolQueue = readySymbolQueue;
+        this.executionAccountDaySummaryAccumulator = executionAccountDaySummaryAccumulator;
     }
 
     @Value("${stock.batch.execution.scan-limit:300}")
@@ -362,12 +365,25 @@ public class InternalOrderBookExecutionService {
         );
         orderBookPriceWriter.updateLastTradePrice(buyOrder.symbol(), executionPrice, executedAt);
         orderBookPriceWriter.insertPriceTick(buyOrder.symbol(), executionPrice, executedAt);
-        publishPriceAfterCommit(buyOrder.symbol(), executionPrice, executedAt);
+        runAfterCommit(() -> {
+            priceRedisPublisher.publish(buyOrder.symbol(), executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
+            executionAccountDaySummaryAccumulator.recordBuy(
+                    buyOrder.accountId(),
+                    quantity,
+                    buyAmounts.grossAmount(),
+                    executedAt
+            );
+            executionAccountDaySummaryAccumulator.recordSell(
+                    sellOrder.accountId(),
+                    quantity,
+                    sellAmounts.grossAmount(),
+                    executedAt
+            );
+        });
         return true;
     }
 
-    private void publishPriceAfterCommit(String symbol, BigDecimal executionPrice, LocalDateTime executedAt) {
-        Runnable action = () -> priceRedisPublisher.publish(symbol, executionPrice, executedAt, OrderBookPriceWriter.PROVIDER);
+    private void runAfterCommit(Runnable action) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             action.run();
             return;

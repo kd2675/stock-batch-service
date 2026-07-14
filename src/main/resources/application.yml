@@ -95,7 +95,7 @@ stock:
           validation-timeout: 5000
           idle-timeout: 240000
           max-lifetime: 300000
-          keepalive-time: 120000
+          keepalive-time: 30000
     market-data:
       enabled: ${STOCK_BATCH_MARKET_DATA_ENABLED:true}
       provider: ${STOCK_BATCH_MARKET_DATA_PROVIDER:mock}

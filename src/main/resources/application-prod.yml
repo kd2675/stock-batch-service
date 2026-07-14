@@ -18,7 +18,7 @@ spring:
       validation-timeout: ${STOCK_DB_VALIDATION_TIMEOUT:5000}
       idle-timeout: ${STOCK_DB_IDLE_TIMEOUT:240000}
       max-lifetime: ${STOCK_DB_MAX_LIFETIME:300000}
-      keepalive-time: ${STOCK_DB_KEEPALIVE_TIME:120000}
+      keepalive-time: ${STOCK_DB_KEEPALIVE_TIME:30000}
   data:
     redis:
       host: ${STOCK_REDIS_HOST}
@@ -43,4 +43,4 @@ stock:
           validation-timeout: ${STOCK_BATCH_DB_VALIDATION_TIMEOUT:5000}
           idle-timeout: ${STOCK_BATCH_DB_IDLE_TIMEOUT:240000}
           max-lifetime: ${STOCK_BATCH_DB_MAX_LIFETIME:300000}
-          keepalive-time: ${STOCK_BATCH_DB_KEEPALIVE_TIME:120000}
+          keepalive-time: ${STOCK_BATCH_DB_KEEPALIVE_TIME:30000}

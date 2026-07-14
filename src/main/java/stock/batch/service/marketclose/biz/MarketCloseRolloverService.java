@@ -96,6 +96,14 @@ public class MarketCloseRolloverService {
                 simulationTradeDate.atStartOfDay(),
                 simulationTradeDate.plusDays(1).atStartOfDay()
         );
+        int accountExecutionSnapshotCount = writer.snapshotDailyAccountExecutions(
+                closeRunId,
+                normalizedSymbol,
+                simulationTradeDate,
+                closedAt,
+                simulationTradeDate.atStartOfDay(),
+                simulationTradeDate.plusDays(1).atStartOfDay()
+        );
         int priceRolloverCount = writer.rolloverClosingPrices(normalizedSymbol);
         writer.completeCloseRun(
                 closeRunId,
@@ -104,7 +112,11 @@ public class MarketCloseRolloverService {
                 priceRolloverCount,
                 simulationClockService.currentMarketDateTime()
         );
-        return cancelledOrderCount + priceRolloverCount + holdingSnapshotCount + symbolSnapshotCount;
+        return cancelledOrderCount
+                + priceRolloverCount
+                + holdingSnapshotCount
+                + symbolSnapshotCount
+                + accountExecutionSnapshotCount;
     }
 
     public int cancelOpenOrderBookOrders(String symbol) {
