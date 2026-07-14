@@ -55,6 +55,17 @@ public class BatchJobSignalProcessor {
                 );
                 return true;
             }
+            if (StockBatchJobRunResponses.isAlreadyCompleteSkip(response)) {
+                signalWriter.complete(signal.id(), response);
+                log.info(
+                        "Stock batch signal completed because its job instance was already complete: id={}, type={}, job={}, mode={}",
+                        signal.id(),
+                        signal.signalType(),
+                        signal.jobName(),
+                        signal.executionMode()
+                );
+                return true;
+            }
             if (isSkipped(response)) {
                 signalWriter.defer(signal.id(), response);
                 log.warn(
@@ -90,10 +101,13 @@ public class BatchJobSignalProcessor {
 
     private StockBatchJobRunResponse runSignal(BatchJobSignal signal) {
         return switch (signal.signalType()) {
-            case SIGNAL_AUTO_PARTICIPANT_CASH_FLOW_RUN -> stockBatchJobLauncher.fundAutoParticipantsManually();
-            case SIGNAL_MARKET_CLOSE_ROLLOVER_RUN -> stockBatchJobLauncher.rolloverClosingPrices();
-            case SIGNAL_MARKET_CLOSE_ROLLOVER_SYMBOL -> stockBatchJobLauncher.rolloverClosingPrices(requireSymbol(signal));
-            case SIGNAL_ORDER_BOOK_OPEN_ORDER_CANCEL_SYMBOL -> stockBatchJobLauncher.cancelOpenOrderBookOrders(requireSymbol(signal));
+            case SIGNAL_AUTO_PARTICIPANT_CASH_FLOW_RUN ->
+                    stockBatchJobLauncher.fundAutoParticipantsManually(signal.id());
+            case SIGNAL_MARKET_CLOSE_ROLLOVER_RUN -> stockBatchJobLauncher.rolloverClosingPrices(signal.id());
+            case SIGNAL_MARKET_CLOSE_ROLLOVER_SYMBOL ->
+                    stockBatchJobLauncher.rolloverClosingPrices(requireSymbol(signal), signal.id());
+            case SIGNAL_ORDER_BOOK_OPEN_ORDER_CANCEL_SYMBOL ->
+                    stockBatchJobLauncher.cancelOpenOrderBookOrders(requireSymbol(signal), signal.id());
             default -> throw new IllegalArgumentException("Unknown batch job signal type: " + signal.signalType());
         };
     }

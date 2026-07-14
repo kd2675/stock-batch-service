@@ -1,32 +1,50 @@
 package stock.batch.service.batch.automarket.job;
 
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.Step;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.infrastructure.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
-import stock.batch.service.batch.common.support.StockBatchJob;
+import stock.batch.service.batch.config.BatchRepositoryConfig;
 
-@Component
-@RequiredArgsConstructor
-public class AutoMarketDailyRegimePreCreateJob implements StockBatchJob {
+@Configuration(proxyBeanMethods = false)
+public class AutoMarketDailyRegimePreCreateJob {
 
     public static final String JOB_NAME = "auto-market-daily-regime-pre-create";
-    private static final String EXECUTION_MODE = "daily-regime";
+    public static final String STEP_NAME = "auto-market-daily-regime-pre-create-step";
 
-    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
-
-    @Override
-    public String jobName() {
-        return JOB_NAME;
+    @Bean(name = JOB_NAME)
+    public Job autoMarketDailyRegimePreCreateBatchJob(
+            JobRepository jobRepository,
+            @Qualifier(STEP_NAME) Step autoMarketDailyRegimePreCreateStep
+    ) {
+        return new JobBuilder(JOB_NAME, jobRepository)
+                .start(autoMarketDailyRegimePreCreateStep)
+                .build();
     }
 
-    @Override
-    public String executionMode() {
-        return EXECUTION_MODE;
-    }
-
-    @Override
-    public int run() {
-        return autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+    @Bean(name = STEP_NAME)
+    public Step autoMarketDailyRegimePreCreateStep(
+            JobRepository jobRepository,
+            @Qualifier(BatchRepositoryConfig.STOCK_BATCH_TASKLET_TRANSACTION_MANAGER)
+            PlatformTransactionManager transactionManager,
+            AutoMarketDailyRegimePreCreateService service
+    ) {
+        Tasklet tasklet = (contribution, chunkContext) -> {
+            int processedCount = service.preCreateDailyRegimes();
+            contribution.incrementWriteCount(processedCount);
+            return RepeatStatus.FINISHED;
+        };
+        return new StepBuilder(STEP_NAME, jobRepository)
+                .tasklet(tasklet, transactionManager)
+                .build();
     }
 }

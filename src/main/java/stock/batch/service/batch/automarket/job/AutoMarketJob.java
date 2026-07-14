@@ -4,11 +4,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.automarket.biz.AutoMarketService;
-import stock.batch.service.batch.common.support.StockBatchJob;
+import stock.batch.service.batch.common.support.LightweightBatchTask;
 
 @Component
 @RequiredArgsConstructor
-public class AutoMarketJob implements StockBatchJob {
+public class AutoMarketJob implements LightweightBatchTask {
 
     public static final String JOB_NAME = "auto-market";
     private static final String EXECUTION_MODE = "order-book";
@@ -16,23 +16,13 @@ public class AutoMarketJob implements StockBatchJob {
     private final AutoMarketService autoMarketService;
 
     @Override
-    public String jobName() {
+    public String taskName() {
         return JOB_NAME;
     }
 
     @Override
     public String executionMode() {
         return EXECUTION_MODE;
-    }
-
-    @Override
-    public boolean requiresJobLock() {
-        return false;
-    }
-
-    @Override
-    public boolean recordsExecutionHistory() {
-        return false;
     }
 
     @Override

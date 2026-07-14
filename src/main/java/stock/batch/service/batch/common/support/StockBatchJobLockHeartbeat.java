@@ -28,34 +28,34 @@ final class StockBatchJobLockHeartbeat {
     }
 
     ScheduledFuture<?> start(
-            StockBatchJob job,
+            BatchExecutionDescriptor execution,
             AtomicReference<RuntimeException> lockHeartbeatFailure
     ) {
         return lockHeartbeatExecutor.scheduleWithFixedDelay(
-                () -> renew(job, lockHeartbeatFailure),
+                () -> renew(execution, lockHeartbeatFailure),
                 lockHeartbeatIntervalSeconds,
                 lockHeartbeatIntervalSeconds,
                 TimeUnit.SECONDS
         );
     }
 
-    void release(StockBatchJob job) {
+    void release(BatchExecutionDescriptor execution) {
         try {
-            batchJobLockRegistry.release(job.jobName());
+            batchJobLockRegistry.release(execution.jobName());
         } catch (RuntimeException ex) {
             log.warn(
                     "Stock batch job lock release failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
+                    execution.jobName(),
+                    execution.executionMode(),
                     ex.getMessage(),
                     ex
             );
         }
     }
 
-    private void renew(StockBatchJob job, AtomicReference<RuntimeException> lockHeartbeatFailure) {
+    private void renew(BatchExecutionDescriptor execution, AtomicReference<RuntimeException> lockHeartbeatFailure) {
         try {
-            boolean renewed = batchJobLockRegistry.renew(job.jobName(), LocalDateTime.now());
+            boolean renewed = batchJobLockRegistry.renew(execution.jobName(), LocalDateTime.now());
             if (!renewed) {
                 lockHeartbeatFailure.compareAndSet(
                         null,
@@ -63,15 +63,15 @@ final class StockBatchJobLockHeartbeat {
                 );
                 log.warn(
                         "Stock batch job lock heartbeat lost ownership: job={}, mode={}",
-                        job.jobName(),
-                        job.executionMode()
+                        execution.jobName(),
+                        execution.executionMode()
                 );
             }
         } catch (RuntimeException ex) {
             log.warn(
                     "Stock batch job lock heartbeat failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
+                    execution.jobName(),
+                    execution.executionMode(),
                     ex.getMessage(),
                     ex
             );

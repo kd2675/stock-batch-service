@@ -10,6 +10,7 @@ public final class StockBatchJobRunResponses {
     static final String SKIPPED = "SKIPPED";
     static final String FAILED = "FAILED";
     static final String ALREADY_RUNNING_MESSAGE = "Job is already running";
+    public static final String ALREADY_COMPLETE_MESSAGE = "Job instance is already complete";
     static final String SHUTTING_DOWN_MESSAGE = "Batch service is shutting down";
     public static final String MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE =
             "Manual recurring cash is allowed only when automatic cash flow is disabled";
@@ -21,8 +22,8 @@ public final class StockBatchJobRunResponses {
     private StockBatchJobRunResponses() {
     }
 
-    static StockBatchJobRunResponse shuttingDown(StockBatchJob job, LocalDateTime now) {
-        return response(job, SKIPPED, 0, SHUTTING_DOWN_MESSAGE, now, now);
+    static StockBatchJobRunResponse shuttingDown(BatchExecutionDescriptor execution, LocalDateTime now) {
+        return response(execution, SKIPPED, 0, SHUTTING_DOWN_MESSAGE, now, now);
     }
 
     public static StockBatchJobRunResponse scheduledDisabled(String jobName, LocalDateTime now) {
@@ -41,6 +42,12 @@ public final class StockBatchJobRunResponses {
         return response != null
                 && SKIPPED.equals(response.status())
                 && MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE.equals(response.message());
+    }
+
+    public static boolean isAlreadyCompleteSkip(StockBatchJobRunResponse response) {
+        return response != null
+                && SKIPPED.equals(response.status())
+                && ALREADY_COMPLETE_MESSAGE.equals(response.message());
     }
 
     public static StockBatchJobRunResponse manualCashFlowAutoEnabled(LocalDateTime now) {
@@ -67,29 +74,41 @@ public final class StockBatchJobRunResponses {
         );
     }
 
-    static StockBatchJobRunResponse alreadyRunning(StockBatchJob job, LocalDateTime startedAt, LocalDateTime endedAt) {
-        return response(job, SKIPPED, 0, ALREADY_RUNNING_MESSAGE, startedAt, endedAt);
+    static StockBatchJobRunResponse alreadyRunning(
+            BatchExecutionDescriptor execution,
+            LocalDateTime startedAt,
+            LocalDateTime endedAt
+    ) {
+        return response(execution, SKIPPED, 0, ALREADY_RUNNING_MESSAGE, startedAt, endedAt);
     }
 
     static StockBatchJobRunResponse completed(
-            StockBatchJob job,
+            BatchExecutionDescriptor execution,
             int processedCount,
             LocalDateTime startedAt,
             LocalDateTime endedAt
     ) {
-        return response(job, COMPLETED, processedCount, "Job completed", startedAt, endedAt);
+        return response(execution, COMPLETED, processedCount, "Job completed", startedAt, endedAt);
     }
 
     static StockBatchJobRunResponse failed(
-            StockBatchJob job,
-            RuntimeException exception,
+            BatchExecutionDescriptor execution,
+            Throwable exception,
             LocalDateTime startedAt,
             LocalDateTime endedAt
     ) {
-        return response(job, FAILED, 0, failureMessage(exception), startedAt, endedAt);
+        return response(execution, FAILED, 0, failureMessage(exception), startedAt, endedAt);
     }
 
-    private static String failureMessage(RuntimeException exception) {
+    static StockBatchJobRunResponse alreadyComplete(
+            BatchExecutionDescriptor execution,
+            LocalDateTime startedAt,
+            LocalDateTime endedAt
+    ) {
+        return response(execution, SKIPPED, 0, ALREADY_COMPLETE_MESSAGE, startedAt, endedAt);
+    }
+
+    private static String failureMessage(Throwable exception) {
         String message = exception.getMessage();
         if (message == null || message.isBlank()) {
             return exception.getClass().getSimpleName();
@@ -98,14 +117,22 @@ public final class StockBatchJobRunResponses {
     }
 
     private static StockBatchJobRunResponse response(
-            StockBatchJob job,
+            BatchExecutionDescriptor execution,
             String status,
             int processedCount,
             String message,
             LocalDateTime startedAt,
             LocalDateTime endedAt
     ) {
-        return response(job.jobName(), job.executionMode(), status, processedCount, message, startedAt, endedAt);
+        return response(
+                execution.jobName(),
+                execution.executionMode(),
+                status,
+                processedCount,
+                message,
+                startedAt,
+                endedAt
+        );
     }
 
     private static StockBatchJobRunResponse response(

@@ -21,7 +21,7 @@ class BatchJobRuntimeCatalogContractTest {
     );
 
     @Test
-    void runtimeCatalog_coversEveryStockBatchJobImplementation() throws IOException {
+    void runtimeCatalog_coversEveryDeclaredBatchJobAndLightweightTask() throws IOException {
         List<String> jobImplementationNames = findStockBatchJobNamesFromSource();
         BatchJobRuntimeCatalog catalog = createRuntimeCatalog();
 
@@ -69,19 +69,11 @@ class BatchJobRuntimeCatalogContractTest {
         try (var paths = Files.walk(Path.of("src/main/java/stock/batch/service"))) {
             return paths
                     .filter(path -> path.getFileName().toString().endsWith(".java"))
-                    .filter(this::isStockBatchJobImplementation)
+                    .filter(path -> path.toString().contains("/batch/") && path.toString().contains("/job/"))
                     .filter(this::hasStaticJobName)
                     .map(this::readJobName)
                     .sorted()
                     .toList();
-        }
-    }
-
-    private boolean isStockBatchJobImplementation(Path path) {
-        try {
-            return Files.readString(path, StandardCharsets.UTF_8).contains("implements StockBatchJob");
-        } catch (IOException ex) {
-            throw new IllegalStateException("Failed to read " + path, ex);
         }
     }
 

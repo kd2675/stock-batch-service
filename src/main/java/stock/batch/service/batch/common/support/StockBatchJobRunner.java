@@ -12,6 +12,13 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.JobExecution;
+import org.springframework.batch.core.job.parameters.JobParameters;
+import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
@@ -31,7 +38,8 @@ public class StockBatchJobRunner implements SmartLifecycle {
     private static final int LIFECYCLE_PHASE = Integer.MAX_VALUE - 100;
 
     private final BatchJobLockRegistry batchJobLockRegistry;
-    private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder;
+    private final JobOperator jobOperator;
+    private final StockBatchStaleExecutionRecovery staleExecutionRecovery;
     private final long shutdownAwaitRunningJobsSeconds;
     private final ScheduledExecutorService lockHeartbeatExecutor;
     private final StockBatchJobLockHeartbeat lockHeartbeat;
@@ -42,13 +50,15 @@ public class StockBatchJobRunner implements SmartLifecycle {
     @Autowired
     public StockBatchJobRunner(
             BatchJobLockRegistry batchJobLockRegistry,
-            StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder,
+            JobOperator jobOperator,
+            StockBatchStaleExecutionRecovery staleExecutionRecovery,
             @Value("${stock.batch.job-lock.heartbeat-interval-seconds:30}") long lockHeartbeatIntervalSeconds,
             @Value("${stock.batch.shutdown.await-running-jobs-seconds:120}") long shutdownAwaitRunningJobsSeconds
     ) {
         this(
                 batchJobLockRegistry,
-                stockBatchJobRepositoryRecorder,
+                jobOperator,
+                staleExecutionRecovery,
                 lockHeartbeatIntervalSeconds,
                 shutdownAwaitRunningJobsSeconds,
                 newLockHeartbeatExecutor("stock-batch-lock-heartbeat")
@@ -57,35 +67,8 @@ public class StockBatchJobRunner implements SmartLifecycle {
 
     StockBatchJobRunner(
             BatchJobLockRegistry batchJobLockRegistry,
-            StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder
-    ) {
-        this(
-                batchJobLockRegistry,
-                stockBatchJobRepositoryRecorder,
-                30,
-                60,
-                newLockHeartbeatExecutor("stock-batch-lock-heartbeat-test")
-        );
-    }
-
-    StockBatchJobRunner(
-            BatchJobLockRegistry batchJobLockRegistry,
-            StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder,
-            long lockHeartbeatIntervalSeconds,
-            ScheduledExecutorService lockHeartbeatExecutor
-    ) {
-        this(
-                batchJobLockRegistry,
-                stockBatchJobRepositoryRecorder,
-                lockHeartbeatIntervalSeconds,
-                60,
-                lockHeartbeatExecutor
-        );
-    }
-
-    StockBatchJobRunner(
-            BatchJobLockRegistry batchJobLockRegistry,
-            StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder,
+            JobOperator jobOperator,
+            StockBatchStaleExecutionRecovery staleExecutionRecovery,
             long lockHeartbeatIntervalSeconds,
             long shutdownAwaitRunningJobsSeconds,
             ScheduledExecutorService lockHeartbeatExecutor
@@ -100,7 +83,8 @@ public class StockBatchJobRunner implements SmartLifecycle {
             throw new IllegalArgumentException("shutdownAwaitRunningJobsSeconds must not be negative");
         }
         this.batchJobLockRegistry = batchJobLockRegistry;
-        this.stockBatchJobRepositoryRecorder = stockBatchJobRepositoryRecorder;
+        this.jobOperator = jobOperator;
+        this.staleExecutionRecovery = staleExecutionRecovery;
         this.shutdownAwaitRunningJobsSeconds = shutdownAwaitRunningJobsSeconds;
         this.lockHeartbeatExecutor = lockHeartbeatExecutor;
         this.lockHeartbeat = new StockBatchJobLockHeartbeat(
@@ -110,242 +94,166 @@ public class StockBatchJobRunner implements SmartLifecycle {
         );
     }
 
-    public StockBatchJobRunResponse run(StockBatchJob job) {
-        if (!activeJobTracker.tryEnter()) {
-            LocalDateTime now = LocalDateTime.now();
-            log.info(
-                    "Stock batch job skipped because service is shutting down: job={}, mode={}",
-                    job.jobName(),
-                    job.executionMode()
-            );
-            return StockBatchJobRunResponses.shuttingDown(job, now);
-        }
-        try {
-            return runEnteredJob(job);
-        } finally {
-            activeJobTracker.leave();
-        }
+    public StockBatchJobRunResponse run(LightweightBatchTask task) {
+        BatchExecutionDescriptor execution = new BatchExecutionDescriptor(task.taskName(), task.executionMode());
+        return enter(execution, () -> runLightweightEntered(task, execution));
+    }
+
+    public StockBatchJobRunResponse run(Job job, String executionMode, JobParameters parameters) {
+        BatchExecutionDescriptor execution = new BatchExecutionDescriptor(job.getName(), executionMode);
+        return enter(execution, () -> runNativeEntered(job, parameters, execution));
     }
 
     public boolean hasActiveJobs() {
         return activeJobTracker.hasActiveJobs();
     }
 
-    private StockBatchJobRunResponse runEnteredJob(StockBatchJob job) {
-        LocalDateTime startedAt = LocalDateTime.now();
-        if (!job.recordsExecutionHistory()) {
-            return runLightweightJob(job, startedAt);
-        }
-        StockBatchJobExecutionRecord executionRecord;
-        try {
-            executionRecord = stockBatchJobRepositoryRecorder.start(job, startedAt);
-        } catch (RuntimeException ex) {
-            LocalDateTime endedAt = LocalDateTime.now();
-            log.warn(
-                    "Stock batch job repository start failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage(),
-                    ex
+    private StockBatchJobRunResponse enter(
+            BatchExecutionDescriptor execution,
+            ExecutionSupplier executionSupplier
+    ) {
+        if (!activeJobTracker.tryEnter()) {
+            LocalDateTime now = LocalDateTime.now();
+            log.info(
+                    "Stock batch execution skipped because service is shutting down: job={}, mode={}",
+                    execution.jobName(),
+                    execution.executionMode()
             );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
+            return StockBatchJobRunResponses.shuttingDown(execution, now);
         }
-        if (!job.requiresJobLock()) {
-            return runWithoutJobLock(job, executionRecord, startedAt);
+        try {
+            return executionSupplier.run();
+        } finally {
+            activeJobTracker.leave();
         }
+    }
+
+    private StockBatchJobRunResponse runLightweightEntered(
+            LightweightBatchTask task,
+            BatchExecutionDescriptor execution
+    ) {
+        LocalDateTime startedAt = LocalDateTime.now();
+        if (!task.requiresJobLock()) {
+            return executeLightweight(task, execution, startedAt);
+        }
+        return executeWithJobLock(execution, startedAt, () -> executeLightweight(task, execution, startedAt));
+    }
+
+    private StockBatchJobRunResponse runNativeEntered(
+            Job job,
+            JobParameters parameters,
+            BatchExecutionDescriptor execution
+    ) {
+        LocalDateTime startedAt = LocalDateTime.now();
+        return executeWithJobLock(execution, startedAt, () -> executeNative(job, parameters, execution, startedAt));
+    }
+
+    private StockBatchJobRunResponse executeWithJobLock(
+            BatchExecutionDescriptor execution,
+            LocalDateTime startedAt,
+            ExecutionSupplier action
+    ) {
         boolean lockAcquired;
         try {
-            lockAcquired = batchJobLockRegistry.tryAcquire(job.jobName(), startedAt);
+            lockAcquired = batchJobLockRegistry.tryAcquire(execution.jobName(), startedAt);
         } catch (RuntimeException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
-            recordFailure(job, executionRecord, ex, endedAt, "lock acquisition failure");
             log.warn(
                     "Stock batch job lock acquisition failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
+                    execution.jobName(),
+                    execution.executionMode(),
                     ex.getMessage(),
                     ex
             );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
+            return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
         }
         if (!lockAcquired) {
             LocalDateTime endedAt = LocalDateTime.now();
-            recordSkip(job, executionRecord, endedAt);
-            log.warn(
-                    "Stock batch job skipped because lock is held: job={}, mode={}, elapsedMs={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    elapsedMillis(startedAt, endedAt)
-            );
-            return StockBatchJobRunResponses.alreadyRunning(job, startedAt, endedAt);
+            return StockBatchJobRunResponses.alreadyRunning(execution, startedAt, endedAt);
         }
-        AtomicReference<RuntimeException> lockHeartbeatFailure = new AtomicReference<>();
-        ScheduledFuture<?> lockHeartbeatFuture = lockHeartbeat.start(job, lockHeartbeatFailure);
+
+        AtomicReference<RuntimeException> heartbeatFailure = new AtomicReference<>();
+        ScheduledFuture<?> heartbeatFuture = lockHeartbeat.start(execution, heartbeatFailure);
         try {
-            logJobStarted(job, startedAt);
-            int processedCount = job.run();
-            requireNonNegativeProcessedCount(job, processedCount);
-            LocalDateTime endedAt = LocalDateTime.now();
-            RuntimeException heartbeatFailure = lockHeartbeatFailure.get();
-            if (heartbeatFailure != null) {
-                recordFailure(job, executionRecord, heartbeatFailure, endedAt, "heartbeat failure");
-                log.warn(
-                        "Stock batch job heartbeat failed: job={}, mode={}, elapsedMs={}, reason={}",
-                        job.jobName(),
-                        job.executionMode(),
-                        elapsedMillis(startedAt, endedAt),
-                        heartbeatFailure.getMessage(),
-                        heartbeatFailure
-                );
-                return StockBatchJobRunResponses.failed(job, heartbeatFailure, startedAt, endedAt);
+            StockBatchJobRunResponse response = action.run();
+            RuntimeException failure = heartbeatFailure.get();
+            if (failure == null) {
+                return response;
             }
-            RuntimeException completeFailure = recordComplete(job, executionRecord, processedCount, endedAt);
-            if (completeFailure != null) {
-                return StockBatchJobRunResponses.failed(job, completeFailure, startedAt, endedAt);
-            }
-            logJobCompleted(job, processedCount, startedAt, endedAt);
-            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
-        } catch (RuntimeException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
-            recordFailure(job, executionRecord, ex, endedAt, "job failure");
             log.warn(
-                    "Stock batch job failed: job={}, mode={}, elapsedMs={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    elapsedMillis(startedAt, endedAt),
-                    ex.getMessage(),
-                    ex
+                    "Stock batch job lock heartbeat failed during execution: job={}, mode={}, reason={}",
+                    execution.jobName(),
+                    execution.executionMode(),
+                    failure.getMessage(),
+                    failure
             );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
+            return StockBatchJobRunResponses.failed(execution, failure, startedAt, endedAt);
         } finally {
-            lockHeartbeatFuture.cancel(false);
-            lockHeartbeat.release(job);
+            heartbeatFuture.cancel(false);
+            lockHeartbeat.release(execution);
         }
     }
 
-    private StockBatchJobRunResponse runLightweightJob(StockBatchJob job, LocalDateTime startedAt) {
-        if (job.requiresJobLock()) {
-            IllegalStateException ex = new IllegalStateException(
-                    "Lightweight stock batch job must provide its own concurrency control: " + job.jobName()
-            );
-            LocalDateTime endedAt = LocalDateTime.now();
-            log.warn(
-                    "Lightweight stock batch job configuration is invalid: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage()
-            );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
-        }
-        try {
-            logJobStarted(job, startedAt);
-            int processedCount = job.run();
-            requireNonNegativeProcessedCount(job, processedCount);
-            LocalDateTime endedAt = LocalDateTime.now();
-            logJobCompleted(job, processedCount, startedAt, endedAt);
-            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
-        } catch (RuntimeException ex) {
-            LocalDateTime endedAt = LocalDateTime.now();
-            log.warn(
-                    "Lightweight stock batch job failed: job={}, mode={}, elapsedMs={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    elapsedMillis(startedAt, endedAt),
-                    ex.getMessage(),
-                    ex
-            );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
-        }
-    }
-
-    private StockBatchJobRunResponse runWithoutJobLock(
-            StockBatchJob job,
-            StockBatchJobExecutionRecord executionRecord,
+    private StockBatchJobRunResponse executeLightweight(
+            LightweightBatchTask task,
+            BatchExecutionDescriptor execution,
             LocalDateTime startedAt
     ) {
         try {
-            logJobStarted(job, startedAt);
-            int processedCount = job.run();
-            requireNonNegativeProcessedCount(job, processedCount);
+            logStarted(execution, startedAt);
+            int processedCount = task.run();
+            requireNonNegativeProcessedCount(execution, processedCount);
             LocalDateTime endedAt = LocalDateTime.now();
-            RuntimeException completeFailure = recordComplete(job, executionRecord, processedCount, endedAt);
-            if (completeFailure != null) {
-                return StockBatchJobRunResponses.failed(job, completeFailure, startedAt, endedAt);
+            logCompleted(execution, processedCount, startedAt, endedAt);
+            return StockBatchJobRunResponses.completed(execution, processedCount, startedAt, endedAt);
+        } catch (RuntimeException ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            logFailure(execution, startedAt, endedAt, ex);
+            return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
+        }
+    }
+
+    private StockBatchJobRunResponse executeNative(
+            Job job,
+            JobParameters parameters,
+            BatchExecutionDescriptor execution,
+            LocalDateTime startedAt
+    ) {
+        try {
+            logStarted(execution, startedAt);
+            int recoveredCount = staleExecutionRecovery.recover(execution.jobName(), startedAt);
+            if (recoveredCount > 0) {
+                log.warn(
+                        "Recovered stale Spring Batch executions before restart: job={}, count={}",
+                        execution.jobName(),
+                        recoveredCount
+                );
             }
-            logJobCompleted(job, processedCount, startedAt, endedAt);
-            return StockBatchJobRunResponses.completed(job, processedCount, startedAt, endedAt);
-        } catch (RuntimeException ex) {
+            JobExecution jobExecution = jobOperator.start(job, parameters);
+            LocalDateTime endedAt = jobExecution.getEndTime() == null ? LocalDateTime.now() : jobExecution.getEndTime();
+            int processedCount = Math.toIntExact(jobExecution.getStepExecutions().stream()
+                    .mapToLong(stepExecution -> stepExecution.getWriteCount())
+                    .sum());
+            if (jobExecution.getStatus() == BatchStatus.COMPLETED) {
+                logCompleted(execution, processedCount, startedAt, endedAt);
+                return StockBatchJobRunResponses.completed(execution, processedCount, startedAt, endedAt);
+            }
+            Throwable failure = jobExecution.getAllFailureExceptions().stream()
+                    .findFirst()
+                    .orElseGet(() -> new IllegalStateException(jobExecution.getExitStatus().getExitDescription()));
+            logFailure(execution, startedAt, endedAt, failure);
+            return StockBatchJobRunResponses.failed(execution, failure, startedAt, endedAt);
+        } catch (JobInstanceAlreadyCompleteException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
-            recordFailure(job, executionRecord, ex, endedAt, "job failure");
-            log.warn(
-                    "Stock batch job failed: job={}, mode={}, elapsedMs={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    elapsedMillis(startedAt, endedAt),
-                    ex.getMessage(),
-                    ex
-            );
-            return StockBatchJobRunResponses.failed(job, ex, startedAt, endedAt);
-        }
-    }
-
-    private RuntimeException recordComplete(
-            StockBatchJob job,
-            StockBatchJobExecutionRecord executionRecord,
-            int processedCount,
-            LocalDateTime endedAt
-    ) {
-        try {
-            stockBatchJobRepositoryRecorder.complete(executionRecord, processedCount, endedAt);
-            return null;
-        } catch (RuntimeException ex) {
-            log.warn(
-                    "Stock batch job repository complete failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage(),
-                    ex
-            );
-            return ex;
-        }
-    }
-
-    private void recordSkip(
-            StockBatchJob job,
-            StockBatchJobExecutionRecord executionRecord,
-            LocalDateTime endedAt
-    ) {
-        try {
-            stockBatchJobRepositoryRecorder.skip(executionRecord, endedAt);
-        } catch (RuntimeException ex) {
-            log.warn(
-                    "Stock batch job repository skip failed: job={}, mode={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    ex.getMessage(),
-                    ex
-            );
-        }
-    }
-
-    private void recordFailure(
-            StockBatchJob job,
-            StockBatchJobExecutionRecord executionRecord,
-            RuntimeException failure,
-            LocalDateTime endedAt,
-            String failureContext
-    ) {
-        try {
-            stockBatchJobRepositoryRecorder.fail(executionRecord, failure, endedAt);
-        } catch (RuntimeException recordFailure) {
-            log.warn(
-                    "Stock batch job repository fail recording failed: job={}, mode={}, context={}, reason={}",
-                    job.jobName(),
-                    job.executionMode(),
-                    failureContext,
-                    recordFailure.getMessage(),
-                    recordFailure
-            );
+            return StockBatchJobRunResponses.alreadyComplete(execution, startedAt, endedAt);
+        } catch (JobExecutionAlreadyRunningException ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            return StockBatchJobRunResponses.alreadyRunning(execution, startedAt, endedAt);
+        } catch (Exception ex) {
+            LocalDateTime endedAt = LocalDateTime.now();
+            logFailure(execution, startedAt, endedAt, ex);
+            return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
         }
     }
 
@@ -428,27 +336,43 @@ public class StockBatchJobRunner implements SmartLifecycle {
         }
     }
 
-    private void logJobStarted(StockBatchJob job, LocalDateTime startedAt) {
+    private void logStarted(BatchExecutionDescriptor execution, LocalDateTime startedAt) {
         log.info(
-                "Stock batch job started: job={}, mode={}, startedAt={}",
-                job.jobName(),
-                job.executionMode(),
+                "Stock batch execution started: job={}, mode={}, startedAt={}",
+                execution.jobName(),
+                execution.executionMode(),
                 startedAt
         );
     }
 
-    private void logJobCompleted(
-            StockBatchJob job,
+    private void logCompleted(
+            BatchExecutionDescriptor execution,
             int processedCount,
             LocalDateTime startedAt,
             LocalDateTime endedAt
     ) {
         log.info(
-                "Stock batch job completed: job={}, mode={}, processedCount={}, elapsedMs={}",
-                job.jobName(),
-                job.executionMode(),
+                "Stock batch execution completed: job={}, mode={}, processedCount={}, elapsedMs={}",
+                execution.jobName(),
+                execution.executionMode(),
                 processedCount,
                 elapsedMillis(startedAt, endedAt)
+        );
+    }
+
+    private void logFailure(
+            BatchExecutionDescriptor execution,
+            LocalDateTime startedAt,
+            LocalDateTime endedAt,
+            Throwable failure
+    ) {
+        log.warn(
+                "Stock batch execution failed: job={}, mode={}, elapsedMs={}, reason={}",
+                execution.jobName(),
+                execution.executionMode(),
+                elapsedMillis(startedAt, endedAt),
+                failure.getMessage(),
+                failure
         );
     }
 
@@ -456,11 +380,11 @@ public class StockBatchJobRunner implements SmartLifecycle {
         return Math.max(0, Duration.between(startedAt, endedAt).toMillis());
     }
 
-    private void requireNonNegativeProcessedCount(StockBatchJob job, int processedCount) {
+    private void requireNonNegativeProcessedCount(BatchExecutionDescriptor execution, int processedCount) {
         if (processedCount < 0) {
             throw new IllegalStateException(
-                    "Stock batch job returned negative processed count: job=%s, processedCount=%d"
-                            .formatted(job.jobName(), processedCount)
+                    "Stock batch task returned negative processed count: job=%s, processedCount=%d"
+                            .formatted(execution.jobName(), processedCount)
             );
         }
     }
@@ -475,5 +399,11 @@ public class StockBatchJobRunner implements SmartLifecycle {
             thread.setDaemon(true);
             return thread;
         };
+    }
+
+    @FunctionalInterface
+    private interface ExecutionSupplier {
+
+        StockBatchJobRunResponse run();
     }
 }

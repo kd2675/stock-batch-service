@@ -168,7 +168,7 @@ class AutoParticipantCashFlowSchedulerTest {
 
         portfolioSettlementScheduler.settlePortfolios();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
         verify(stockBatchJobLauncher, never()).settlePortfolios();
     }
 
@@ -181,7 +181,7 @@ class AutoParticipantCashFlowSchedulerTest {
 
         portfolioSettlementScheduler.rolloverClosingPrices();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
         verify(stockBatchJobLauncher, never()).settlePortfolios();
     }
 
@@ -197,7 +197,7 @@ class AutoParticipantCashFlowSchedulerTest {
         portfolioSettlementScheduler.settlePortfolios();
 
         verify(stockBatchJobLauncher, never()).rolloverClosingPrices();
-        verify(stockBatchJobLauncher).settlePortfolios();
+        verify(stockBatchJobLauncher).settlePortfoliosScheduled();
     }
 
     @Test
@@ -211,7 +211,7 @@ class AutoParticipantCashFlowSchedulerTest {
 
         portfolioSettlementScheduler.settlePortfolios();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
         verify(stockBatchJobLauncher, never()).settlePortfolios();
     }
 
@@ -254,9 +254,9 @@ class AutoParticipantCashFlowSchedulerTest {
         when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(LocalDate.of(2026, 7, 1))
                 .thenReturn(LocalDate.of(2026, 7, 1));
-        when(stockBatchJobLauncher.rolloverClosingPrices())
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
-        when(stockBatchJobLauncher.settlePortfolios())
+        when(stockBatchJobLauncher.settlePortfoliosScheduled())
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(LocalDate.of(2026, 7, 1)))
                 .thenReturn(false, true);
@@ -266,8 +266,8 @@ class AutoParticipantCashFlowSchedulerTest {
         portfolioSettlementScheduler.rolloverSimulationDayIfNeeded();
         portfolioSettlementScheduler.rolloverSimulationDayIfNeeded();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
-        verify(stockBatchJobLauncher).settlePortfolios();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
+        verify(stockBatchJobLauncher).settlePortfoliosScheduled();
     }
 
     @Test
@@ -280,10 +280,10 @@ class AutoParticipantCashFlowSchedulerTest {
                 .thenReturn(LocalDate.of(2026, 7, 1))
                 .thenReturn(LocalDate.of(2026, 7, 1))
                 .thenReturn(LocalDate.of(2026, 7, 1));
-        when(stockBatchJobLauncher.rolloverClosingPrices())
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME))
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
-        when(stockBatchJobLauncher.settlePortfolios())
+        when(stockBatchJobLauncher.settlePortfoliosScheduled())
                 .thenReturn(failedResponse(PortfolioSettlementJob.JOB_NAME))
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(LocalDate.of(2026, 7, 1)))
@@ -295,8 +295,8 @@ class AutoParticipantCashFlowSchedulerTest {
         portfolioSettlementScheduler.rolloverSimulationDayIfNeeded();
         portfolioSettlementScheduler.rolloverSimulationDayIfNeeded();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
-        verify(stockBatchJobLauncher, times(2)).settlePortfolios();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
+        verify(stockBatchJobLauncher, times(2)).settlePortfoliosScheduled();
     }
 
     private AutoParticipantCashFlowScheduler createAutoParticipantCashFlowScheduler() {

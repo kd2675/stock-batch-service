@@ -49,12 +49,12 @@ class BatchJobSignalProcessorTest {
                 now
         );
         when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
-        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
+        when(stockBatchJobLauncher.fundAutoParticipantsManually(10L)).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 
         assertThat(processedCount).isEqualTo(1);
-        verify(stockBatchJobLauncher).fundAutoParticipantsManually();
+        verify(stockBatchJobLauncher).fundAutoParticipantsManually(10L);
         verify(signalWriter).complete(10L, response);
     }
 
@@ -80,12 +80,12 @@ class BatchJobSignalProcessorTest {
                 now
         );
         when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
-        when(stockBatchJobLauncher.cancelOpenOrderBookOrders("DEMO001")).thenReturn(response);
+        when(stockBatchJobLauncher.cancelOpenOrderBookOrders("DEMO001", 10L)).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 
         assertThat(processedCount).isEqualTo(1);
-        verify(stockBatchJobLauncher).cancelOpenOrderBookOrders("DEMO001");
+        verify(stockBatchJobLauncher).cancelOpenOrderBookOrders("DEMO001", 10L);
         verify(signalWriter).complete(10L, response);
     }
 
@@ -111,7 +111,7 @@ class BatchJobSignalProcessorTest {
                 now
         );
         when(signalReader.claimNext()).thenReturn(Optional.of(signal));
-        when(stockBatchJobLauncher.rolloverClosingPrices()).thenReturn(response);
+        when(stockBatchJobLauncher.rolloverClosingPrices(10L)).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 
@@ -134,7 +134,38 @@ class BatchJobSignalProcessorTest {
         );
         StockBatchJobRunResponse response = StockBatchJobRunResponses.manualCashFlowAutoEnabled(now);
         when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
-        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
+        when(stockBatchJobLauncher.fundAutoParticipantsManually(10L)).thenReturn(response);
+
+        int processedCount = processor.processPendingSignals(20);
+
+        assertThat(processedCount).isEqualTo(1);
+        verify(signalWriter).complete(10L, response);
+        verify(signalWriter, never()).defer(10L, response);
+    }
+
+    @Test
+    void processPendingSignals_jobInstanceAlreadyComplete_completesIdempotentSignal() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 11, 0);
+        BatchJobSignal signal = new BatchJobSignal(
+                10L,
+                "MARKET_CLOSE_ROLLOVER_RUN",
+                "market-close-rollover",
+                "price-limit-base",
+                null,
+                "admin",
+                now
+        );
+        StockBatchJobRunResponse response = new StockBatchJobRunResponse(
+                "market-close-rollover",
+                "SKIPPED",
+                "price-limit-base",
+                0,
+                StockBatchJobRunResponses.ALREADY_COMPLETE_MESSAGE,
+                now,
+                now
+        );
+        when(signalReader.claimNext()).thenReturn(Optional.of(signal)).thenReturn(Optional.empty());
+        when(stockBatchJobLauncher.rolloverClosingPrices(10L)).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 
@@ -157,7 +188,7 @@ class BatchJobSignalProcessorTest {
         );
         StockBatchJobRunResponse response = StockBatchJobRunResponses.manualCashFlowBeforeMarketClose(now);
         when(signalReader.claimNext()).thenReturn(Optional.of(signal));
-        when(stockBatchJobLauncher.fundAutoParticipantsManually()).thenReturn(response);
+        when(stockBatchJobLauncher.fundAutoParticipantsManually(10L)).thenReturn(response);
 
         int processedCount = processor.processPendingSignals(20);
 

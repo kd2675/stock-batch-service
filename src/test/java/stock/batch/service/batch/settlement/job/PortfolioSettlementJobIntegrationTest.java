@@ -1,34 +1,56 @@
-package stock.batch.service.settlement.biz;
+package stock.batch.service.batch.settlement.job;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
+import javax.sql.DataSource;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.batch.test.JobRepositoryTestUtils;
+import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import stock.batch.service.batch.common.support.StockBatchJobLauncher;
+import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
+@SpringBatchTest
+@SpringBootTest(properties = "stock.batch.settlement.chunk-size=2")
 @ActiveProfiles("test")
-class PortfolioSettlementServiceTest {
+class PortfolioSettlementJobIntegrationTest {
 
     private static final LocalDate TEST_SIMULATION_DATE = LocalDate.of(2026, 7, 1);
     private static final LocalDateTime TEST_SETTLEMENT_AT = LocalDateTime.of(2026, 7, 1, 18, 30);
     private static final long POST_CLOSE_ACCUMULATED_REAL_SECONDS = 5_550L;
 
     @Autowired
-    private PortfolioSettlementService portfolioSettlementService;
+    private StockBatchJobLauncher stockBatchJobLauncher;
+
+    @Autowired
+    private JobRepositoryTestUtils jobRepositoryTestUtils;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    private final JdbcTemplate batchMetadataJdbcTemplate;
+
+    @Autowired
+    PortfolioSettlementJobIntegrationTest(
+            @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_DATA_SOURCE) DataSource batchMetadataDataSource
+    ) {
+        this.batchMetadataJdbcTemplate = new JdbcTemplate(batchMetadataDataSource);
+    }
+
     @BeforeEach
     void setUp() {
+        jobRepositoryTestUtils.removeJobExecutions();
         jdbcTemplate.update("delete from portfolio_snapshot");
         jdbcTemplate.update("delete from stock_corporate_action_entitlement");
         jdbcTemplate.update("delete from stock_corporate_action");
@@ -49,7 +71,7 @@ class PortfolioSettlementServiceTest {
         insertPrice("005930", "70000.00");
         insertHolding("ranker", "005930", 2, "50000.00");
 
-        int settledCount = portfolioSettlementService.settleToday();
+        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
 
         assertThat(settledCount).isEqualTo(1);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
@@ -63,14 +85,40 @@ class PortfolioSettlementServiceTest {
     }
 
     @Test
+    void settleToday_multiplePages_recordsRealChunkCommitCount() {
+        for (int index = 1; index <= 5; index++) {
+            insertAccount("paged-ranker-" + index, "100000.00", "100000.00");
+        }
+
+        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
+
+        Long commitCount = batchMetadataJdbcTemplate.queryForObject(
+                """
+                select se.COMMIT_COUNT
+                  from BATCH_STEP_EXECUTION se
+                  join BATCH_JOB_EXECUTION je on je.JOB_EXECUTION_ID = se.JOB_EXECUTION_ID
+                  join BATCH_JOB_INSTANCE ji on ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+                 where ji.JOB_NAME = ?
+                   and se.STEP_NAME = ?
+                 order by se.STEP_EXECUTION_ID desc
+                 fetch first 1 row only
+                """,
+                Long.class,
+                PortfolioSettlementJob.JOB_NAME,
+                PortfolioSettlementJob.STEP_NAME
+        );
+        assertThat(settledCount + ":" + commitCount).isEqualTo("5:3");
+    }
+
+    @Test
     void settleToday_existingSnapshot_updatesSameDateRow() {
         insertAccount("ranker", "100000.00", "200000.00");
         insertPrice("005930", "70000.00");
         insertHolding("ranker", "005930", 2, "50000.00");
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfoliosForce(1L);
 
         jdbcTemplate.update("update stock_price set current_price = 80000.00 where symbol = '005930'");
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfoliosForce(2L);
 
         assertThat(queryLong("select count(*) from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualTo(1L);
@@ -84,10 +132,10 @@ class PortfolioSettlementServiceTest {
         insertPrice("005930", "70000.00");
         insertHolding("catch-up-ranker", "005930", 2, "50000.00");
 
-        int settledCount = portfolioSettlementService.settle(
+        int settledCount = stockBatchJobLauncher.settlePortfolios(
                 LocalDate.of(2026, 7, 3),
                 LocalDateTime.of(2026, 7, 3, 18, 0)
-        );
+        ).processedCount();
 
         assertThat(settledCount).isEqualTo(1);
         assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'catch-up-ranker'"))
@@ -99,7 +147,7 @@ class PortfolioSettlementServiceTest {
         insertAccount("buyer", "9860000.00", "10000000.00");
         insertPendingBuyOrder("buyer-order", "buyer", "005930", "140000.00");
 
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfolios();
 
         assertThat(queryDecimal("select ps.cash_balance from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(new BigDecimal("9860000.00"));
@@ -114,7 +162,7 @@ class PortfolioSettlementServiceTest {
         insertAccount("order-book-user", "100000.00", "200000.00");
         insertHolding("order-book-user", "123456", 2, "50000.00");
 
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfolios();
 
         assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'order-book-user'"))
                 .isEqualByComparingTo(new BigDecimal("100000.00"));
@@ -131,7 +179,7 @@ class PortfolioSettlementServiceTest {
         insertPrice("005930", "70000.00");
         insertHolding("dividend-user", "005930", 2, "50000.00");
 
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfolios();
 
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'dividend-user'"))
                 .isEqualByComparingTo(new BigDecimal("250000.00"));
@@ -150,7 +198,7 @@ class PortfolioSettlementServiceTest {
                 "2000000.00"
         );
 
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfoliosForce(1L);
         String beforeListing = snapshotTotalAndReturn("capital-settlement-user");
 
         jdbcTemplate.update(
@@ -160,7 +208,7 @@ class PortfolioSettlementServiceTest {
         );
         insertPrice("ZQ036", "50000.00");
         insertHolding("capital-settlement-user", "ZQ036", 40L, "50000.00");
-        portfolioSettlementService.settleToday();
+        stockBatchJobLauncher.settlePortfoliosForce(2L);
 
         assertThat(beforeListing + "|" + snapshotTotalAndReturn("capital-settlement-user"))
                 .isEqualTo("10000000.00:0.0000|10000000.00:0.0000");
@@ -170,7 +218,7 @@ class PortfolioSettlementServiceTest {
     void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
         insertAccount("stock-listing-zq001", "1.00", "1.00");
 
-        int settledCount = portfolioSettlementService.settleToday();
+        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
 
         assertThat(settledCount).isZero();
         assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
@@ -183,7 +231,7 @@ class PortfolioSettlementServiceTest {
         insertAccount("not-closed-ranker", "100000.00", "200000.00");
 
         // when
-        int settledCount = portfolioSettlementService.settleToday();
+        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
 
         // then
         assertThat(settledCount).isZero();

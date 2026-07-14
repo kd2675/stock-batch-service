@@ -1,42 +1,36 @@
 package stock.batch.service.batch.common.support;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.mockito.ArgumentCaptor;
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.parameters.JobParameters;
+import web.common.core.simulation.SimulationMarketSession;
+
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowRuntimeControl;
-import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
-import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
-import stock.batch.service.automarket.biz.AutoMarketService;
-import stock.batch.service.automarket.biz.AutoMarketOrderExpiryJobService;
-import stock.batch.service.automarket.biz.AutoMarketProfileQueueReconcileService;
-import stock.batch.service.automarket.biz.ListingAutoMarketJobService;
-import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
+import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
-import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
-import stock.batch.service.corporateaction.biz.CorporateActionService;
-import stock.batch.service.execution.biz.InternalOrderBookExecutionService;
-import stock.batch.service.holdingcleanup.biz.HoldingCleanupService;
-import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
-import stock.batch.service.marketdata.biz.MarketDataRefreshService;
-import stock.batch.service.settlement.biz.PortfolioSettlementService;
+import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
-import stock.batch.service.testsupport.BatchTestDatabaseFactory;
-
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,289 +38,170 @@ import static org.mockito.Mockito.when;
 
 class StockBatchJobLauncherTest {
 
-    private final MarketDataRefreshService marketDataRefreshService = mock(MarketDataRefreshService.class);
-    private final InternalOrderBookExecutionService internalOrderBookExecutionService = mock(InternalOrderBookExecutionService.class);
-    private final PortfolioSettlementService portfolioSettlementService = mock(PortfolioSettlementService.class);
-    private final AutoParticipantCashFlowService autoParticipantCashFlowService = mock(AutoParticipantCashFlowService.class);
-    private final AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService =
-            mock(AutoMarketDailyRegimePreCreateService.class);
-    private final AutoMarketProfileQueueReconcileService autoMarketProfileQueueReconcileService =
-            mock(AutoMarketProfileQueueReconcileService.class);
-    private final AutoMarketService autoMarketService = mock(AutoMarketService.class);
-    private final AutoMarketOrderExpiryJobService autoMarketOrderExpiryJobService = mock(AutoMarketOrderExpiryJobService.class);
-    private final ListingAutoMarketJobService listingAutoMarketJobService = mock(ListingAutoMarketJobService.class);
-    private final CorporateActionService corporateActionService = mock(CorporateActionService.class);
-    private final MarketCloseRolloverService marketCloseRolloverService = mock(MarketCloseRolloverService.class);
-    private final HoldingCleanupService holdingCleanupService = mock(HoldingCleanupService.class);
-    private final StockBatchJobExecutionRecord executionRecord = mock(StockBatchJobExecutionRecord.class);
-    private final StockBatchJobRepositoryRecorder stockBatchJobRepositoryRecorder = mock(StockBatchJobRepositoryRecorder.class);
-    private final AutoParticipantCashFlowRuntimeControl autoParticipantCashFlowRuntimeControl =
+    private static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 7, 14);
+    private static final LocalDateTime SIMULATION_NOW = LocalDateTime.of(2026, 7, 14, 19, 7, 42);
+
+    private final StockBatchJobRunner runner = mock(StockBatchJobRunner.class);
+    private final AutoParticipantCashFlowRuntimeControl cashFlowRuntimeControl =
             mock(AutoParticipantCashFlowRuntimeControl.class);
-    private final SimulationMarketSessionService simulationMarketSessionService =
-            mock(SimulationMarketSessionService.class);
+    private final SimulationClockService simulationClockService = mock(SimulationClockService.class);
+    private final SimulationMarketSessionService sessionService = mock(SimulationMarketSessionService.class);
+    private final MarketDataRefreshJob marketDataRefreshTask = mock(MarketDataRefreshJob.class);
+    private final OrderBookExecutionJob orderBookExecutionTask = mock(OrderBookExecutionJob.class);
+    private final AutoMarketProfileQueueReconcileJob reconcileTask = mock(AutoMarketProfileQueueReconcileJob.class);
+    private final AutoMarketJob autoMarketTask = mock(AutoMarketJob.class);
+    private final AutoMarketOrderExpiryJob expiryTask = mock(AutoMarketOrderExpiryJob.class);
+    private final ListingAutoMarketJob listingTask = mock(ListingAutoMarketJob.class);
+    private final HoldingCleanupJob holdingCleanupTask = mock(HoldingCleanupJob.class);
+    private final Job cashFlowJob = job(AutoParticipantCashFlowJob.JOB_NAME);
+    private final Job dailyRegimeJob = job(AutoMarketDailyRegimePreCreateJob.JOB_NAME);
+    private final Job settlementJob = job(PortfolioSettlementJob.JOB_NAME);
+    private final Job marketCloseJob = job(MarketCloseRolloverJob.JOB_NAME);
+    private final Job corporateActionJob = job(CorporateActionJob.JOB_NAME);
 
-    private final StockBatchJobLauncher stockBatchJobLauncher = new StockBatchJobLauncher(
-            new StockBatchJobRunner(createBatchJobLockRegistry("launcher-default"), stockBatchJobRepositoryRecorder),
-            autoParticipantCashFlowRuntimeControl,
-            simulationMarketSessionService,
-            new MarketDataRefreshJob(marketDataRefreshService),
-            new OrderBookExecutionJob(internalOrderBookExecutionService),
-            new AutoParticipantCashFlowJob(autoParticipantCashFlowService),
-            new AutoMarketDailyRegimePreCreateJob(autoMarketDailyRegimePreCreateService),
-            new AutoMarketProfileQueueReconcileJob(autoMarketProfileQueueReconcileService),
-            new AutoMarketJob(autoMarketService),
-            new AutoMarketOrderExpiryJob(autoMarketOrderExpiryJobService),
-            new ListingAutoMarketJob(listingAutoMarketJobService),
-            new PortfolioSettlementJob(portfolioSettlementService),
-            new MarketCloseRolloverJob(marketCloseRolloverService),
-            new CorporateActionJob(corporateActionService),
-            new HoldingCleanupJob(holdingCleanupService)
-    );
+    private StockBatchJobLauncher launcher;
 
-    StockBatchJobLauncherTest() {
-        when(stockBatchJobRepositoryRecorder.start(any(), any())).thenReturn(executionRecord);
-        when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(true);
-        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(true);
+    @BeforeEach
+    void setUp() {
+        when(simulationClockService.currentDate()).thenReturn(BUSINESS_DATE);
+        when(simulationClockService.currentMarketDateTime()).thenReturn(SIMULATION_NOW);
+        when(sessionService.closeTime()).thenReturn(LocalTime.of(18, 0));
+        when(sessionService.currentSession()).thenReturn(SimulationMarketSession.AFTER_CLOSE);
+        when(sessionService.isAfterCloseSession()).thenReturn(true);
+        when(cashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(true);
+        launcher = new StockBatchJobLauncher(
+                runner,
+                cashFlowRuntimeControl,
+                simulationClockService,
+                sessionService,
+                marketDataRefreshTask,
+                orderBookExecutionTask,
+                reconcileTask,
+                autoMarketTask,
+                expiryTask,
+                listingTask,
+                holdingCleanupTask,
+                cashFlowJob,
+                dailyRegimeJob,
+                settlementJob,
+                marketCloseJob,
+                corporateActionJob
+        );
     }
 
     @Test
-    void executeOrderBookOrders_usesOrderBookExecution() {
-        when(internalOrderBookExecutionService.executeEligibleOrders()).thenReturn(2);
+    void lightweightMethods_routeWithoutNativeJobMetadata() {
+        launcher.refreshMarketData();
+        launcher.executeOrderBookOrders();
+        launcher.reconcileAutoMarketProfileQueue();
+        launcher.runAutoMarket();
+        launcher.expireAutoMarketOrders();
+        launcher.runListingAutoMarket();
+        launcher.cleanupEmptyHoldings();
 
-        var response = stockBatchJobLauncher.executeOrderBookOrders();
-
-        assertThat(response.job()).isEqualTo("order-book-execution");
-        assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(2);
-        verify(internalOrderBookExecutionService).executeEligibleOrders();
+        verify(runner).run(marketDataRefreshTask);
+        verify(runner).run(orderBookExecutionTask);
+        verify(runner).run(reconcileTask);
+        verify(runner).run(autoMarketTask);
+        verify(runner).run(expiryTask);
+        verify(runner).run(listingTask);
+        verify(runner).run(holdingCleanupTask);
     }
 
     @Test
-    void refreshMarketData_manualRun_invokesMarketDataRefresh() {
-        when(marketDataRefreshService.refreshWatchedPrices()).thenReturn(5);
+    void preCreateDailyRegime_usesOneJobInstancePerBusinessDate() {
+        launcher.preCreateAutoMarketDailyRegimes();
 
-        var response = stockBatchJobLauncher.refreshMarketData();
-
-        assertThat(response.job()).isEqualTo("market-data-refresh");
-        assertThat(response.processedCount()).isEqualTo(5);
-        verify(marketDataRefreshService).refreshWatchedPrices();
+        JobParameters parameters = captureParameters(dailyRegimeJob, "daily-regime");
+        assertThat(parameters.getLocalDate(StockBatchJobParameters.BUSINESS_DATE)).isEqualTo(BUSINESS_DATE);
+        assertThat(parameters.getParameter(StockBatchJobParameters.BUSINESS_DATE).identifying()).isTrue();
+        assertThat(parameters.getParameter(StockBatchJobParameters.TRIGGERED_AT).identifying()).isFalse();
+        assertThat(parameters.getParameter("runId")).isNull();
     }
 
     @Test
-    void settlePortfolios_manualRun_invokesPortfolioSettlement() {
-        when(portfolioSettlementService.settleToday()).thenReturn(4);
+    void scheduledCashFlow_usesSimulationMinuteAsRestartableWindow() {
+        launcher.fundAutoParticipants();
 
-        var response = stockBatchJobLauncher.settlePortfolios();
-
-        assertThat(response.job()).isEqualTo("portfolio-settlement");
-        assertThat(response.processedCount()).isEqualTo(4);
-        verify(portfolioSettlementService).settleToday();
+        JobParameters parameters = captureParameters(cashFlowJob, "recurring-cash");
+        assertThat(parameters.getString(StockBatchJobParameters.OPERATION))
+                .isEqualTo(AutoParticipantCashFlowJob.OPERATION_SCHEDULED);
+        assertThat(parameters.getLocalDateTime(StockBatchJobParameters.SWEEP_AT))
+                .isEqualTo(LocalDateTime.of(2026, 7, 14, 19, 7));
+        assertThat(parameters.getParameter(StockBatchJobParameters.SWEEP_AT).identifying()).isTrue();
     }
 
     @Test
-    void settlePortfolios_snapshotDateRun_invokesPortfolioSettlementForDate() {
-        LocalDate snapshotDate = LocalDate.of(2026, 7, 3);
-        LocalDateTime snapshotAt = LocalDateTime.of(2026, 7, 3, 18, 0);
-        when(portfolioSettlementService.settle(snapshotDate, snapshotAt)).thenReturn(4);
+    void manualCashFlowSignal_usesRealSignalIdAsIdentifyingParameter() {
+        launcher.fundAutoParticipantsManually(41L);
 
-        var response = stockBatchJobLauncher.settlePortfolios(snapshotDate, snapshotAt);
-
-        assertThat(response.job()).isEqualTo("portfolio-settlement");
-        assertThat(response.executionMode()).isEqualTo("snapshot-date:2026-07-03");
-        assertThat(response.processedCount()).isEqualTo(4);
-        verify(portfolioSettlementService).settle(snapshotDate, snapshotAt);
+        JobParameters parameters = captureParameters(cashFlowJob, "manual-recurring-cash");
+        assertThat(parameters.getLong(StockBatchJobParameters.SIGNAL_ID)).isEqualTo(41L);
+        assertThat(parameters.getParameter(StockBatchJobParameters.SIGNAL_ID).identifying()).isTrue();
+        assertThat(parameters.getString(StockBatchJobParameters.REQUEST_ID)).isEqualTo("db-signal:41");
+        assertThat(parameters.getParameter(StockBatchJobParameters.REQUEST_ID).identifying()).isFalse();
     }
 
     @Test
-    void rolloverClosingPrices_manualRun_invokesMarketCloseRollover() {
-        when(marketCloseRolloverService.rolloverClosingPrices()).thenReturn(2);
+    void manualCashFlow_whenAutomaticEnabled_skipsBeforeCreatingMetadata() {
+        when(cashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(false);
 
-        var response = stockBatchJobLauncher.rolloverClosingPrices();
-
-        assertThat(response.job()).isEqualTo("market-close-rollover");
-        assertThat(response.executionMode()).isEqualTo("price-limit-base");
-        assertThat(response.processedCount()).isEqualTo(2);
-        verify(marketCloseRolloverService).rolloverClosingPrices();
-    }
-
-    @Test
-    void rolloverClosingPrices_symbolManualRun_invokesMarketCloseRolloverForSymbol() {
-        when(marketCloseRolloverService.rolloverClosingPrices("MC001")).thenReturn(4);
-
-        var response = stockBatchJobLauncher.rolloverClosingPrices("MC001");
-
-        assertThat(response.job()).isEqualTo("market-close-rollover");
-        assertThat(response.executionMode()).isEqualTo("price-limit-base:MC001");
-        assertThat(response.processedCount()).isEqualTo(4);
-        verify(marketCloseRolloverService).rolloverClosingPrices("MC001");
-    }
-
-    @Test
-    void cancelOpenOrderBookOrders_symbolManualRun_invokesOpenOrderCancellationForSymbol() {
-        when(marketCloseRolloverService.cancelOpenOrderBookOrders("MC001")).thenReturn(2);
-
-        var response = stockBatchJobLauncher.cancelOpenOrderBookOrders("MC001");
-
-        assertThat(response.job()).isEqualTo("market-close-rollover");
-        assertThat(response.executionMode()).isEqualTo("halt-open-order-cancel:MC001");
-        assertThat(response.processedCount()).isEqualTo(2);
-        verify(marketCloseRolloverService).cancelOpenOrderBookOrders("MC001");
-    }
-
-    @Test
-    void applyCorporateActions_manualRun_invokesCorporateActionService() {
-        when(corporateActionService.applyDueCorporateActions()).thenReturn(3);
-
-        var response = stockBatchJobLauncher.applyCorporateActions();
-
-        assertThat(response.job()).isEqualTo("corporate-actions");
-        assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(3);
-        verify(corporateActionService).applyDueCorporateActions();
-    }
-
-    @Test
-    void cleanupEmptyHoldings_manualRun_invokesHoldingCleanup() {
-        when(holdingCleanupService.cleanupEmptyHoldings()).thenReturn(9);
-
-        var response = stockBatchJobLauncher.cleanupEmptyHoldings();
-
-        assertThat(response.job()).isEqualTo("holding-cleanup");
-        assertThat(response.executionMode()).isEqualTo("maintenance");
-        assertThat(response.processedCount()).isEqualTo(9);
-        verify(holdingCleanupService).cleanupEmptyHoldings();
-    }
-
-    @Test
-    void fundAutoParticipants_manualRun_invokesAutoParticipantCashFlow() {
-        when(autoParticipantCashFlowService.fundRecurringCash()).thenReturn(6);
-
-        var response = stockBatchJobLauncher.fundAutoParticipants();
-
-        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
-        assertThat(response.executionMode()).isEqualTo("recurring-cash");
-        assertThat(response.processedCount()).isEqualTo(6);
-        verify(autoParticipantCashFlowService).fundRecurringCash();
-        verify(autoMarketService, never()).runAutoMarketStep();
-        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
-    }
-
-    @Test
-    void fundAutoParticipantsManually_manualRun_invokesManualCashFlow() {
-        when(autoParticipantCashFlowService.fundRecurringCashManually()).thenReturn(6);
-
-        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
-
-        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
-        assertThat(response.executionMode()).isEqualTo("manual-recurring-cash");
-        assertThat(response.processedCount()).isEqualTo(6);
-        verify(autoParticipantCashFlowService).fundRecurringCashManually();
-        verify(autoParticipantCashFlowService, never()).fundRecurringCash();
-        verify(autoMarketService, never()).runAutoMarketStep();
-        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
-    }
-
-    @Test
-    void fundAutoParticipantsManually_automaticCashFlowEnabled_skipsManualRun() {
-        when(autoParticipantCashFlowRuntimeControl.canRunManualCashFlow()).thenReturn(false);
-
-        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
-
-        assertThat(response.job()).isEqualTo("auto-participant-cash-flow");
-        assertThat(response.executionMode()).isEqualTo("manual-recurring-cash");
-        assertThat(response.status()).isEqualTo("SKIPPED");
-        assertThat(response.message()).isEqualTo(StockBatchJobRunResponses.MANUAL_CASH_FLOW_AUTO_ENABLED_MESSAGE);
-        verify(autoParticipantCashFlowService, never()).fundRecurringCashManually();
-    }
-
-    @Test
-    void fundAutoParticipantsManually_beforeMarketClose_defersManualRun() {
-        when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
-
-        var response = stockBatchJobLauncher.fundAutoParticipantsManually();
+        StockBatchJobRunResponse response = launcher.fundAutoParticipantsManually(41L);
 
         assertThat(response.status()).isEqualTo("SKIPPED");
-        assertThat(response.message()).isEqualTo(StockBatchJobRunResponses.MANUAL_CASH_FLOW_BEFORE_MARKET_CLOSE_MESSAGE);
-        verify(autoParticipantCashFlowService, never()).fundRecurringCashManually();
+        verify(runner, never()).run(eq(cashFlowJob), any(), any());
     }
 
     @Test
-    void runAutoMarket_generatesOrdersWithoutInlineExecution() {
-        when(autoMarketService.runAutoMarketStep()).thenReturn(7);
+    void manualCashFlow_beforeClose_skipsBeforeCreatingMetadata() {
+        when(sessionService.isAfterCloseSession()).thenReturn(false);
 
-        var response = stockBatchJobLauncher.runAutoMarket();
+        StockBatchJobRunResponse response = launcher.fundAutoParticipantsManually(41L);
 
-        assertThat(response.job()).isEqualTo("auto-market");
-        assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(7);
-        verify(autoMarketService).runAutoMarketStep();
-        verify(autoMarketOrderExpiryJobService, never()).expireAutoMarketOrders();
-        verify(listingAutoMarketJobService, never()).runListingAutoMarket();
-        verify(internalOrderBookExecutionService, never()).executeEligibleOrders();
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        verify(runner, never()).run(eq(cashFlowJob), any(), any());
     }
 
     @Test
-    void preCreateAutoMarketDailyRegimes_manualRun_invokesDailyRegimePreCreateJob() {
-        when(autoMarketDailyRegimePreCreateService.preCreateDailyRegimes()).thenReturn(3);
+    void marketCloseSignal_carriesScopeSymbolAndSignalIdentity() {
+        launcher.rolloverClosingPrices(" demo002 ", 77L);
 
-        var response = stockBatchJobLauncher.preCreateAutoMarketDailyRegimes();
-
-        assertThat(response.job()).isEqualTo("auto-market-daily-regime-pre-create");
-        assertThat(response.executionMode()).isEqualTo("daily-regime");
-        assertThat(response.processedCount()).isEqualTo(3);
-        verify(autoMarketDailyRegimePreCreateService).preCreateDailyRegimes();
-        verify(autoMarketService, never()).runAutoMarketStep();
+        JobParameters parameters = captureParameters(marketCloseJob, "price-limit-base:symbol");
+        assertThat(parameters.getString(StockBatchJobParameters.SYMBOL)).isEqualTo("DEMO002");
+        assertThat(parameters.getLong(StockBatchJobParameters.SIGNAL_ID)).isEqualTo(77L);
+        assertThat(parameters.getString(StockBatchJobParameters.OPERATION))
+                .isEqualTo(MarketCloseRolloverJob.OPERATION_SYMBOL);
     }
 
     @Test
-    void expireAutoMarketOrders_manualRun_invokesExpiryJob() {
-        when(autoMarketOrderExpiryJobService.expireAutoMarketOrders()).thenReturn(4);
+    void settlement_usesDeterministicClosingSnapshotTime() {
+        launcher.settlePortfolios();
 
-        var response = stockBatchJobLauncher.expireAutoMarketOrders();
-
-        assertThat(response.job()).isEqualTo("auto-market-order-expiry");
-        assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(4);
-        verify(autoMarketOrderExpiryJobService).expireAutoMarketOrders();
-        verify(autoMarketService, never()).runAutoMarketStep();
+        JobParameters parameters = captureParameters(settlementJob, "portfolio-snapshot");
+        assertThat(parameters.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT))
+                .isEqualTo(LocalDateTime.of(2026, 7, 14, 18, 0));
+        assertThat(parameters.getString(StockBatchJobParameters.ENFORCE_CLOSE)).isEqualTo("true");
     }
 
     @Test
-    void runListingAutoMarket_manualRun_invokesListingAutoMarketJob() {
-        when(listingAutoMarketJobService.runListingAutoMarket()).thenReturn(5);
+    void corporateActionScheduled_usesMinuteSweepAndSessionIdentity() {
+        launcher.applyCorporateActionsScheduled();
 
-        var response = stockBatchJobLauncher.runListingAutoMarket();
-
-        assertThat(response.job()).isEqualTo("listing-auto-market");
-        assertThat(response.executionMode()).isEqualTo("order-book");
-        assertThat(response.processedCount()).isEqualTo(5);
-        verify(listingAutoMarketJobService).runListingAutoMarket();
-        verify(autoMarketService, never()).runAutoMarketStep();
+        JobParameters parameters = captureParameters(corporateActionJob, "order-book");
+        assertThat(parameters.getString(StockBatchJobParameters.SESSION)).isEqualTo("AFTER_CLOSE");
+        assertThat(parameters.getLocalDateTime(StockBatchJobParameters.SWEEP_AT))
+                .isEqualTo(LocalDateTime.of(2026, 7, 14, 19, 7));
     }
 
-    @Test
-    void refreshMarketData_actionThrows_returnsFailedResponse() {
-        doThrow(new IllegalStateException("provider unavailable"))
-                .when(marketDataRefreshService)
-                .refreshWatchedPrices();
-
-        var response = stockBatchJobLauncher.refreshMarketData();
-
-        assertThat(response.job()).isEqualTo("market-data-refresh");
-        assertThat(response.status()).isEqualTo("FAILED");
-        assertThat(response.processedCount()).isZero();
-        assertThat(response.message()).contains("provider unavailable");
+    private JobParameters captureParameters(Job job, String mode) {
+        ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(runner).run(eq(job), eq(mode), captor.capture());
+        return captor.getValue();
     }
 
-    private BatchJobLockRegistry createBatchJobLockRegistry(String lockOwner) {
-        return createBatchJobLockRegistry(createJdbcTemplate(), lockOwner);
-    }
-
-    private BatchJobLockRegistry createBatchJobLockRegistry(JdbcTemplate jdbcTemplate, String lockOwner) {
-        return new BatchJobLockRegistry(jdbcTemplate, 1800, lockOwner);
-    }
-
-    private JdbcTemplate createJdbcTemplate() {
-        return BatchTestDatabaseFactory.createJobLockJdbcTemplate("stock_batch_job_launcher_test");
+    private static Job job(String name) {
+        Job job = mock(Job.class);
+        when(job.getName()).thenReturn(name);
+        return job;
     }
 }

@@ -5,81 +5,84 @@ import java.util.List;
 
 import javax.sql.DataSource;
 
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.util.StringUtils;
 
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 
-@Slf4j
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 1)
-public class StockBatchJobRepositoryRecovery implements ApplicationRunner {
+public class StockBatchStaleExecutionRecovery {
 
     static final String RECOVERY_EXIT_MESSAGE =
-            "Recovered stale STARTED execution after stock-batch-service restart";
+            "Recovered stale execution after acquiring the business job lock";
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
 
     @Autowired
-    public StockBatchJobRepositoryRecovery(
+    public StockBatchStaleExecutionRecovery(
             @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_DATA_SOURCE) DataSource dataSource,
             @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_TRANSACTION_MANAGER)
             PlatformTransactionManager transactionManager
     ) {
-        this.jdbcTemplate = new JdbcTemplate(dataSource);
-        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this(new JdbcTemplate(dataSource), transactionManager);
     }
 
-    StockBatchJobRepositoryRecovery(JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
+    StockBatchStaleExecutionRecovery(
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager
+    ) {
         this.jdbcTemplate = jdbcTemplate;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    @Override
-    public void run(ApplicationArguments args) {
-        int recoveredCount = recoverStaleExecutions(LocalDateTime.now());
-        if (recoveredCount > 0) {
-            log.warn("Recovered stale stock batch job executions: count={}", recoveredCount);
+    /**
+     * Recovers only executions for the native job whose business lock is already owned by the
+     * caller. This must not be invoked as a global startup sweep because another batch node may
+     * still own and execute a different job.
+     */
+    public int recover(String jobName, LocalDateTime recoveredAt) {
+        if (!StringUtils.hasText(jobName)) {
+            throw new IllegalArgumentException("jobName is required");
         }
-    }
-
-    int recoverStaleExecutions(LocalDateTime recoveredAt) {
-        return transactionTemplate.execute(status -> {
-            List<Long> jobExecutionIds = findStaleJobExecutionIds(recoveredAt);
-            for (Long jobExecutionId : jobExecutionIds) {
-                recoverOpenStepExecutions(jobExecutionId, recoveredAt);
-                recoverJobExecution(jobExecutionId, recoveredAt);
+        if (recoveredAt == null) {
+            throw new IllegalArgumentException("recoveredAt is required");
+        }
+        Integer recoveredCount = transactionTemplate.execute(status -> {
+            List<Long> executionIds = findStaleExecutionIds(jobName.trim(), recoveredAt);
+            for (Long executionId : executionIds) {
+                failOpenSteps(executionId, recoveredAt);
+                failOpenJobExecution(executionId, recoveredAt);
             }
-            return jobExecutionIds.size();
+            return executionIds.size();
         });
+        return recoveredCount == null ? 0 : recoveredCount;
     }
 
-    private List<Long> findStaleJobExecutionIds(LocalDateTime recoveredAt) {
+    private List<Long> findStaleExecutionIds(String jobName, LocalDateTime recoveredAt) {
         return jdbcTemplate.queryForList(
                 """
-                select JOB_EXECUTION_ID
-                  from BATCH_JOB_EXECUTION
-                 where STATUS in ('STARTING', 'STARTED')
-                   and END_TIME is null
-                   and coalesce(START_TIME, CREATE_TIME) < ?
-                 order by JOB_EXECUTION_ID asc
+                select je.JOB_EXECUTION_ID
+                  from BATCH_JOB_EXECUTION je
+                  join BATCH_JOB_INSTANCE ji on ji.JOB_INSTANCE_ID = je.JOB_INSTANCE_ID
+                 where ji.JOB_NAME = ?
+                   and je.STATUS in ('STARTING', 'STARTED', 'STOPPING')
+                   and je.END_TIME is null
+                   and coalesce(je.LAST_UPDATED, je.START_TIME, je.CREATE_TIME) < ?
+                 order by je.JOB_EXECUTION_ID asc
                 """,
                 Long.class,
+                jobName,
                 recoveredAt
         );
     }
 
-    private void recoverOpenStepExecutions(Long jobExecutionId, LocalDateTime recoveredAt) {
+    private void failOpenSteps(long jobExecutionId, LocalDateTime recoveredAt) {
         jdbcTemplate.update(
                 """
                 update BATCH_STEP_EXECUTION
@@ -90,7 +93,7 @@ public class StockBatchJobRepositoryRecovery implements ApplicationRunner {
                        END_TIME = ?,
                        LAST_UPDATED = ?
                  where JOB_EXECUTION_ID = ?
-                   and STATUS in ('STARTING', 'STARTED')
+                   and STATUS in ('STARTING', 'STARTED', 'STOPPING')
                    and END_TIME is null
                 """,
                 RECOVERY_EXIT_MESSAGE,
@@ -100,7 +103,7 @@ public class StockBatchJobRepositoryRecovery implements ApplicationRunner {
         );
     }
 
-    private void recoverJobExecution(Long jobExecutionId, LocalDateTime recoveredAt) {
+    private void failOpenJobExecution(long jobExecutionId, LocalDateTime recoveredAt) {
         jdbcTemplate.update(
                 """
                 update BATCH_JOB_EXECUTION
@@ -111,7 +114,7 @@ public class StockBatchJobRepositoryRecovery implements ApplicationRunner {
                        END_TIME = ?,
                        LAST_UPDATED = ?
                  where JOB_EXECUTION_ID = ?
-                   and STATUS in ('STARTING', 'STARTED')
+                   and STATUS in ('STARTING', 'STARTED', 'STOPPING')
                    and END_TIME is null
                 """,
                 RECOVERY_EXIT_MESSAGE,

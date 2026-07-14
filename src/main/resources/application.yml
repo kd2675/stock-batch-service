@@ -209,6 +209,7 @@ stock:
       poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:10000}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
+      chunk-size: ${STOCK_BATCH_SETTLEMENT_CHUNK_SIZE:200}
     holding-cleanup:
       enabled: ${STOCK_BATCH_HOLDING_CLEANUP_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_HOLDING_CLEANUP_INITIAL_DELAY_MS:45000}

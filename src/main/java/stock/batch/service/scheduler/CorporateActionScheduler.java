@@ -27,6 +27,10 @@ public class CorporateActionScheduler {
         if (simulationMarketSessionService.currentSession() == SimulationMarketSession.REGULAR) {
             return;
         }
-        scheduledJobGuard.runIfEnabled(CorporateActionJob.JOB_NAME, true, stockBatchJobLauncher::applyCorporateActions);
+        scheduledJobGuard.runIfEnabled(
+                CorporateActionJob.JOB_NAME,
+                true,
+                stockBatchJobLauncher::applyCorporateActionsScheduled
+        );
     }
 }

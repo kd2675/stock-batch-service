@@ -227,7 +227,7 @@ class SchedulerRuntimeControlBehaviorTest {
         assertSimpleSchedulerGate(
                 CorporateActionJob.JOB_NAME,
                 scheduler::applyCorporateActions,
-                () -> verify(stockBatchJobLauncher).applyCorporateActions()
+                () -> verify(stockBatchJobLauncher).applyCorporateActionsScheduled()
         );
     }
 
@@ -249,7 +249,7 @@ class SchedulerRuntimeControlBehaviorTest {
         assertSimpleSchedulerGate(
                 CorporateActionJob.JOB_NAME,
                 scheduler::applyCorporateActions,
-                () -> verify(stockBatchJobLauncher).applyCorporateActions()
+                () -> verify(stockBatchJobLauncher).applyCorporateActionsScheduled()
         );
     }
 
@@ -328,9 +328,9 @@ class SchedulerRuntimeControlBehaviorTest {
                 .thenReturn(true);
         when(batchJobRuntimeControl.shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true))
                 .thenReturn(true);
-        when(stockBatchJobLauncher.rolloverClosingPrices())
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
-        when(stockBatchJobLauncher.settlePortfolios())
+        when(stockBatchJobLauncher.settlePortfoliosScheduled())
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
                 .thenReturn(false, true);
@@ -341,8 +341,8 @@ class SchedulerRuntimeControlBehaviorTest {
 
         verify(batchJobRuntimeControl).shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true);
         verify(batchJobRuntimeControl).shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true);
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
-        verify(stockBatchJobLauncher).settlePortfolios();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
+        verify(stockBatchJobLauncher).settlePortfoliosScheduled();
     }
 
     @Test
@@ -382,9 +382,9 @@ class SchedulerRuntimeControlBehaviorTest {
                 .thenReturn(true);
         when(batchJobRuntimeControl.shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true))
                 .thenReturn(true);
-        when(stockBatchJobLauncher.rolloverClosingPrices())
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
-        when(stockBatchJobLauncher.settlePortfolios())
+        when(stockBatchJobLauncher.settlePortfoliosScheduled())
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
                 .thenReturn(false, true);
@@ -395,8 +395,8 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.rolloverSimulationDayIfNeeded();
 
         // then
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
-        verify(stockBatchJobLauncher).settlePortfolios();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
+        verify(stockBatchJobLauncher).settlePortfoliosScheduled();
     }
 
     @Test
@@ -413,14 +413,14 @@ class SchedulerRuntimeControlBehaviorTest {
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
                 .thenReturn(true);
-        when(stockBatchJobLauncher.rolloverClosingPrices())
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
                 .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME, 0));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
                 .thenReturn(false, false);
 
         scheduler.rolloverSimulationDayIfNeeded();
 
-        verify(stockBatchJobLauncher).rolloverClosingPrices();
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
         verify(stockBatchJobLauncher, never()).settlePortfolios();
     }
 

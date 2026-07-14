@@ -108,7 +108,7 @@ public class PortfolioSettlementScheduler {
             response = scheduledJobGuard.runBatchIfEnabled(
                     PortfolioSettlementJob.JOB_NAME,
                     settlementSchedulerConfigured,
-                    stockBatchJobLauncher::settlePortfolios
+                    stockBatchJobLauncher::settlePortfoliosScheduled
             );
         } else {
             response = scheduledJobGuard.runBatchIfEnabled(
@@ -157,7 +157,7 @@ public class PortfolioSettlementScheduler {
             response = scheduledJobGuard.runBatchIfEnabled(
                     MarketCloseRolloverJob.JOB_NAME,
                     marketCloseSchedulerConfigured,
-                    stockBatchJobLauncher::rolloverClosingPrices
+                    stockBatchJobLauncher::rolloverClosingPricesScheduled
             );
         } else {
             response = scheduledJobGuard.runBatchIfEnabled(

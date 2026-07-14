@@ -44,15 +44,23 @@ public class MarketCloseRolloverService {
     public int rolloverClosingPrices() {
         LocalDate simulationTradeDate = simulationClockService.currentDate();
         LocalDateTime closedAt = simulationClockService.currentMarketDateTime();
-        return rolloverClosingPrices(null, simulationTradeDate, closedAt);
+        return rolloverClosingPricesInternal(null, simulationTradeDate, closedAt);
     }
 
     public int rolloverClosingPrices(String symbol) {
-        return rolloverClosingPrices(symbol, simulationClockService.currentDate(), simulationClockService.currentMarketDateTime());
+        return rolloverClosingPricesInternal(
+                symbol,
+                simulationClockService.currentDate(),
+                simulationClockService.currentMarketDateTime()
+        );
+    }
+
+    public int rolloverClosingPrices(String symbol, LocalDate simulationTradeDate, LocalDateTime closedAt) {
+        return rolloverClosingPricesInternal(symbol, simulationTradeDate, closedAt);
     }
 
     public int rolloverClosingPrices(LocalDate simulationTradeDate, LocalDateTime closedAt) {
-        return rolloverClosingPrices(null, simulationTradeDate, closedAt);
+        return rolloverClosingPricesInternal(null, simulationTradeDate, closedAt);
     }
 
     public boolean hasCompletedFullCloseRun(LocalDate businessDate) {
@@ -62,7 +70,7 @@ public class MarketCloseRolloverService {
         return writer.hasCompletedFullCloseRun(businessDate);
     }
 
-    private int rolloverClosingPrices(String symbol, LocalDate simulationTradeDate, LocalDateTime closedAt) {
+    private int rolloverClosingPricesInternal(String symbol, LocalDate simulationTradeDate, LocalDateTime closedAt) {
         if (simulationTradeDate == null) {
             throw new IllegalArgumentException("simulationTradeDate is required");
         }

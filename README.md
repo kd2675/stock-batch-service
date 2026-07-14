@@ -99,7 +99,7 @@ scripts/stock-gateway-h2-smoke.sh
 - batch는 business DB용 `spring.datasource`와 Spring Batch metadata용 `stock.batch.repository.datasource`를 분리합니다. business 원장은 `STOCK_SERVICE`, `JobRepository` metadata는 `STOCK_BATCH_METADATA`를 사용합니다.
 - batch 운영 제어 상태와 수동 실행 요청은 물리적으로 분리된 서버 간에도 공유되도록 `STOCK_SERVICE`의 `stock_batch_job_control`, `stock_batch_job_lock`, `stock_batch_job_signal` 테이블을 기준으로 합니다.
 - `stock_batch_job_control`은 스케줄러 자동 실행 runtime ON/OFF 상태를 job별로 저장합니다. `runtime_enabled`는 stock-back/어드민이 바꾸는 운영 중지 값이고, `scheduler_configured`는 stock-batch가 실제 서버 설정값을 동기화한 값입니다. `stock_batch_job_lock`은 같은 job의 중복 실행을 DB 락으로 막습니다. `stock_batch_job_signal`은 stock-back이 적재한 수동 실행/후처리 요청을 batch가 폴링해 처리하는 비동기 신호 큐입니다.
-- 현재 custom scheduler job은 Spring Batch metadata를 고빈도 실행 이력 ledger로 사용합니다. `businessDate`, `jobMode`, `runId`를 identifying parameter로 기록해 같은 업무일/모드의 반복 실행도 서로 다른 `JobInstance`가 되게 합니다. 재시작 가능한 chunk job을 새로 만들 때는 `runId` 방식으로 우회하지 말고 해당 job의 restart contract를 별도로 설계합니다.
+- 업무 배치는 실제 Spring Batch `Job`/`Step`으로 실행합니다. `businessDate`, `jobMode`, 업무 범위(`symbol`, `operation`, `sweepAt`, `signalId` 등)를 stable identifying parameter로 사용하고 `triggeredAt`, `triggeredBy`, `requestId`는 non-identifying 추적값으로 둡니다. 임의 `runId`로 매 실행을 새 `JobInstance`로 만들지 않습니다.
 - Hikari 풀은 local/dev 기본 30개이며, prod는 `STOCK_DB_MAX_POOL_SIZE`, `STOCK_DB_CONNECTION_TIMEOUT`, `STOCK_DB_MAX_LIFETIME`, `STOCK_DB_KEEPALIVE_TIME`로 조정합니다.
 - Batch metadata Hikari 풀은 local/dev 기본 12개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
 - 배치 업무 SQL은 `stock.batch.jdbc.query-timeout-seconds`로 statement query timeout을 적용합니다. 기본값은 30초이며 `STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS`로 조정합니다.
@@ -189,7 +189,7 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.symbol-chunk-max-duration-ms`: 한 종목 lock을 유지할 최대 목표 시간입니다. 기본값은 500ms이며 횟수 또는 시간 제한에 먼저 도달하면 종목을 재등록합니다.
 - `stock.batch.order-book-execution.worker.*`: Redis ready-symbol 큐를 상시 소비하는 체결 worker 설정입니다. 기본 worker 수는 2, 빈 큐 대기는 100ms입니다. 체결 성공 청크 뒤에는 기본 5ms(`match-yield-ms`) 동안 양보해 상장주관사 유동성 공급과 자동 주문 만료가 같은 종목 lock을 얻을 기회를 보장합니다.
 - `stock.batch.order-book-execution.fixed-delay-ms`: Redis 장애나 서버 재시작 중 누락된 체결 가능 종목을 DB에서 복구하는 fallback 주기이며 기본값은 5000ms입니다.
-- 주문 체결, 자동 주문 생성, 자동 주문 만료, 상장사 유동성 공급은 고빈도 경량 작업으로 실행해 Spring Batch `BATCH_*` 실행 이력을 매회 생성하지 않습니다. 장마감·정산·기업 이벤트 같은 저빈도 업무 배치는 기존 JobRepository 기록을 유지합니다.
+- 주문 체결, 자동 주문 생성, 자동 주문 만료, 상장사 유동성 공급, 프로필 큐 정합화는 고빈도 `LightweightBatchTask`로 실행해 Spring Batch `BATCH_*` 실행 이력을 매회 생성하지 않습니다. 장마감·정산·기업 이벤트·현금 지급·일별 regime 생성은 native JobRepository 기록을 유지합니다.
 - `stock.batch.execution.symbol-lock.type`: 동일 종목 중복 체결 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.execution.symbol-lock.ttl-seconds`: Redis symbol lock TTL입니다. 기본값은 120초입니다. 한 번의 symbol chunk가 이 시간 안에 끝나도록 `symbol-chunk-limit`과 함께 조정합니다.
 - `stock.batch.execution.deadlock-retry-max-attempts`: 주문장 매칭 1회 트랜잭션의 lock/deadlock 재시도 횟수입니다. 기본값은 3입니다.
@@ -201,7 +201,7 @@ KIS_MARKET_DIV_CODE=J
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.
 - `spring.task.scheduling.shutdown.await-termination-period`: scheduler 작업 완료 대기 시간. 기본값은 120초입니다.
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 130초입니다.
-- `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 custom job 완료를 기다리는 시간. 기본값은 120초입니다.
+- `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 native Job과 경량 task 완료를 기다리는 시간. 기본값은 120초입니다.
 - 종료가 시작되면 새 수동/스케줄 job은 `SKIPPED`로 거절하고, 이미 실행 중인 job은 위 timeout까지 완료를 기다립니다. 아직 시간이 오지 않은 다음 스케줄 job을 종료 전에 강제로 실행하지는 않습니다.
 - 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
 - `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
@@ -243,7 +243,10 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 
 - Spring Batch 6.x JDBC `JobRepository`를 별도 metadata schema로 사용합니다.
 - 스케줄러는 실행 시점만 결정하고, 수동 API와 스케줄러는 모두 `StockBatchJobLauncher`를 통해 같은 job 컴포넌트를 실행합니다.
-- job 실행 잠금은 `stock_batch_job_lock` DB 테이블을 통해 처리하며, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환과 `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록은 `StockBatchJobRunner`에서 공통 처리합니다.
+- job 실행 잠금은 `stock_batch_job_lock` DB 테이블을 통해 처리합니다. `StockBatchJobRunner`는 native Job을 `JobOperator`로 시작하고 실행 결과를 공통 응답으로 변환하며, 실제 `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록과 재시작 판단은 Spring Batch `JobRepository`가 담당합니다.
+- 현재 native Job/Step은 `market-close-rollover / market-close-snapshot-step`, `portfolio-settlement / portfolio-settlement-step`, `corporate-actions / apply-due-corporate-actions-step`, `auto-participant-cash-flow / auto-participant-cash-flow-step`, `auto-market-daily-regime-pre-create / auto-market-daily-regime-pre-create-step`입니다.
+- `portfolio-settlement-step`은 `JdbcPagingItemReader -> PortfolioSnapshotProcessor -> chunk ItemWriter` 구조이며 `stock.batch.settlement.chunk-size`(기본 200)를 business transaction 경계로 사용합니다. 나머지는 기존 서비스가 자체 업무 트랜잭션 또는 이벤트별 `REQUIRES_NEW` 경계를 이미 소유하므로 단일 command Tasklet Step으로 둡니다.
+- 비정상 종료 후 open 상태로 남은 native execution은 새 실행 노드가 해당 job의 `stock_batch_job_lock`을 획득한 경우에만 `FAILED`로 전환합니다. 이후 동일 identifying parameter로 재실행하면 완료된 Step은 건너뛰고 실패·중단 Step부터 이어갑니다. 시작 시 모든 `BATCH_*` row를 일괄 변경하는 전역 복구는 사용하지 않습니다.
 - `marketdata`, `settlement`, `marketclose`는 batch 문서 기준에 맞춰 reader/processor/writer 또는 writer 단위로 책임을 분리합니다.
 - 시세는 모든 종목을 무조건 갱신하지 않고 관심 종목, 보유 종목, 미체결 주문이 있는 종목을 우선 갱신합니다.
 - 시세 provider는 `MarketPriceProvider`로 분리하고, 실제 외부 API 연동은 provider 구현 교체로 처리합니다.
