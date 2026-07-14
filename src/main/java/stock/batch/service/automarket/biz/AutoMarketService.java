@@ -422,7 +422,7 @@ public class AutoMarketService {
         double overdueSeconds = Math.max(0, Duration.between(candidate.nextRunAt(), now).toSeconds());
         double overdueScore = Math.min(240.0, overdueSeconds / 30.0);
         double priorityScore = Math.clamp(candidate.priority(), 1, 100) / 100.0;
-        double intensityScore = Math.clamp(strategy.intensity(), 1, 10) / 10.0;
+        double activityScore = Math.clamp(strategy.intensity(), 1, 10) / 10.0;
         double momentum = priceChangeRate(config);
         double reportScore = config.reportScore() == null ? 0 : (Math.clamp(config.reportScore(), 1, 10) - 5.5) / 4.5;
         double profileSignal = policy.momentumWeight() * momentum
@@ -434,7 +434,7 @@ public class AutoMarketService {
         double profileTendency = profileSymbolTendency(strategy.profileType(), momentum, reportScore);
         return overdueScore * 2.0
                 + priorityScore
-                + intensityScore * 0.65
+                + activityScore * 0.65
                 + profileSignal
                 + profileTendency;
     }

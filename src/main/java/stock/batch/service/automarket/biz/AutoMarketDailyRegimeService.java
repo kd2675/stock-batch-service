@@ -1,10 +1,8 @@
 package stock.batch.service.automarket.biz;
 
 import java.sql.Date;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,21 +16,20 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
-import stock.batch.service.batch.automarket.model.AutoMarketAssetPreference;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketDailyRegime;
-import stock.batch.service.batch.automarket.model.AutoMarketPriceDirection;
+import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
+import stock.batch.service.batch.automarket.model.AutoMarketPressure;
 import stock.batch.service.batch.automarket.model.AutoMarketRegimePhase;
 import stock.batch.service.batch.automarket.model.AutoMarketRegimeModifier;
-import stock.batch.service.simulation.SimulationMarketSessionService;
+
+import static stock.batch.service.automarket.support.AutoMarketPressureSampler.sample;
 
 @Component
 @RequiredArgsConstructor
 class AutoMarketDailyRegimeService {
 
     private final JdbcTemplate jdbcTemplate;
-    private final SimulationMarketSessionService simulationMarketSessionService;
-
     List<AutoMarketConfig> applyDailyRegimes(
             List<AutoMarketConfig> configs,
             LocalDate simulationTradeDate,
@@ -76,12 +73,12 @@ class AutoMarketDailyRegimeService {
         return ensureDailyRegimes(configs, simulationTradeDate, now, resolveRegimePhase(now));
     }
 
-    int ensureOpeningDailyRegimes(
+    int ensureFirstSlotDailyRegimes(
             List<AutoMarketConfig> configs,
             LocalDate simulationTradeDate,
             LocalDateTime now
     ) {
-        return ensureDailyRegimes(configs, simulationTradeDate, now, AutoMarketRegimePhase.OPENING);
+        return ensureDailyRegimes(configs, simulationTradeDate, now, AutoMarketRegimePhase.SLOT_0600);
     }
 
     private int ensureDailyRegimes(
@@ -110,21 +107,20 @@ class AutoMarketDailyRegimeService {
             jdbcTemplate.update(
                     """
                     insert into stock_order_book_daily_regime(
-                        symbol, simulation_trade_date, regime_phase, price_direction, asset_preference,
-                        direction_intensity, volatility_level, liquidity_level, execution_aggression_level, seed,
+                        symbol, simulation_trade_date, regime_phase, price_pressure, asset_preference_pressure,
+                        volatility_pressure, liquidity_pressure, execution_aggression_pressure, seed,
                         created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     regime.symbol(),
                     Date.valueOf(regime.simulationTradeDate()),
                     regime.regimePhase().name(),
-                    regime.priceDirection().name(),
-                    regime.assetPreference().name(),
-                    regime.directionIntensity(),
-                    regime.volatilityLevel(),
-                    regime.liquidityLevel(),
-                    regime.executionAggressionLevel(),
+                    regime.pressure().price(),
+                    regime.pressure().assetPreference(),
+                    regime.pressure().volatility(),
+                    regime.pressure().liquidity(),
+                    regime.pressure().executionAggression(),
                     regime.seed(),
                     now,
                     now
@@ -150,12 +146,11 @@ class AutoMarketDailyRegimeService {
                         select symbol,
                                simulation_trade_date,
                                regime_phase,
-                               price_direction,
-                               asset_preference,
-                               direction_intensity,
-                               volatility_level,
-                               liquidity_level,
-                               execution_aggression_level,
+                               price_pressure,
+                               asset_preference_pressure,
+                               volatility_pressure,
+                               liquidity_pressure,
+                               execution_aggression_pressure,
                                seed
                          from stock_order_book_daily_regime
                          where symbol in (:symbols)
@@ -171,12 +166,13 @@ class AutoMarketDailyRegimeService {
                         rs.getString("symbol"),
                         rs.getDate("simulation_trade_date").toLocalDate(),
                         AutoMarketRegimePhase.parseOrDefault(rs.getString("regime_phase")),
-                        AutoMarketPriceDirection.parseOrDefault(rs.getString("price_direction")),
-                        AutoMarketAssetPreference.parseOrDefault(rs.getString("asset_preference")),
-                        rs.getInt("direction_intensity"),
-                        rs.getInt("volatility_level"),
-                        rs.getInt("liquidity_level"),
-                        rs.getInt("execution_aggression_level"),
+                        new AutoMarketPressure(
+                                rs.getInt("price_pressure"),
+                                rs.getInt("asset_preference_pressure"),
+                                rs.getInt("volatility_pressure"),
+                                rs.getInt("liquidity_pressure"),
+                                rs.getInt("execution_aggression_pressure")
+                        ),
                         rs.getLong("seed")
                 ))
                 .list()
@@ -195,12 +191,7 @@ class AutoMarketDailyRegimeService {
                 config.symbol(),
                 simulationTradeDate,
                 regimePhase,
-                pickPriceDirection(random.nextInt(100)),
-                pickAssetPreference(random.nextInt(100)),
-                Math.clamp(config.intensity(), 1, 10),
-                pickBellishLevel(random),
-                pickBellishLevel(random),
-                pickBellishLevel(random),
+                samplePressures(random, config.primaryDistributionBias()),
                 seed
         );
     }
@@ -230,22 +221,21 @@ class AutoMarketDailyRegimeService {
                     """
                     insert into stock_order_book_regime_modifier(
                         symbol, simulation_trade_date, regime_phase, modifier_window_start_at,
-                        price_direction_modifier, asset_preference_modifier, direction_intensity_modifier,
-                        volatility_modifier, liquidity_modifier, execution_aggression_modifier,
+                        price_pressure, asset_preference_pressure, volatility_pressure,
+                        liquidity_pressure, execution_aggression_pressure,
                         seed, created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     modifier.symbol(),
                     Date.valueOf(modifier.simulationTradeDate()),
                     modifier.regimePhase().name(),
                     modifier.modifierWindowStartAt(),
-                    modifier.priceDirectionModifier(),
-                    modifier.assetPreferenceModifier(),
-                    modifier.directionIntensityModifier(),
-                    modifier.volatilityModifier(),
-                    modifier.liquidityModifier(),
-                    modifier.executionAggressionModifier(),
+                    modifier.pressure().price(),
+                    modifier.pressure().assetPreference(),
+                    modifier.pressure().volatility(),
+                    modifier.pressure().liquidity(),
+                    modifier.pressure().executionAggression(),
                     modifier.seed(),
                     now,
                     now
@@ -272,12 +262,11 @@ class AutoMarketDailyRegimeService {
                                simulation_trade_date,
                                regime_phase,
                                modifier_window_start_at,
-                               price_direction_modifier,
-                               asset_preference_modifier,
-                               direction_intensity_modifier,
-                               volatility_modifier,
-                               liquidity_modifier,
-                               execution_aggression_modifier,
+                               price_pressure,
+                               asset_preference_pressure,
+                               volatility_pressure,
+                               liquidity_pressure,
+                               execution_aggression_pressure,
                                seed
                          from stock_order_book_regime_modifier
                          where symbol in (:symbols)
@@ -296,12 +285,13 @@ class AutoMarketDailyRegimeService {
                         rs.getDate("simulation_trade_date").toLocalDate(),
                         AutoMarketRegimePhase.parseOrDefault(rs.getString("regime_phase")),
                         rs.getTimestamp("modifier_window_start_at").toLocalDateTime(),
-                        rs.getInt("price_direction_modifier"),
-                        rs.getInt("asset_preference_modifier"),
-                        rs.getInt("direction_intensity_modifier"),
-                        rs.getInt("volatility_modifier"),
-                        rs.getInt("liquidity_modifier"),
-                        rs.getInt("execution_aggression_modifier"),
+                        new AutoMarketPressure(
+                                rs.getInt("price_pressure"),
+                                rs.getInt("asset_preference_pressure"),
+                                rs.getInt("volatility_pressure"),
+                                rs.getInt("liquidity_pressure"),
+                                rs.getInt("execution_aggression_pressure")
+                        ),
                         rs.getLong("seed")
                 ))
                 .list()
@@ -322,70 +312,24 @@ class AutoMarketDailyRegimeService {
                 simulationTradeDate,
                 regimePhase,
                 modifierWindowStartAt,
-                pickSecondaryPricePressure(random),
-                pickSecondaryAssetPressure(random),
-                pickBellishLevel(random),
-                pickBellishLevel(random),
-                pickBellishLevel(random),
-                pickBellishLevel(random),
+                samplePressures(random, config.secondaryDistributionBias()),
                 seed
         );
     }
 
-    private int pickSecondaryPricePressure(Random random) {
-        AutoMarketPriceDirection direction = pickPriceDirection(random.nextInt(100));
-        if (direction == AutoMarketPriceDirection.NEUTRAL) {
-            return 0;
-        }
-        return (int) direction.pressureSign() * pickBellishLevel(random);
-    }
-
-    private int pickSecondaryAssetPressure(Random random) {
-        AutoMarketAssetPreference preference = pickAssetPreference(random.nextInt(100));
-        if (preference == AutoMarketAssetPreference.BALANCED) {
-            return 0;
-        }
-        return (int) preference.buyPressureSign() * pickBellishLevel(random);
-    }
-
-    private AutoMarketPriceDirection pickPriceDirection(int roll) {
-        if (roll < 43) {
-            return AutoMarketPriceDirection.UP;
-        }
-        if (roll < 86) {
-            return AutoMarketPriceDirection.DOWN;
-        }
-        return AutoMarketPriceDirection.NEUTRAL;
-    }
-
-    private AutoMarketAssetPreference pickAssetPreference(int roll) {
-        if (roll < 42) {
-            return AutoMarketAssetPreference.STOCK;
-        }
-        if (roll < 84) {
-            return AutoMarketAssetPreference.CASH;
-        }
-        return AutoMarketAssetPreference.BALANCED;
-    }
-
-    private int pickBellishLevel(Random random) {
-        int first = random.nextInt(10) + 1;
-        int second = random.nextInt(10) + 1;
-        return Math.clamp((first + second + 1) / 2, 1, 10);
+    private AutoMarketPressure samplePressures(Random random, AutoMarketDistributionBias bias) {
+        AutoMarketDistributionBias resolved = bias == null ? AutoMarketDistributionBias.NEUTRAL : bias;
+        return new AutoMarketPressure(
+                sample(random, resolved.pricePressure()),
+                sample(random, resolved.assetPreferencePressure()),
+                sample(random, resolved.volatilityPressure()),
+                sample(random, resolved.liquidityPressure()),
+                sample(random, resolved.executionAggressionPressure())
+        );
     }
 
     private AutoMarketRegimePhase resolveRegimePhase(LocalDateTime now) {
-        if (now == null || now.toLocalTime().isBefore(midSessionTime())) {
-            return AutoMarketRegimePhase.OPENING;
-        }
-        return AutoMarketRegimePhase.MIDDAY;
-    }
-
-    private LocalTime midSessionTime() {
-        LocalTime openTime = simulationMarketSessionService.openTime();
-        LocalTime closeTime = simulationMarketSessionService.closeTime();
-        long halfSessionSeconds = Duration.between(openTime, closeTime).toSeconds() / 2;
-        return openTime.plusSeconds(halfSessionSeconds);
+        return AutoMarketRegimePhase.from(now == null ? null : now.toLocalTime());
     }
 
     private LocalDateTime modifierWindowStartAt(LocalDateTime now) {

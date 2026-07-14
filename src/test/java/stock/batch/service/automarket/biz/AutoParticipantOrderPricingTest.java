@@ -6,9 +6,9 @@ import java.math.BigDecimal;
 
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
 import stock.batch.service.automarket.profile.ProfilePolicy;
-import stock.batch.service.batch.automarket.model.AutoMarketAssetPreference;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
-import stock.batch.service.batch.automarket.model.AutoMarketPriceDirection;
+import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
+import stock.batch.service.batch.automarket.model.AutoMarketPressure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,7 +99,6 @@ class AutoParticipantOrderPricingTest {
         return new AutoMarketConfig(
                 "ZQ001",
                 "ORDERBOOK",
-                5,
                 100,
                 90,
                 1000L,
@@ -108,18 +107,10 @@ class AutoParticipantOrderPricingTest {
                 new BigDecimal("100.00"),
                 new BigDecimal("30.00"),
                 null,
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.BALANCED,
-                5,
-                5,
-                10,
-                10,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
+                AutoMarketDistributionBias.NEUTRAL,
+                AutoMarketDistributionBias.NEUTRAL,
+                new AutoMarketPressure(0, 0, 0, 100, 100),
+                new AutoMarketPressure(0, 0, 0, 100, 100)
         );
     }
 }

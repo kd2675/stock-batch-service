@@ -114,7 +114,6 @@ class AutoMarketReaderTest {
         AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
         AutoMarketConfig stock001 = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 15,
                 100000L,
@@ -125,7 +124,6 @@ class AutoMarketReaderTest {
         );
         AutoMarketConfig stock002 = new AutoMarketConfig(
                 "STOCK002",
-                8,
                 100,
                 15,
                 100000L,
@@ -146,7 +144,7 @@ class AutoMarketReaderTest {
                 .containsExactly("auto-001", "auto-002");
         assertThat(strategiesBySymbol.get("STOCK002"))
                 .extracting(AutoParticipantStrategy::intensity)
-                .containsExactly(8, 8);
+                .containsExactly(5, 5);
     }
 
     @Test
@@ -221,7 +219,6 @@ class AutoMarketReaderTest {
         AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
         AutoMarketConfig stock001 = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 15,
                 100000L,
@@ -232,7 +229,6 @@ class AutoMarketReaderTest {
         );
         AutoMarketConfig stock002 = new AutoMarketConfig(
                 "STOCK002",
-                8,
                 100,
                 15,
                 100000L,

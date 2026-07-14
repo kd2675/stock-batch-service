@@ -529,7 +529,6 @@ class ListingAutoAccountOrderServiceTest {
     private AutoMarketConfig marketConfig(String symbol) {
         return new AutoMarketConfig(
                 symbol,
-                100,
                 10,
                 90,
                 100_000L,

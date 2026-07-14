@@ -65,7 +65,6 @@ class AutoMarketProfileQueueReconcileServiceUnitTest {
     private AutoMarketConfig autoMarketConfig(String symbol) {
         return new AutoMarketConfig(
                 symbol,
-                5,
                 100,
                 90,
                 1_000_000L,

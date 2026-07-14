@@ -1,6 +1,7 @@
 package stock.batch.service.batch.automarket.reader;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
@@ -36,7 +37,6 @@ final class AutoMarketReaderMapper {
         return new AutoMarketConfig(
                 normalizeSymbol(rs.getString("symbol")),
                 rs.getString("market"),
-                Math.clamp(rs.getInt("intensity"), 1, 10),
                 Math.max(1, rs.getInt("max_order_quantity")),
                 Math.max(1, rs.getInt("order_ttl_seconds")),
                 Math.max(0L, rs.getLong("tradable_shares")),
@@ -44,7 +44,21 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("current_price"),
                 positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
                 positiveOrDefault(rs.getBigDecimal("price_limit_rate"), DEFAULT_PRICE_LIMIT_RATE),
-                nullableInt(rs, "report_score")
+                nullableInt(rs, "report_score"),
+                new AutoMarketDistributionBias(
+                        rs.getInt("primary_price_pressure_bias"),
+                        rs.getInt("primary_asset_preference_pressure_bias"),
+                        rs.getInt("primary_volatility_pressure_bias"),
+                        rs.getInt("primary_liquidity_pressure_bias"),
+                        rs.getInt("primary_execution_aggression_pressure_bias")
+                ),
+                new AutoMarketDistributionBias(
+                        rs.getInt("secondary_price_pressure_bias"),
+                        rs.getInt("secondary_asset_preference_pressure_bias"),
+                        rs.getInt("secondary_volatility_pressure_bias"),
+                        rs.getInt("secondary_liquidity_pressure_bias"),
+                        rs.getInt("secondary_execution_aggression_pressure_bias")
+                )
         );
     }
 

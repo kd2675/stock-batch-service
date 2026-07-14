@@ -203,7 +203,7 @@ KIS_MARKET_DIV_CODE=J
 - `spring.lifecycle.timeout-per-shutdown-phase`: Spring Boot graceful shutdown phase 제한 시간. scheduler 대기 시간보다 길게 잡으며 기본값은 130초입니다.
 - `stock.batch.shutdown.await-running-jobs-seconds`: `StockBatchJobRunner`가 종료 중 실행 중인 native Job과 경량 task 완료를 기다리는 시간. 기본값은 120초입니다.
 - 종료가 시작되면 새 수동/스케줄 job은 `SKIPPED`로 거절하고, 이미 실행 중인 job은 위 timeout까지 완료를 기다립니다. 아직 시간이 오지 않은 다음 스케줄 job을 종료 전에 강제로 실행하지는 않습니다.
-- 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 강도는 `stock_auto_participant_symbol_config`, 종목별 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
+- 자동 참여자 운용 현금은 `stock_account_cash_flow`의 입금/회수 원장과 `stock_account.cash_balance`로 관리합니다. 주기 입금은 자동장 주문 생성과 분리되어 장 상태/종목 자동 알고리즘 상태와 무관하게 `ACTIVE` 계좌를 가진 enabled 자동 참여자 기준으로 실행됩니다. 참여자별-종목별 주문 활동 강도는 `stock_auto_participant_symbol_config`, 종목별 주·보조 압력 분포 편향과 최대 수량/TTL은 `stock_auto_market_config`에 저장한 값을 사용합니다. 자동 참여자의 주식 보유는 초기 지급이 아니라 주문장 매수 체결로만 생깁니다.
 - `stock.batch.execution.fee-rate`: 체결 수수료율. 기본값 `0.0000`
 - `stock.batch.execution.sell-tax-rate`: 매도 거래세율. 기본값 `0.0000`
 

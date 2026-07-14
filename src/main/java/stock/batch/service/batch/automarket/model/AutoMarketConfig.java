@@ -5,7 +5,6 @@ import java.math.BigDecimal;
 public record AutoMarketConfig(
         String symbol,
         String market,
-        int intensity,
         int maxOrderQuantity,
         int orderTtlSeconds,
         long tradableShares,
@@ -14,41 +13,28 @@ public record AutoMarketConfig(
         BigDecimal previousClose,
         BigDecimal priceLimitRate,
         Integer reportScore,
-        AutoMarketPriceDirection priceDirection,
-        AutoMarketAssetPreference assetPreference,
-        int directionIntensity,
-        int volatilityLevel,
-        int liquidityLevel,
-        int executionAggressionLevel,
-        int priceDirectionModifier,
-        int assetPreferenceModifier,
-        int directionIntensityModifier,
-        int volatilityModifier,
-        int liquidityModifier,
-        int executionAggressionModifier
+        AutoMarketDistributionBias primaryDistributionBias,
+        AutoMarketDistributionBias secondaryDistributionBias,
+        AutoMarketPressure primaryPressure,
+        AutoMarketPressure secondaryPressure
 ) {
     private static final double PRIMARY_REGIME_WEIGHT = 0.60;
     private static final double SECONDARY_MODIFIER_WEIGHT = 0.40;
 
     public AutoMarketConfig {
-        priceDirection = priceDirection == null ? AutoMarketPriceDirection.NEUTRAL : priceDirection;
-        assetPreference = assetPreference == null ? AutoMarketAssetPreference.BALANCED : assetPreference;
-        directionIntensity = Math.clamp(directionIntensity, 1, 10);
-        volatilityLevel = Math.clamp(volatilityLevel, 1, 10);
-        liquidityLevel = Math.clamp(liquidityLevel, 1, 10);
-        executionAggressionLevel = Math.clamp(executionAggressionLevel, 1, 10);
-        priceDirectionModifier = clampSecondaryPressure(priceDirectionModifier);
-        assetPreferenceModifier = clampSecondaryPressure(assetPreferenceModifier);
-        directionIntensityModifier = clampSecondaryLevel(directionIntensityModifier);
-        volatilityModifier = clampSecondaryLevel(volatilityModifier);
-        liquidityModifier = clampSecondaryLevel(liquidityModifier);
-        executionAggressionModifier = clampSecondaryLevel(executionAggressionModifier);
+        primaryDistributionBias = primaryDistributionBias == null
+                ? AutoMarketDistributionBias.NEUTRAL
+                : primaryDistributionBias;
+        secondaryDistributionBias = secondaryDistributionBias == null
+                ? AutoMarketDistributionBias.NEUTRAL
+                : secondaryDistributionBias;
+        primaryPressure = primaryPressure == null ? AutoMarketPressure.NEUTRAL : primaryPressure;
+        secondaryPressure = secondaryPressure == null ? AutoMarketPressure.NEUTRAL : secondaryPressure;
     }
 
     public AutoMarketConfig(
             String symbol,
             String market,
-            int intensity,
             int maxOrderQuantity,
             int orderTtlSeconds,
             long tradableShares,
@@ -57,16 +43,12 @@ public record AutoMarketConfig(
             BigDecimal previousClose,
             BigDecimal priceLimitRate,
             Integer reportScore,
-            AutoMarketPriceDirection priceDirection,
-            AutoMarketAssetPreference assetPreference,
-            int directionIntensity,
-            int volatilityLevel,
-            int liquidityLevel
+            AutoMarketDistributionBias primaryDistributionBias,
+            AutoMarketDistributionBias secondaryDistributionBias
     ) {
         this(
                 symbol,
                 market,
-                intensity,
                 maxOrderQuantity,
                 orderTtlSeconds,
                 tradableShares,
@@ -75,25 +57,16 @@ public record AutoMarketConfig(
                 previousClose,
                 priceLimitRate,
                 reportScore,
-                priceDirection,
-                assetPreference,
-                directionIntensity,
-                volatilityLevel,
-                liquidityLevel,
-                5,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
+                primaryDistributionBias,
+                secondaryDistributionBias,
+                AutoMarketPressure.NEUTRAL,
+                AutoMarketPressure.NEUTRAL
         );
     }
 
     public AutoMarketConfig(
             String symbol,
             String market,
-            int intensity,
             int maxOrderQuantity,
             int orderTtlSeconds,
             long tradableShares,
@@ -104,35 +77,14 @@ public record AutoMarketConfig(
             Integer reportScore
     ) {
         this(
-                symbol,
-                market,
-                intensity,
-                maxOrderQuantity,
-                orderTtlSeconds,
-                tradableShares,
-                tickSize,
-                currentPrice,
-                previousClose,
-                priceLimitRate,
-                reportScore,
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.BALANCED,
-                intensity,
-                5,
-                5,
-                5,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
+                symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize, currentPrice,
+                previousClose, priceLimitRate, reportScore, AutoMarketDistributionBias.NEUTRAL,
+                AutoMarketDistributionBias.NEUTRAL
         );
     }
 
     public AutoMarketConfig(
             String symbol,
-            int intensity,
             int maxOrderQuantity,
             int orderTtlSeconds,
             long tradableShares,
@@ -143,35 +95,13 @@ public record AutoMarketConfig(
             Integer reportScore
     ) {
         this(
-                symbol,
-                "ORDERBOOK",
-                intensity,
-                maxOrderQuantity,
-                orderTtlSeconds,
-                tradableShares,
-                tickSize,
-                currentPrice,
-                previousClose,
-                priceLimitRate,
-                reportScore,
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.BALANCED,
-                intensity,
-                5,
-                5,
-                5,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
+                symbol, "ORDERBOOK", maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize,
+                currentPrice, previousClose, priceLimitRate, reportScore
         );
     }
 
     public AutoMarketConfig(
             String symbol,
-            int intensity,
             int maxOrderQuantity,
             int orderTtlSeconds,
             long tradableShares,
@@ -181,29 +111,8 @@ public record AutoMarketConfig(
             Integer reportScore
     ) {
         this(
-                symbol,
-                "ORDERBOOK",
-                intensity,
-                maxOrderQuantity,
-                orderTtlSeconds,
-                tradableShares,
-                tickSize,
-                currentPrice,
-                previousClose,
-                BigDecimal.valueOf(30),
-                reportScore,
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.BALANCED,
-                intensity,
-                5,
-                5,
-                5,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0
+                symbol, "ORDERBOOK", maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize,
+                currentPrice, previousClose, BigDecimal.valueOf(30), reportScore
         );
     }
 
@@ -212,29 +121,9 @@ public record AutoMarketConfig(
             return this;
         }
         return new AutoMarketConfig(
-                symbol,
-                market,
-                intensity,
-                maxOrderQuantity,
-                orderTtlSeconds,
-                tradableShares,
-                tickSize,
-                currentPrice,
-                previousClose,
-                priceLimitRate,
-                reportScore,
-                regime.priceDirection(),
-                regime.assetPreference(),
-                regime.directionIntensity(),
-                regime.volatilityLevel(),
-                regime.liquidityLevel(),
-                regime.executionAggressionLevel(),
-                priceDirectionModifier,
-                assetPreferenceModifier,
-                directionIntensityModifier,
-                volatilityModifier,
-                liquidityModifier,
-                executionAggressionModifier
+                symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize, currentPrice,
+                previousClose, priceLimitRate, reportScore, primaryDistributionBias, secondaryDistributionBias,
+                regime.pressure(), secondaryPressure
         );
     }
 
@@ -243,38 +132,18 @@ public record AutoMarketConfig(
             return this;
         }
         return new AutoMarketConfig(
-                symbol,
-                market,
-                intensity,
-                maxOrderQuantity,
-                orderTtlSeconds,
-                tradableShares,
-                tickSize,
-                currentPrice,
-                previousClose,
-                priceLimitRate,
-                reportScore,
-                priceDirection,
-                assetPreference,
-                directionIntensity,
-                volatilityLevel,
-                liquidityLevel,
-                executionAggressionLevel,
-                modifier.priceDirectionModifier(),
-                modifier.assetPreferenceModifier(),
-                modifier.directionIntensityModifier(),
-                modifier.volatilityModifier(),
-                modifier.liquidityModifier(),
-                modifier.executionAggressionModifier()
+                symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize, currentPrice,
+                previousClose, priceLimitRate, reportScore, primaryDistributionBias, secondaryDistributionBias,
+                primaryPressure, modifier.pressure()
         );
     }
 
     public double dailyPricePressure() {
-        return blendedDirectionalPressure(priceDirection.pressureSign(), directionIntensity, priceDirectionModifier);
+        return blendedPressure(primaryPressure.price(), secondaryPressure.price());
     }
 
     public double assetPreferencePressure() {
-        return blendedDirectionalPressure(assetPreference.buyPressureSign(), directionIntensity, assetPreferenceModifier);
+        return blendedPressure(primaryPressure.assetPreference(), secondaryPressure.assetPreference());
     }
 
     public double reportPricePressure() {
@@ -284,74 +153,56 @@ public record AutoMarketConfig(
         return (Math.clamp(reportScore, 1, 10) - 5.5) / 4.5;
     }
 
+    public double volatilityPressure() {
+        return blendedPressure(primaryPressure.volatility(), secondaryPressure.volatility());
+    }
+
+    public double liquidityPressure() {
+        return blendedPressure(primaryPressure.liquidity(), secondaryPressure.liquidity());
+    }
+
+    public double executionAggressionPressure() {
+        return blendedPressure(primaryPressure.executionAggression(), secondaryPressure.executionAggression());
+    }
+
     public double volatilityMultiplier() {
-        return 0.65 + effectiveVolatilityLevel() / 10.0;
+        return Math.clamp(1.0 + volatilityPressure() * 0.65, 0.35, 1.65);
     }
 
     public double liquidityMultiplier() {
-        return 0.60 + effectiveLiquidityLevel() / 8.0;
+        return Math.clamp(1.0 + liquidityPressure() * 0.80, 0.20, 1.80);
     }
 
     public double executionAggressionMultiplier() {
-        return 0.45 + effectiveExecutionAggressionLevel() / 6.0;
+        return Math.clamp(1.0 + executionAggressionPressure() * 0.85, 0.15, 1.85);
     }
 
     public double executionAggressionStrength() {
-        return effectiveExecutionAggressionLevel() / 10.0;
-    }
-
-    public int effectivePriceDirectionIntensity() {
-        return blendedLevel(directionIntensity, directionIntensityModifier);
-    }
-
-    public int effectiveAssetPreferenceIntensity() {
-        return blendedLevel(directionIntensity, directionIntensityModifier);
+        return Math.clamp((executionAggressionPressure() + 1.0) / 2.0, 0.0, 1.0);
     }
 
     public int effectiveVolatilityLevel() {
-        return blendedLevel(volatilityLevel, volatilityModifier);
+        return pressureToLevel(volatilityPressure());
     }
 
     public int effectiveLiquidityLevel() {
-        return blendedLevel(liquidityLevel, liquidityModifier);
+        return pressureToLevel(liquidityPressure());
     }
 
     public int effectiveExecutionAggressionLevel() {
-        return blendedLevel(executionAggressionLevel, executionAggressionModifier);
+        return pressureToLevel(executionAggressionPressure());
     }
 
-    private double blendedDirectionalPressure(double primarySign, int primaryIntensity, int secondaryPressureValue) {
-        double primaryPressure = primarySign * clampLevel(primaryIntensity) / 10.0;
-        double secondaryPressure = clampSecondaryPressure(secondaryPressureValue) / 10.0;
+    private double blendedPressure(int primary, int secondary) {
         return Math.clamp(
-                primaryPressure * PRIMARY_REGIME_WEIGHT + secondaryPressure * SECONDARY_MODIFIER_WEIGHT,
+                primary / 100.0 * PRIMARY_REGIME_WEIGHT + secondary / 100.0 * SECONDARY_MODIFIER_WEIGHT,
                 -1.0,
                 1.0
         );
     }
 
-    private int blendedLevel(int primaryLevel, int secondaryLevel) {
-        int clampedPrimaryLevel = clampLevel(primaryLevel);
-        if (secondaryLevel <= 0) {
-            return clampedPrimaryLevel;
-        }
-        return clampLevel((int) Math.round(
-                clampedPrimaryLevel * PRIMARY_REGIME_WEIGHT + clampLevel(secondaryLevel) * SECONDARY_MODIFIER_WEIGHT
-        ));
+    private int pressureToLevel(double pressure) {
+        return Math.clamp((int) Math.round((Math.clamp(pressure, -1.0, 1.0) + 1.0) * 4.5 + 1.0), 1, 10);
     }
 
-    private static int clampLevel(int value) {
-        return Math.clamp(value, 1, 10);
-    }
-
-    private static int clampSecondaryPressure(int value) {
-        return Math.clamp(value, -10, 10);
-    }
-
-    private static int clampSecondaryLevel(int value) {
-        if (value <= 0) {
-            return 0;
-        }
-        return clampLevel(value);
-    }
 }

@@ -110,7 +110,6 @@ class ListingAutoMarketJobServiceTest {
     private AutoMarketConfig config(String symbol) {
         return new AutoMarketConfig(
                 symbol,
-                5,
                 100,
                 90,
                 100000L,

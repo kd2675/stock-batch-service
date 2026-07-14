@@ -61,7 +61,6 @@ class AutoMarketOrderReaderTest {
     void findExpiredAutoOrders_locksCandidateOrderIdsThenReadsProfileAndCreatedAt() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 15,
                 100000L,

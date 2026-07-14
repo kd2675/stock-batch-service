@@ -291,8 +291,8 @@ class AutoParticipantCashFlowServiceTest {
         );
         jdbcTemplate.update(
                 """
-                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
-                values ('005930', false, 5, 3, 15, current_timestamp)
+                insert into stock_auto_market_config(symbol, enabled, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('005930', false, 3, 15, current_timestamp)
                 """
         );
         jdbcTemplate.update(

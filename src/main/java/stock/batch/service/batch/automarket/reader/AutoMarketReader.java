@@ -36,7 +36,16 @@ public class AutoMarketReader {
                 """
                 select c.symbol,
                        i.market,
-                       c.intensity,
+                       c.primary_price_pressure_bias,
+                       c.primary_asset_preference_pressure_bias,
+                       c.primary_volatility_pressure_bias,
+                       c.primary_liquidity_pressure_bias,
+                       c.primary_execution_aggression_pressure_bias,
+                       c.secondary_price_pressure_bias,
+                       c.secondary_asset_preference_pressure_bias,
+                       c.secondary_volatility_pressure_bias,
+                       c.secondary_liquidity_pressure_bias,
+                       c.secondary_execution_aggression_pressure_bias,
                        c.max_order_quantity,
                        c.order_ttl_seconds,
                        i.tradable_shares,
@@ -71,7 +80,16 @@ public class AutoMarketReader {
                 """
                 select c.symbol,
                        i.market,
-                       c.intensity,
+                       c.primary_price_pressure_bias,
+                       c.primary_asset_preference_pressure_bias,
+                       c.primary_volatility_pressure_bias,
+                       c.primary_liquidity_pressure_bias,
+                       c.primary_execution_aggression_pressure_bias,
+                       c.secondary_price_pressure_bias,
+                       c.secondary_asset_preference_pressure_bias,
+                       c.secondary_volatility_pressure_bias,
+                       c.secondary_liquidity_pressure_bias,
+                       c.secondary_execution_aggression_pressure_bias,
                        c.max_order_quantity,
                        c.order_ttl_seconds,
                        i.tradable_shares,
@@ -165,14 +183,7 @@ public class AutoMarketReader {
         if (configs.isEmpty()) {
             return List.of();
         }
-        Map<String, Integer> configIntensityBySymbol = configs.stream()
-                .collect(Collectors.toMap(
-                        AutoMarketConfig::symbol,
-                        AutoMarketConfig::intensity,
-                        (left, right) -> left,
-                        LinkedHashMap::new
-                ));
-        List<String> symbols = configIntensityBySymbol.keySet().stream().toList();
+        List<String> symbols = configs.stream().map(AutoMarketConfig::symbol).distinct().toList();
         int normalizedLimit = Math.max(1, participantLimit);
         String profileFilter = profileType == null ? "" : "and p.profile_type = :profileType";
         JdbcClient.StatementSpec statement = jdbcClient.sql(
@@ -231,7 +242,7 @@ public class AutoMarketReader {
                     String symbol = AutoMarketReaderMapper.normalizeSymbol(rs.getString("symbol"));
                     int symbolIntensity = rs.getInt("symbol_intensity");
                     if (rs.wasNull()) {
-                        symbolIntensity = configIntensityBySymbol.getOrDefault(symbol, 1);
+                        symbolIntensity = 5;
                     }
                     AutoParticipantStrategy strategy = new AutoParticipantStrategy(
                             rs.getString("user_key"),

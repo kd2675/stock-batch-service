@@ -13,7 +13,6 @@ class AutoMarketPricePolicyTest {
     void normalizePriceWithinDailyLimit_roundsToTickAndKeepsDailyLimit() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300,

@@ -176,7 +176,6 @@ class AutoMarketServiceUnitTest {
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,
@@ -261,7 +260,6 @@ class AutoMarketServiceUnitTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,
@@ -355,7 +353,6 @@ class AutoMarketServiceUnitTest {
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,
@@ -440,7 +437,6 @@ class AutoMarketServiceUnitTest {
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,

@@ -30,7 +30,7 @@ final class AutoMarketStrategyAssembler {
                 if (symbolConfig != null && !symbolConfig.enabled()) {
                     continue;
                 }
-                int intensity = symbolConfig == null ? config.intensity() : symbolConfig.intensity();
+                int intensity = symbolConfig == null ? 5 : symbolConfig.intensity();
                 strategies.add(participant.toStrategy(Math.clamp(intensity, 1, 10)));
             }
             strategiesBySymbol.put(config.symbol(), List.copyOf(strategies));

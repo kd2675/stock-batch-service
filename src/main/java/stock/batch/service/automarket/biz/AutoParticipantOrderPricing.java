@@ -21,7 +21,7 @@ class AutoParticipantOrderPricing {
 
     BigDecimal createAutoPrice(
             AutoMarketConfig config,
-            int intensity,
+            int strategyActivityLevel,
             String side,
             ProfilePolicy policy,
             AutoMarketOrderBookState orderBookState
@@ -32,10 +32,10 @@ class AutoParticipantOrderPricing {
         if (policy.marketMakingWeight() >= 0.8) {
             return createMarketMakingPrice(config, side, bestBid, bestAsk);
         }
-        double followStrength = Math.clamp(intensity, 1, 10) / 10.0;
+        double activityStrength = Math.clamp(strategyActivityLevel, 1, 10) / 10.0;
         double directionalPressure = config.dailyPricePressure()
                 + config.reportPricePressure() * policy.newsWeight() * 0.55;
-        double pressure = Math.clamp(directionalPressure * followStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
+        double pressure = Math.clamp(directionalPressure * activityStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
         double pressureStrength = Math.abs(pressure);
         double volatility = config.volatilityMultiplier();
         double executionAggression = config.executionAggressionStrength();

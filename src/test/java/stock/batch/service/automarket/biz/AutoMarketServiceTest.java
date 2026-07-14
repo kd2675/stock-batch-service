@@ -11,9 +11,9 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
-import stock.batch.service.batch.automarket.model.AutoMarketAssetPreference;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
-import stock.batch.service.batch.automarket.model.AutoMarketPriceDirection;
+import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
+import stock.batch.service.batch.automarket.model.AutoMarketPressure;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
@@ -112,8 +112,8 @@ class AutoMarketServiceTest {
         );
         jdbcTemplate.update(
                 """
-                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
-                values ('005930', true, 5, 3, 15, current_timestamp)
+                insert into stock_auto_market_config(symbol, enabled, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('005930', true, 3, 15, current_timestamp)
                 """
         );
         insertDailyRegime("005930", "UP", "STOCK", 10, 5, 5, 1001L);
@@ -146,22 +146,22 @@ class AutoMarketServiceTest {
 
         runAutoMarketStep();
 
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(1L);
-        Long firstSeed = queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
-        String firstDirection = queryString("select price_direction from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
-        String firstPreference = queryString("select asset_preference from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'");
+        Long firstSeed = queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'");
+        Long firstPricePressure = queryLong("select price_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'");
+        Long firstAssetPressure = queryLong("select asset_preference_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'");
 
         runAutoMarketStep();
 
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(1L);
-        assertThat(queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select seed from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(firstSeed);
-        assertThat(queryString("select price_direction from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
-                .isEqualTo(firstDirection);
-        assertThat(queryString("select asset_preference from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
-                .isEqualTo(firstPreference);
+        assertThat(queryLong("select price_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
+                .isEqualTo(firstPricePressure);
+        assertThat(queryLong("select asset_preference_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
+                .isEqualTo(firstAssetPressure);
     }
 
     @Test
@@ -175,7 +175,7 @@ class AutoMarketServiceTest {
                 from stock_order_book_regime_modifier
                 where symbol = '005930'
                   and simulation_trade_date = DATE '2026-01-01'
-                  and regime_phase = 'OPENING'
+                  and regime_phase = 'SLOT_0900'
                   and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
                 """))
                 .isEqualTo(1L);
@@ -184,7 +184,7 @@ class AutoMarketServiceTest {
                 from stock_order_book_regime_modifier
                 where symbol = '005930'
                   and simulation_trade_date = DATE '2026-01-01'
-                  and regime_phase = 'OPENING'
+                  and regime_phase = 'SLOT_0900'
                   and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
                 """);
 
@@ -195,7 +195,7 @@ class AutoMarketServiceTest {
                 from stock_order_book_regime_modifier
                 where symbol = '005930'
                   and simulation_trade_date = DATE '2026-01-01'
-                  and regime_phase = 'OPENING'
+                  and regime_phase = 'SLOT_0900'
                   and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
                 """))
                 .isEqualTo(firstSeed);
@@ -208,7 +208,7 @@ class AutoMarketServiceTest {
                 from stock_order_book_regime_modifier
                 where symbol = '005930'
                   and simulation_trade_date = DATE '2026-01-01'
-                  and regime_phase = 'OPENING'
+                  and regime_phase = 'SLOT_0900'
                 """))
                 .isEqualTo(2L);
         assertThat(queryLong("""
@@ -216,7 +216,7 @@ class AutoMarketServiceTest {
                 from stock_order_book_regime_modifier
                 where symbol = '005930'
                   and simulation_trade_date = DATE '2026-01-01'
-                  and regime_phase = 'OPENING'
+                  and regime_phase = 'SLOT_0900'
                   and modifier_window_start_at = TIMESTAMP '2026-01-01 09:30:00'
                 """))
                 .isEqualTo(1L);
@@ -232,9 +232,9 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01'"))
                 .isEqualTo(2L);
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(1L);
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'MIDDAY'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_1200'"))
                 .isEqualTo(1L);
     }
 
@@ -247,7 +247,7 @@ class AutoMarketServiceTest {
         int createdCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
 
         assertThat(createdCount).isEqualTo(1);
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0600'"))
                 .isEqualTo(1L);
     }
 
@@ -273,7 +273,7 @@ class AutoMarketServiceTest {
 
         assertThat(firstCreatedCount).isEqualTo(1);
         assertThat(secondCreatedCount).isZero();
-        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'"))
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0600'"))
                 .isEqualTo(1L);
     }
 
@@ -432,8 +432,8 @@ class AutoMarketServiceTest {
                   ('stock-auto-006', '자동 참여자 6', true, 'MOMENTUM_FOLLOWER', current_timestamp, current_timestamp)
                 """
         );
-        jdbcTemplate.update("update stock_auto_market_config set intensity = 8, max_order_quantity = 1 where symbol in ('005930', '999999')");
-        jdbcTemplate.update("update stock_auto_market_config set intensity = 10, max_order_quantity = 1 where symbol = '000660'");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol in ('005930', '999999')");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '000660'");
         jdbcTemplate.update("update stock_price set current_price = 73500.00, previous_close = 70000.00 where symbol = '005930'");
         jdbcTemplate.update("update stock_price set current_price = 132000.00, previous_close = 120000.00 where symbol = '000660'");
         jdbcTemplate.update("update stock_price set current_price = 126000.00, previous_close = 120000.00 where symbol = '999999'");
@@ -747,7 +747,6 @@ class AutoMarketServiceTest {
                 new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NOISE_TRADER),
                 new stock.batch.service.batch.automarket.model.AutoMarketConfig(
                         "005930",
-                        5,
                         3,
                         15,
                         300,
@@ -767,7 +766,6 @@ class AutoMarketServiceTest {
                 new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NEWS_REACTIVE),
                 new stock.batch.service.batch.automarket.model.AutoMarketConfig(
                         "005930",
-                        5,
                         3,
                         15,
                         300,
@@ -945,7 +943,6 @@ class AutoMarketServiceTest {
         PaydayAccumulatorBehavior behavior = new PaydayAccumulatorBehavior();
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300L,
@@ -983,7 +980,6 @@ class AutoMarketServiceTest {
         AutoMarketConfig upwardConfig = new AutoMarketConfig(
                 "005930",
                 "ORDERBOOK",
-                1,
                 3,
                 15,
                 300L,
@@ -992,16 +988,14 @@ class AutoMarketServiceTest {
                 new BigDecimal("70000.00"),
                 new BigDecimal("30.00"),
                 null,
-                AutoMarketPriceDirection.UP,
-                AutoMarketAssetPreference.STOCK,
-                10,
-                5,
-                5
+                AutoMarketDistributionBias.NEUTRAL,
+                AutoMarketDistributionBias.NEUTRAL,
+                new AutoMarketPressure(100, 100, 0, 0, 0),
+                AutoMarketPressure.NEUTRAL
         );
         AutoMarketConfig downwardConfig = new AutoMarketConfig(
                 "005930",
                 "ORDERBOOK",
-                10,
                 3,
                 15,
                 300L,
@@ -1010,11 +1004,10 @@ class AutoMarketServiceTest {
                 new BigDecimal("70000.00"),
                 new BigDecimal("30.00"),
                 null,
-                AutoMarketPriceDirection.DOWN,
-                AutoMarketAssetPreference.CASH,
-                10,
-                5,
-                5
+                AutoMarketDistributionBias.NEUTRAL,
+                AutoMarketDistributionBias.NEUTRAL,
+                new AutoMarketPressure(-100, -100, 0, 0, 0),
+                AutoMarketPressure.NEUTRAL
         );
         ProfileSignalContext lowIntensityUpwardContext = new ProfileSignalContext(
                 strategy,
@@ -1056,7 +1049,6 @@ class AutoMarketServiceTest {
         LongTermHolderBehavior behavior = new LongTermHolderBehavior();
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300L,
@@ -1097,7 +1089,6 @@ class AutoMarketServiceTest {
         DividendReinvestorBehavior behavior = new DividendReinvestorBehavior();
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300L,
@@ -1532,7 +1523,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 100 where symbol = '005930'");
-        insertDailyRegime("005930", "UP", "STOCK", 10, 5, 3, 1005L);
+        insertDailyRegime("005930", "UP", "STOCK", 10, 5, 5, 1005L);
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
@@ -1726,7 +1717,6 @@ class AutoMarketServiceTest {
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300,
@@ -1755,7 +1745,6 @@ class AutoMarketServiceTest {
         );
         AutoMarketConfig config = new AutoMarketConfig(
                 "005930",
-                5,
                 3,
                 15,
                 300,
@@ -2399,11 +2388,11 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 update stock_order_book_regime_modifier
-                   set price_direction_modifier = 10,
-                       asset_preference_modifier = 10
+                   set price_pressure = 100,
+                       asset_preference_pressure = 100
                  where symbol = '005930'
                    and simulation_trade_date = DATE '2026-01-01'
-                   and regime_phase = 'OPENING'
+                   and regime_phase = 'SLOT_0900'
                 """
         );
         insertFundedAutoAccount("stock-auto-003", "50000000.00");
@@ -2924,8 +2913,8 @@ class AutoMarketServiceTest {
         );
         jdbcTemplate.update(
                 """
-                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
-                values ('000660', true, 5, 1, 15, current_timestamp)
+                insert into stock_auto_market_config(symbol, enabled, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('000660', true, 1, 15, current_timestamp)
                 """
         );
         insertDailyRegime("000660", "UP", "STOCK", 10, 5, 5, 2001L);
@@ -2952,8 +2941,8 @@ class AutoMarketServiceTest {
         );
         jdbcTemplate.update(
                 """
-                insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at)
-                values ('999999', true, 5, 1, 15, current_timestamp)
+                insert into stock_auto_market_config(symbol, enabled, max_order_quantity, order_ttl_seconds, updated_at)
+                values ('999999', true, 1, 15, current_timestamp)
                 """
         );
         insertDailyRegime("999999", "UP", "STOCK", 10, 5, 5, 3001L);
@@ -2968,41 +2957,44 @@ class AutoMarketServiceTest {
             int liquidityLevel,
             long seed
     ) {
+        int pricePressure = "UP".equals(priceDirection) ? directionIntensity * 10 : "DOWN".equals(priceDirection) ? directionIntensity * -10 : 0;
+        int assetPressure = "STOCK".equals(assetPreference) ? directionIntensity * 10 : "CASH".equals(assetPreference) ? directionIntensity * -10 : 0;
+        int volatilityPressure = (int) Math.round((volatilityLevel - 5.5) * 100.0 / 4.5);
+        int liquidityPressure = (int) Math.round((liquidityLevel - 5.5) * 100.0 / 4.5);
         jdbcTemplate.update(
-                "delete from stock_order_book_daily_regime where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING'",
+                "delete from stock_order_book_daily_regime where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'",
                 symbol
         );
         jdbcTemplate.update(
-                "delete from stock_order_book_regime_modifier where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'OPENING' and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'",
+                "delete from stock_order_book_regime_modifier where symbol = ? and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900' and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'",
                 symbol
         );
         jdbcTemplate.update(
                 """
                 insert into stock_order_book_daily_regime(
-                    symbol, simulation_trade_date, regime_phase, price_direction, asset_preference,
-                    direction_intensity, volatility_level, liquidity_level, execution_aggression_level, seed,
+                    symbol, simulation_trade_date, regime_phase, price_pressure, asset_preference_pressure,
+                    volatility_pressure, liquidity_pressure, execution_aggression_pressure, seed,
                     created_at, updated_at
                 )
-                values (?, DATE '2026-01-01', 'OPENING', ?, ?, ?, ?, ?, 5, ?, current_timestamp, current_timestamp)
+                values (?, DATE '2026-01-01', 'SLOT_0900', ?, ?, ?, ?, 0, ?, current_timestamp, current_timestamp)
                 """,
                 symbol,
-                priceDirection,
-                assetPreference,
-                directionIntensity,
-                volatilityLevel,
-                liquidityLevel,
+                pricePressure,
+                assetPressure,
+                volatilityPressure,
+                liquidityPressure,
                 seed
         );
         jdbcTemplate.update(
                 """
                 insert into stock_order_book_regime_modifier(
                     symbol, simulation_trade_date, regime_phase, modifier_window_start_at,
-                    price_direction_modifier, asset_preference_modifier, direction_intensity_modifier,
-                    volatility_modifier, liquidity_modifier, execution_aggression_modifier,
+                    price_pressure, asset_preference_pressure, volatility_pressure,
+                    liquidity_pressure, execution_aggression_pressure,
                     seed, created_at, updated_at
                 )
-                values (?, DATE '2026-01-01', 'OPENING', TIMESTAMP '2026-01-01 09:00:00',
-                        0, 0, 0, 0, 0, 0, ?, current_timestamp, current_timestamp)
+                values (?, DATE '2026-01-01', 'SLOT_0900', TIMESTAMP '2026-01-01 09:00:00',
+                        0, 0, 0, 0, 0, ?, current_timestamp, current_timestamp)
                 """,
                 symbol,
                 seed

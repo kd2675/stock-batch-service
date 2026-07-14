@@ -31,7 +31,7 @@ public class AutoMarketDailyRegimePreCreateService {
             return 0;
         }
         var configs = autoMarketReader.findDailyRegimePreCreateConfigs();
-        return autoMarketDailyRegimeService.ensureOpeningDailyRegimes(
+        return autoMarketDailyRegimeService.ensureFirstSlotDailyRegimes(
                 configs,
                 clock.simulationDateTime().toLocalDate(),
                 clock.simulationDateTime()

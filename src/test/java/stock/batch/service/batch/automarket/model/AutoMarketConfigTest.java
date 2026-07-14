@@ -5,103 +5,47 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.data.Offset.offset;
 
 class AutoMarketConfigTest {
 
     @Test
-    void dailyPricePressure_secondaryModifierCanReverseWeakPrimaryDirection() {
+    void pressure_primaryAndSecondary_blendsEveryAxisAtSixtyForty() {
         AutoMarketConfig config = config(
-                AutoMarketPriceDirection.UP,
-                AutoMarketAssetPreference.BALANCED,
-                4,
-                -10,
-                0
+                new AutoMarketPressure(100, -100, 50, -50, 25),
+                new AutoMarketPressure(-100, 100, -50, 50, -25)
         );
 
-        assertThat(config.dailyPricePressure()).isLessThan(0.0);
+        assertThat(config.dailyPricePressure()).isCloseTo(0.2, offset(0.000001));
+        assertThat(config.assetPreferencePressure()).isCloseTo(-0.2, offset(0.000001));
+        assertThat(config.volatilityPressure()).isCloseTo(0.1, offset(0.000001));
+        assertThat(config.liquidityPressure()).isCloseTo(-0.1, offset(0.000001));
+        assertThat(config.executionAggressionPressure()).isCloseTo(0.05, offset(0.000001));
     }
 
     @Test
-    void dailyPricePressure_strongPrimaryDirectionSurvivesOppositeSecondaryModifier() {
-        AutoMarketConfig config = config(
-                AutoMarketPriceDirection.UP,
-                AutoMarketAssetPreference.BALANCED,
-                9,
-                -10,
-                0
+    void multipliers_signedPressure_canReduceOrIncreaseBehavior() {
+        AutoMarketConfig reduced = config(
+                new AutoMarketPressure(0, 0, -100, -100, -100),
+                new AutoMarketPressure(0, 0, -100, -100, -100)
+        );
+        AutoMarketConfig increased = config(
+                new AutoMarketPressure(0, 0, 100, 100, 100),
+                new AutoMarketPressure(0, 0, 100, 100, 100)
         );
 
-        assertThat(config.dailyPricePressure()).isGreaterThan(0.0);
+        assertThat(reduced.volatilityMultiplier()).isEqualTo(0.35);
+        assertThat(reduced.liquidityMultiplier()).isEqualTo(0.2);
+        assertThat(reduced.executionAggressionStrength()).isZero();
+        assertThat(increased.volatilityMultiplier()).isEqualTo(1.65);
+        assertThat(increased.liquidityMultiplier()).isEqualTo(1.8);
+        assertThat(increased.executionAggressionStrength()).isEqualTo(1.0);
     }
 
-    @Test
-    void assetPreferencePressure_secondaryModifierCanReverseWeakPrimaryPreference() {
-        AutoMarketConfig config = config(
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.STOCK,
-                4,
-                0,
-                -10
-        );
-
-        assertThat(config.assetPreferencePressure()).isLessThan(0.0);
-    }
-
-    @Test
-    void effectiveLevels_blendPrimaryAndThirtyMinuteSecondaryLevel() {
-        AutoMarketConfig config = config(
-                AutoMarketPriceDirection.NEUTRAL,
-                AutoMarketAssetPreference.BALANCED,
-                8,
-                0,
-                0,
-                2,
-                10,
-                9,
-                7
-        );
-
-        assertThat(config.effectivePriceDirectionIntensity()).isEqualTo(6);
-        assertThat(config.effectiveVolatilityLevel()).isEqualTo(7);
-        assertThat(config.effectiveLiquidityLevel()).isEqualTo(7);
-        assertThat(config.effectiveExecutionAggressionLevel()).isEqualTo(6);
-    }
-
-    private AutoMarketConfig config(
-            AutoMarketPriceDirection priceDirection,
-            AutoMarketAssetPreference assetPreference,
-            int directionIntensity,
-            int priceDirectionModifier,
-            int assetPreferenceModifier
-    ) {
-        return config(
-                priceDirection,
-                assetPreference,
-                directionIntensity,
-                priceDirectionModifier,
-                assetPreferenceModifier,
-                0,
-                0,
-                0,
-                0
-        );
-    }
-
-    private AutoMarketConfig config(
-            AutoMarketPriceDirection priceDirection,
-            AutoMarketAssetPreference assetPreference,
-            int directionIntensity,
-            int priceDirectionModifier,
-            int assetPreferenceModifier,
-            int directionIntensityModifier,
-            int volatilityModifier,
-            int liquidityModifier,
-            int executionAggressionModifier
-    ) {
+    private AutoMarketConfig config(AutoMarketPressure primary, AutoMarketPressure secondary) {
         return new AutoMarketConfig(
                 "ZQ001",
                 "ORDERBOOK",
-                5,
                 100,
                 90,
                 1000L,
@@ -110,18 +54,10 @@ class AutoMarketConfigTest {
                 new BigDecimal("100.00"),
                 new BigDecimal("30.00"),
                 null,
-                priceDirection,
-                assetPreference,
-                directionIntensity,
-                5,
-                5,
-                5,
-                priceDirectionModifier,
-                assetPreferenceModifier,
-                directionIntensityModifier,
-                volatilityModifier,
-                liquidityModifier,
-                executionAggressionModifier
+                AutoMarketDistributionBias.NEUTRAL,
+                AutoMarketDistributionBias.NEUTRAL,
+                primary,
+                secondary
         );
     }
 }

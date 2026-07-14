@@ -1404,7 +1404,7 @@ class CorporateActionServiceTest {
 
     private void insertAutoMarketConfig(String symbol) {
         jdbcTemplate.update(
-                "insert into stock_auto_market_config(symbol, enabled, intensity, max_order_quantity, order_ttl_seconds, updated_at) values (?, true, 5, 3, 15, ?)",
+                "insert into stock_auto_market_config(symbol, enabled, max_order_quantity, order_ttl_seconds, updated_at) values (?, true, 3, 15, ?)",
                 symbol,
                 LocalDateTime.now()
         );

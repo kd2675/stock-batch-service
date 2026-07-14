@@ -44,7 +44,6 @@ class AutoMarketOrderExpiryJobServiceTest {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,
@@ -110,7 +109,6 @@ class AutoMarketOrderExpiryJobServiceTest {
         TransactionStatus transactionStatus = mock(TransactionStatus.class);
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,
@@ -173,7 +171,6 @@ class AutoMarketOrderExpiryJobServiceTest {
         OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.empty();
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
-                5,
                 100,
                 90,
                 100000L,

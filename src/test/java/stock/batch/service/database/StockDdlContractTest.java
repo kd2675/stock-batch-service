@@ -480,6 +480,33 @@ class StockDdlContractTest {
     }
 
     @Test
+    void autoMarketPressureDistributionAlterDdl_isSyncedWithBackServiceCopyAndNewContract() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_auto_market_pressure_distribution_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_auto_market_pressure_distribution_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "USE STOCK_SERVICE",
+                "DROP COLUMN intensity",
+                "primary_price_pressure_bias",
+                "secondary_execution_aggression_pressure_bias",
+                "price_pressure INT NULL",
+                "execution_aggression_pressure INT NULL",
+                "WHEN 'SLOT_0600' THEN 1",
+                "WHEN 'SLOT_0900' THEN 1",
+                "WHEN 'SLOT_1200' THEN 1",
+                "WHEN 'SLOT_1500' THEN 1",
+                "BETWEEN -100 AND 100"
+        );
+    }
+
+    @Test
     void priceTickLatestLookupAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
         String batchDdl = Files.readString(
                 Path.of("src/main/resources/db/ddl/stock_price_tick_latest_lookup_alter.sql"),
