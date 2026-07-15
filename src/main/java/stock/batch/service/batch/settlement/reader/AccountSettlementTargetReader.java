@@ -34,12 +34,10 @@ public class AccountSettlementTargetReader {
                          from stock_account_cash_flow f
                         where f.account_id = a.id
                    ), 0) as net_cash_flow,
-                   coalesce((
-                       select sum(h.quantity * coalesce(p.current_price, h.average_price))
-                         from stock_holding h
-                         left join stock_price p on p.symbol = h.symbol
-                        where h.account_id = a.id
-                   ), 0) as market_value,
+                   coalesce(h.market_value, 0) as market_value,
+                   coalesce(h.holding_quantity, 0) as holding_quantity,
+                   coalesce(h.reserved_sell_quantity, 0) as reserved_sell_quantity,
+                   coalesce(h.holding_position_count, 0) as holding_position_count,
                    coalesce((
                        select sum(o.reserved_cash)
                          from stock_order o
@@ -56,6 +54,16 @@ public class AccountSettlementTargetReader {
             """;
     private static final String FROM_CLAUSE = """
             from stock_account a
+            left join (
+              select h.account_id,
+                     sum(h.quantity * coalesce(p.current_price, h.average_price)) as market_value,
+                     sum(h.quantity) as holding_quantity,
+                     sum(h.reserved_quantity) as reserved_sell_quantity,
+                     sum(case when h.quantity > 0 then 1 else 0 end) as holding_position_count
+                from stock_holding h
+                left join stock_price p on p.symbol = h.symbol
+               group by h.account_id
+            ) h on h.account_id = a.id
             """;
     private static final String ELIGIBLE_ACCOUNT_CLAUSE = """
             a.status = 'ACTIVE'
@@ -88,7 +96,10 @@ public class AccountSettlementTargetReader {
                         rs.getBigDecimal("cash_balance"),
                         nullToZero(rs.getBigDecimal("net_cash_flow")),
                         nullToZero(rs.getBigDecimal("market_value")),
-                        nullToZero(rs.getBigDecimal("reserved_buy_cash"))
+                        nullToZero(rs.getBigDecimal("reserved_buy_cash")),
+                        rs.getLong("holding_quantity"),
+                        rs.getLong("reserved_sell_quantity"),
+                        rs.getLong("holding_position_count")
                 ))
                 .build();
     }

@@ -36,7 +36,10 @@ class AccountSettlementTargetReaderTest {
                 "insert into stock_account_cash_flow(account_id, flow_type, amount, reason) values (1, 'DEPOSIT', 90000, 'OPENING_GRANT')"
         );
         jdbcTemplate.update(
-                "insert into stock_holding(account_id, symbol, quantity, average_price) values (1, 'AAA', 2, 50000)"
+                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price) values (1, 'AAA', 2, 1, 50000)"
+        );
+        jdbcTemplate.update(
+                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price) values (1, 'BBB', 3, 2, 10000)"
         );
         jdbcTemplate.update(
                 "insert into stock_price(symbol, current_price) values ('AAA', 60000)"
@@ -55,9 +58,15 @@ class AccountSettlementTargetReaderTest {
         assertThat(first.accountId()).isEqualTo(1L);
         assertThat(first.cashBalance()).isEqualByComparingTo(new BigDecimal("100000.00"));
         assertThat(first.netCashFlow()).isEqualByComparingTo(new BigDecimal("90000.00"));
-        assertThat(first.marketValue()).isEqualByComparingTo(new BigDecimal("120000.00"));
+        assertThat(first.marketValue()).isEqualByComparingTo(new BigDecimal("150000.00"));
         assertThat(first.reservedBuyCash()).isEqualByComparingTo(new BigDecimal("30000.00"));
+        assertThat(first.holdingQuantity()).isEqualTo(5L);
+        assertThat(first.reservedSellQuantity()).isEqualTo(3L);
+        assertThat(first.holdingPositionCount()).isEqualTo(2L);
         assertThat(second.accountId()).isEqualTo(2L);
+        assertThat(second.holdingQuantity()).isZero();
+        assertThat(second.reservedSellQuantity()).isZero();
+        assertThat(second.holdingPositionCount()).isZero();
         assertThat(end).isNull();
     }
 
@@ -85,7 +94,7 @@ class AccountSettlementTargetReaderTest {
     private void createSchema() {
         jdbcTemplate.execute("create table stock_account(id bigint primary key, user_key varchar(100), cash_balance decimal(19,2), status varchar(30))");
         jdbcTemplate.execute("create table stock_account_cash_flow(account_id bigint, flow_type varchar(20), amount decimal(19,2), reason varchar(100))");
-        jdbcTemplate.execute("create table stock_holding(account_id bigint, symbol varchar(20), quantity bigint, average_price decimal(19,2))");
+        jdbcTemplate.execute("create table stock_holding(account_id bigint, symbol varchar(20), quantity bigint, reserved_quantity bigint, average_price decimal(19,2))");
         jdbcTemplate.execute("create table stock_price(symbol varchar(20) primary key, current_price decimal(19,2))");
         jdbcTemplate.execute("create table stock_order(account_id bigint, side varchar(10), status varchar(30), reserved_cash decimal(19,2))");
         jdbcTemplate.execute("create table stock_corporate_action_entitlement(account_id bigint, status varchar(30), subscribed_cash_amount decimal(19,2))");

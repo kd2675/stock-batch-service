@@ -69,7 +69,7 @@ class PortfolioSettlementJobIntegrationTest {
     void settleToday_createsSnapshotFromCashAndHoldings() {
         insertAccount("ranker", "100000.00", "200000.00");
         insertPrice("005930", "70000.00");
-        insertHolding("ranker", "005930", 2, "50000.00");
+        insertHolding("ranker", "005930", 2, 1, "50000.00");
 
         int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
 
@@ -78,6 +78,12 @@ class PortfolioSettlementJobIntegrationTest {
                 .isEqualByComparingTo(new BigDecimal("240000.00"));
         assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("140000.00"));
+        assertThat(queryLong("select holding_quantity from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
+                .isEqualTo(2L);
+        assertThat(queryLong("select reserved_sell_quantity from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
+                .isEqualTo(1L);
+        assertThat(queryLong("select holding_position_count from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
+                .isEqualTo(1L);
         assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("20.0000"));
         assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
@@ -118,12 +124,15 @@ class PortfolioSettlementJobIntegrationTest {
         stockBatchJobLauncher.settlePortfoliosForce(1L);
 
         jdbcTemplate.update("update stock_price set current_price = 80000.00 where symbol = '005930'");
+        jdbcTemplate.update("update stock_holding set reserved_quantity = 2 where symbol = '005930'");
         stockBatchJobLauncher.settlePortfoliosForce(2L);
 
         assertThat(queryLong("select count(*) from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualTo(1L);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualByComparingTo(new BigDecimal("260000.00"));
+        assertThat(queryLong("select reserved_sell_quantity from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
+                .isEqualTo(2L);
     }
 
     @Test
@@ -365,12 +374,17 @@ class PortfolioSettlementJobIntegrationTest {
     }
 
     private void insertHolding(String userKey, String symbol, long quantity, String averagePrice) {
+        insertHolding(userKey, symbol, quantity, 0L, averagePrice);
+    }
+
+    private void insertHolding(String userKey, String symbol, long quantity, long reservedQuantity, String averagePrice) {
         Long accountId = accountIdFor(userKey);
         jdbcTemplate.update(
-                "insert into stock_holding(account_id, symbol, quantity, average_price, updated_at) values (?, ?, ?, ?, ?)",
+                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at) values (?, ?, ?, ?, ?, ?)",
                 accountId,
                 symbol,
                 quantity,
+                reservedQuantity,
                 new BigDecimal(averagePrice),
                 LocalDateTime.now()
         );

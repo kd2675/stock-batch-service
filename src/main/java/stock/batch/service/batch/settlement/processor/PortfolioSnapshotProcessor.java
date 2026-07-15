@@ -26,6 +26,9 @@ public class PortfolioSnapshotProcessor {
                 target.userKey(),
                 target.cashBalance(),
                 target.marketValue(),
+                target.holdingQuantity(),
+                target.reservedSellQuantity(),
+                target.holdingPositionCount(),
                 totalAsset,
                 returnRate
         );

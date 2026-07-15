@@ -968,12 +968,27 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshot (
   total_asset DECIMAL(19,2) NOT NULL,
   cash_balance DECIMAL(19,2) NOT NULL,
   market_value DECIMAL(19,2) NOT NULL,
+  holding_quantity BIGINT NULL,
+  reserved_sell_quantity BIGINT NULL,
+  holding_position_count BIGINT NULL,
   return_rate DECIMAL(9,4) NOT NULL,
   created_at TIMESTAMP NOT NULL,
   CONSTRAINT uk_portfolio_snapshot_account_date UNIQUE (account_id, snapshot_date),
   CONSTRAINT chk_portfolio_snapshot_total_asset_non_negative CHECK (total_asset >= 0),
   CONSTRAINT chk_portfolio_snapshot_cash_balance_non_negative CHECK (cash_balance >= 0),
-  CONSTRAINT chk_portfolio_snapshot_market_value_non_negative CHECK (market_value >= 0)
+  CONSTRAINT chk_portfolio_snapshot_market_value_non_negative CHECK (market_value >= 0),
+  CONSTRAINT chk_portfolio_snapshot_holding_metrics_complete CHECK (
+    (holding_quantity IS NULL AND reserved_sell_quantity IS NULL AND holding_position_count IS NULL)
+    OR (
+      holding_quantity IS NOT NULL
+      AND reserved_sell_quantity IS NOT NULL
+      AND holding_position_count IS NOT NULL
+      AND holding_quantity >= 0
+      AND reserved_sell_quantity >= 0
+      AND reserved_sell_quantity <= holding_quantity
+      AND holding_position_count >= 0
+    )
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_portfolio_snapshot_date_return ON portfolio_snapshot(snapshot_date, return_rate);

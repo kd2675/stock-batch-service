@@ -108,7 +108,7 @@ scripts/stock-gateway-h2-smoke.sh
 - Redis channel: `stock.price.{symbol}`
 - Redis에는 최신가 문자열과 pub/sub 메시지만 다루므로 `StringRedisTemplate` 기반 설정을 사용합니다. JSON Redis serializer는 현재 Spring Data Redis 4.x에서 removal deprecated 경고가 있어 사용하지 않습니다.
 - 가격 수집 이력은 `stock_price_tick`에 append-only로 저장하며, `stock-back-service`의 `/api/stock/v1/markets/prices/{symbol}/ticks` API가 최근 이력을 조회합니다.
-- 정산 평가는 DB 현재가를 우선 사용하되, 내부 주문장 체결처럼 아직 `stock_price`가 없는 보유 종목은 보유 평단가로 fallback합니다.
+- 정산 평가는 DB 현재가를 우선 사용하되, 내부 주문장 체결처럼 아직 `stock_price`가 없는 보유 종목은 보유 평단가로 fallback합니다. 같은 계좌별 보유 집계에서 평가액, 총 보유량, 예약 매도수량, 양수 보유 포지션 수를 함께 계산해 `portfolio_snapshot`에 기록합니다.
 - 자동장은 `stock_auto_participant`, `stock_auto_market_config`를 읽어 실제 `stock_order`에 자동 참여자 주문을 넣습니다.
 - 자동장 주문 방향 강도는 참여자별 1~10 성향을 기본으로 하되, 주문장 종목의 최신 평가 보고서 점수가 있으면 함께 반영합니다. 최신 보고서 이벤트가 `DELETE`이거나 보고서가 없으면 보고서 신호 없이 참여자 성향만 사용합니다.
 - 실제 주식시장 기능 확장 범위와 우선순위는 `../stock-back-service/STOCK_MARKET_FEATURE_ROADMAP.md`를 기준으로 봅니다.
@@ -246,7 +246,7 @@ Job 응답의 `data.status`는 `COMPLETED`, `SKIPPED`, `FAILED` 중 하나입니
 - 스케줄러는 실행 시점만 결정하고, 수동 API와 스케줄러는 모두 `StockBatchJobLauncher`를 통해 같은 job 컴포넌트를 실행합니다.
 - job 실행 잠금은 `stock_batch_job_lock` DB 테이블을 통해 처리합니다. `StockBatchJobRunner`는 native Job을 `JobOperator`로 시작하고 실행 결과를 공통 응답으로 변환하며, 실제 `BATCH_JOB_EXECUTION`/`BATCH_STEP_EXECUTION` 기록과 재시작 판단은 Spring Batch `JobRepository`가 담당합니다.
 - 현재 native Job/Step은 `market-close-rollover / market-close-snapshot-step`, `portfolio-settlement / portfolio-settlement-step`, `corporate-actions / apply-due-corporate-actions-step`, `auto-participant-cash-flow / auto-participant-cash-flow-step`, `auto-market-daily-regime-pre-create / auto-market-daily-regime-pre-create-step`입니다.
-- `portfolio-settlement-step`은 `JdbcPagingItemReader -> PortfolioSnapshotProcessor -> chunk ItemWriter` 구조이며 `stock.batch.settlement.chunk-size`(기본 200)를 business transaction 경계로 사용합니다. 나머지는 기존 서비스가 자체 업무 트랜잭션 또는 이벤트별 `REQUIRES_NEW` 경계를 이미 소유하므로 단일 command Tasklet Step으로 둡니다.
+- `portfolio-settlement-step`은 `JdbcPagingItemReader -> PortfolioSnapshotProcessor -> chunk ItemWriter` 구조이며 `stock.batch.settlement.chunk-size`(기본 200)를 business transaction 경계로 사용합니다. Reader의 보유 집계는 계좌별 파생 집계로 페이징 키와 분리해 다음 페이지 조건의 `id`가 모호해지지 않게 합니다. 나머지는 기존 서비스가 자체 업무 트랜잭션 또는 이벤트별 `REQUIRES_NEW` 경계를 이미 소유하므로 단일 command Tasklet Step으로 둡니다.
 - 비정상 종료 후 open 상태로 남은 native execution은 새 실행 노드가 해당 job의 `stock_batch_job_lock`을 획득한 경우에만 `FAILED`로 전환합니다. 이후 동일 identifying parameter로 재실행하면 완료된 Step은 건너뛰고 실패·중단 Step부터 이어갑니다. 시작 시 모든 `BATCH_*` row를 일괄 변경하는 전역 복구는 사용하지 않습니다.
 - `marketdata`, `settlement`, `marketclose`는 batch 문서 기준에 맞춰 reader/processor/writer 또는 writer 단위로 책임을 분리합니다.
 - 시세는 모든 종목을 무조건 갱신하지 않고 관심 종목, 보유 종목, 미체결 주문이 있는 종목을 우선 갱신합니다.

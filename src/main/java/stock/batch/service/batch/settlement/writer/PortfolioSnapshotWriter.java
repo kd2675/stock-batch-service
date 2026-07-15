@@ -25,12 +25,16 @@ public class PortfolioSnapshotWriter {
         int updatedRows = jdbcTemplate.update(
                 """
                 update portfolio_snapshot
-                set total_asset = ?, cash_balance = ?, market_value = ?, return_rate = ?, created_at = ?
+                set total_asset = ?, cash_balance = ?, market_value = ?, holding_quantity = ?,
+                    reserved_sell_quantity = ?, holding_position_count = ?, return_rate = ?, created_at = ?
                 where account_id = ? and snapshot_date = ?
                 """,
                 command.totalAsset(),
                 command.cashBalance(),
                 command.marketValue(),
+                command.holdingQuantity(),
+                command.reservedSellQuantity(),
+                command.holdingPositionCount(),
                 command.returnRate(),
                 snapshotAt,
                 command.accountId(),
@@ -42,14 +46,20 @@ public class PortfolioSnapshotWriter {
 
         jdbcTemplate.update(
                 """
-                insert into portfolio_snapshot(account_id, snapshot_date, total_asset, cash_balance, market_value, return_rate, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into portfolio_snapshot(
+                    account_id, snapshot_date, total_asset, cash_balance, market_value,
+                    holding_quantity, reserved_sell_quantity, holding_position_count, return_rate, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 command.accountId(),
                 snapshotDate,
                 command.totalAsset(),
                 command.cashBalance(),
                 command.marketValue(),
+                command.holdingQuantity(),
+                command.reservedSellQuantity(),
+                command.holdingPositionCount(),
                 command.returnRate(),
                 snapshotAt
         );

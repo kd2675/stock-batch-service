@@ -8,6 +8,9 @@ public record AccountSettlementTarget(
         BigDecimal cashBalance,
         BigDecimal netCashFlow,
         BigDecimal marketValue,
-        BigDecimal reservedBuyCash
+        BigDecimal reservedBuyCash,
+        long holdingQuantity,
+        long reservedSellQuantity,
+        long holdingPositionCount
 ) {
 }

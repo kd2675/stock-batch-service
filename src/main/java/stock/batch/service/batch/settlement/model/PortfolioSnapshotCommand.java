@@ -7,6 +7,9 @@ public record PortfolioSnapshotCommand(
         String userKey,
         BigDecimal cashBalance,
         BigDecimal marketValue,
+        long holdingQuantity,
+        long reservedSellQuantity,
+        long holdingPositionCount,
         BigDecimal totalAsset,
         BigDecimal returnRate
 ) {

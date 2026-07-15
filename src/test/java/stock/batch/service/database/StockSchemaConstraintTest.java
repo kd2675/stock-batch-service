@@ -205,6 +205,50 @@ class StockSchemaConstraintTest {
     }
 
     @Test
+    void portfolioSnapshot_legacyNullHoldingMetrics_areAcceptedBySchema() {
+        int inserted = jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                  account_id, snapshot_date, total_asset, cash_balance, market_value,
+                  holding_quantity, reserved_sell_quantity, holding_position_count, return_rate, created_at
+                ) values (1, ?, 1000, 500, 500, null, null, null, 0, ?)
+                """,
+                LocalDate.now(),
+                LocalDateTime.now()
+        );
+
+        assertThat(inserted).isOne();
+    }
+
+    @Test
+    void portfolioSnapshot_partialHoldingMetrics_areRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                  account_id, snapshot_date, total_asset, cash_balance, market_value,
+                  holding_quantity, reserved_sell_quantity, holding_position_count, return_rate, created_at
+                ) values (1, ?, 1000, 500, 500, 10, null, 1, 0, ?)
+                """,
+                LocalDate.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void portfolioSnapshot_reservedSellAboveHolding_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                  account_id, snapshot_date, total_asset, cash_balance, market_value,
+                  holding_quantity, reserved_sell_quantity, holding_position_count, return_rate, created_at
+                ) values (1, ?, 1000, 500, 500, 10, 11, 1, 0, ?)
+                """,
+                LocalDate.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void stockCorporateAction_unknownType_isRejectedBySchema() {
         assertThatThrownBy(() -> jdbcTemplate.update(
                 stockCorporateActionInsertSql(),
