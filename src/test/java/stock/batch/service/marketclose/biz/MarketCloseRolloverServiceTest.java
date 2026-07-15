@@ -179,6 +179,78 @@ class MarketCloseRolloverServiceTest {
     }
 
     @Test
+    void rolloverClosingPrices_multipleDailyExecutions_snapshotsBuySideOhlcInExecutionOrder() {
+        LocalDate simulationDate = LocalDate.of(2026, 7, 4);
+        setSimulationDate(simulationDate);
+        insertOrderBookInstrument("MC_OHLC");
+        insertPrice("MC_OHLC", "107.00", "100.00", "internal-order-book");
+        insertAccount("market-close-ohlc-buyer", "1000000.00");
+        insertAccount("market-close-ohlc-seller", "1000000.00");
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "999.00", "999.00",
+                simulationDate.minusDays(1).atTime(15, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-seller", "MC_OHLC", "SELL", 1L, "999.00", "999.00",
+                simulationDate.atTime(8, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "100.00", "100.00",
+                simulationDate.atTime(9, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "130.00", "130.00",
+                simulationDate.atTime(10, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "90.00", "90.00",
+                simulationDate.atTime(11, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "105.00", "105.00",
+                simulationDate.atTime(15, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "107.00", "107.00",
+                simulationDate.atTime(15, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-seller", "MC_OHLC", "SELL", 1L, "1.00", "1.00",
+                simulationDate.atTime(16, 0)
+        );
+        insertExecution(
+                "market-close-ohlc-buyer", "MC_OHLC", "BUY", 1L, "777.00", "777.00",
+                simulationDate.plusDays(1).atTime(9, 0)
+        );
+
+        marketCloseRolloverService.rolloverClosingPrices();
+
+        Long closeRunId = queryLong("select max(id) from stock_market_close_run");
+        List<BigDecimal> ohlc = jdbcTemplate.queryForObject(
+                """
+                select open_price, high_price, low_price, last_execution_price
+                  from stock_order_book_daily_snapshot
+                 where close_run_id = ?
+                   and symbol = 'MC_OHLC'
+                """,
+                (rs, rowNum) -> List.of(
+                        rs.getBigDecimal("open_price"),
+                        rs.getBigDecimal("high_price"),
+                        rs.getBigDecimal("low_price"),
+                        rs.getBigDecimal("last_execution_price")
+                ),
+                closeRunId
+        );
+
+        assertThat(ohlc).containsExactly(
+                new BigDecimal("100.00"),
+                new BigDecimal("130.00"),
+                new BigDecimal("90.00"),
+                new BigDecimal("107.00")
+        );
+    }
+
+    @Test
     void rolloverClosingPrices_withSymbol_closesOnlyThatOrderBookSymbol() {
         insertOrderBookInstrument("MC101");
         insertOrderBookInstrument("MC102");
