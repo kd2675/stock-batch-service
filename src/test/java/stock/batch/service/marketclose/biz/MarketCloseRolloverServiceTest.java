@@ -99,8 +99,8 @@ class MarketCloseRolloverServiceTest {
         insertPrice("MC001", "73500.00", "70000.00", "internal-order-book");
         insertAccount("market-close-buyer", "1000000.00");
         insertAccount("market-close-seller", "500000.00");
-        insertExecution("market-close-buyer", "MC001", "BUY", 1L, "73500.00", "73500.00", simulationDate.atTime(10, 0));
-        insertExecution("market-close-seller", "MC001", "SELL", 2L, "73500.00", "147000.00", simulationDate.atTime(11, 0));
+        insertExecution("market-close-buyer", "MC001", "BUY", 2L, "73500.00", "147000.00", simulationDate.atTime(10, 0));
+        insertExecution("market-close-seller", "MC001", "SELL", 2L, "73500.00", "147000.00", simulationDate.atTime(10, 0));
         insertHolding("market-close-seller", "MC001", 10L, 4L, "70000.00");
         insertReservedBuyOrder("market-close-buy-order", "market-close-buyer", "MC001", "147000.00");
         insertReservedSellOrder("market-close-sell-order", "market-close-seller", "MC001", 4L);
@@ -124,13 +124,13 @@ class MarketCloseRolloverServiceTest {
         assertThat(queryDecimal("select change_rate from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualByComparingTo(new BigDecimal("5.0000"));
         assertThat(queryLong("select execution_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
-                .isEqualTo(2L);
-        assertThat(queryLong("select execution_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
-                .isEqualTo(3L);
-        assertThat(queryDecimal("select turnover_amount from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
-                .isEqualByComparingTo(new BigDecimal("220500.00"));
-        assertThat(queryLong("select buy_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(1L);
+        assertThat(queryLong("select execution_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(2L);
+        assertThat(queryDecimal("select turnover_amount from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("147000.00"));
+        assertThat(queryLong("select buy_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualTo(2L);
         assertThat(queryLong("select sell_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(2L);
         assertThat(queryDecimal("select open_price from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))

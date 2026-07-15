@@ -402,9 +402,9 @@ public class MarketCloseRolloverWriter {
                   left join stock_price p on p.symbol = i.symbol
                   left join (
                        select symbol,
-                              count(*) as execution_count,
-                              sum(quantity) as execution_quantity,
-                              sum(gross_amount) as turnover_amount,
+                              sum(case when side = 'BUY' then 1 else 0 end) as execution_count,
+                              sum(case when side = 'BUY' then quantity else 0 end) as execution_quantity,
+                              sum(case when side = 'BUY' then gross_amount else 0 end) as turnover_amount,
                               sum(case when side = 'BUY' then quantity else 0 end) as buy_quantity,
                               sum(case when side = 'SELL' then quantity else 0 end) as sell_quantity,
                               sum(case when side = 'BUY' then net_amount else 0 end) as buy_net_amount,
