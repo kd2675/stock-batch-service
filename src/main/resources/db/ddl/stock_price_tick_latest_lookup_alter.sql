@@ -10,7 +10,7 @@ SET @stock_price_tick_latest_lookup_index_exists := (
 
 SET @stock_price_tick_latest_lookup_index_add_sql := IF(
   @stock_price_tick_latest_lookup_index_exists = 0,
-  'ALTER TABLE stock_price_tick ADD INDEX idx_stock_price_tick_symbol_time_id (symbol, price_time, id)',
+  'ALTER TABLE stock_price_tick ADD INDEX idx_stock_price_tick_symbol_time_id (symbol, price_time, id), ALGORITHM=INPLACE, LOCK=NONE',
   'SELECT 1'
 );
 
@@ -29,7 +29,7 @@ SET @stock_price_tick_legacy_lookup_index_exists := (
 
 SET @stock_price_tick_legacy_lookup_index_drop_sql := IF(
   @stock_price_tick_legacy_lookup_index_exists > 0,
-  'ALTER TABLE stock_price_tick DROP INDEX idx_stock_price_tick_symbol_time',
+  'ALTER TABLE stock_price_tick DROP INDEX idx_stock_price_tick_symbol_time, ALGORITHM=INPLACE, LOCK=NONE',
   'SELECT 1'
 );
 

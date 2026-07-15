@@ -480,7 +480,7 @@ class StockDdlContractTest {
     }
 
     @Test
-    void autoMarketPressureDistributionAlterDdl_isSyncedWithBackServiceCopyAndNewContract() throws IOException {
+    void autoMarketPressureDistributionAlterDdl_isGuardedAndSyncedWithBackServiceCopyAndNewContract() throws IOException {
         String batchDdl = Files.readString(
                 Path.of("src/main/resources/db/ddl/stock_auto_market_pressure_distribution_alter.sql"),
                 StandardCharsets.UTF_8
@@ -493,6 +493,12 @@ class StockDdlContractTest {
         assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
         assertThat(batchDdl).contains(
                 "USE STOCK_SERVICE",
+                "information_schema.columns",
+                "information_schema.check_constraints",
+                "stock_migration_required_auto_market_pressure_distribution_schema",
+                "@stock_auto_market_pressure_legacy_column_count = 13",
+                "@stock_auto_market_pressure_new_column_count = 0",
+                "@stock_auto_market_pressure_legacy_check_count = 15",
                 "DROP COLUMN intensity",
                 "primary_price_pressure_bias",
                 "secondary_execution_aggression_pressure_bias",
@@ -503,6 +509,10 @@ class StockDdlContractTest {
                 "WHEN 'SLOT_1200' THEN 1",
                 "WHEN 'SLOT_1500' THEN 1",
                 "BETWEEN -100 AND 100"
+        );
+        assertThat(batchDdl).containsSubsequence(
+                "stock_migration_required_auto_market_pressure_distribution_schema",
+                "ALTER TABLE stock_auto_market_config"
         );
     }
 
@@ -522,7 +532,8 @@ class StockDdlContractTest {
                 "USE STOCK_SERVICE",
                 "information_schema.statistics",
                 "ADD INDEX idx_stock_price_tick_symbol_time_id (symbol, price_time, id)",
-                "DROP INDEX idx_stock_price_tick_symbol_time"
+                "DROP INDEX idx_stock_price_tick_symbol_time",
+                "ALGORITHM=INPLACE, LOCK=NONE"
         );
     }
 

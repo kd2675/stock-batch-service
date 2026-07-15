@@ -1,5 +1,77 @@
 USE STOCK_SERVICE;
 
+SET @stock_auto_market_pressure_legacy_column_count := (
+  SELECT COUNT(*)
+    FROM information_schema.columns
+   WHERE table_schema = DATABASE()
+     AND (
+       (table_name = 'stock_auto_market_config' AND column_name = 'intensity')
+       OR (table_name = 'stock_order_book_daily_regime' AND column_name IN (
+         'price_direction', 'asset_preference', 'direction_intensity',
+         'volatility_level', 'liquidity_level', 'execution_aggression_level'
+       ))
+       OR (table_name = 'stock_order_book_regime_modifier' AND column_name IN (
+         'price_direction_modifier', 'asset_preference_modifier', 'direction_intensity_modifier',
+         'volatility_modifier', 'liquidity_modifier', 'execution_aggression_modifier'
+       ))
+     )
+);
+
+SET @stock_auto_market_pressure_new_column_count := (
+  SELECT COUNT(*)
+    FROM information_schema.columns
+   WHERE table_schema = DATABASE()
+     AND (
+       (table_name = 'stock_auto_market_config' AND column_name IN (
+         'primary_price_pressure_bias', 'primary_asset_preference_pressure_bias',
+         'primary_volatility_pressure_bias', 'primary_liquidity_pressure_bias',
+         'primary_execution_aggression_pressure_bias', 'secondary_price_pressure_bias',
+         'secondary_asset_preference_pressure_bias', 'secondary_volatility_pressure_bias',
+         'secondary_liquidity_pressure_bias', 'secondary_execution_aggression_pressure_bias'
+       ))
+       OR (table_name IN ('stock_order_book_daily_regime', 'stock_order_book_regime_modifier') AND column_name IN (
+         'price_pressure', 'asset_preference_pressure', 'volatility_pressure',
+         'liquidity_pressure', 'execution_aggression_pressure'
+       ))
+     )
+);
+
+SET @stock_auto_market_pressure_legacy_check_count := (
+  SELECT COUNT(*)
+    FROM information_schema.check_constraints
+   WHERE constraint_schema = DATABASE()
+     AND constraint_name IN (
+       'chk_stock_auto_market_intensity',
+       'chk_stock_order_book_daily_regime_phase',
+       'chk_stock_order_book_daily_regime_price_direction',
+       'chk_stock_order_book_daily_regime_asset_preference',
+       'chk_stock_order_book_daily_regime_intensity',
+       'chk_stock_order_book_daily_regime_volatility',
+       'chk_stock_order_book_daily_regime_liquidity',
+       'chk_stock_order_book_daily_regime_execution_aggression',
+       'chk_stock_order_book_regime_modifier_phase',
+       'chk_stock_order_book_regime_modifier_price_direction',
+       'chk_stock_order_book_regime_modifier_asset_preference',
+       'chk_stock_order_book_regime_modifier_intensity',
+       'chk_stock_order_book_regime_modifier_volatility',
+       'chk_stock_order_book_regime_modifier_liquidity',
+       'chk_stock_order_book_regime_modifier_execution_aggression'
+     )
+);
+
+-- All three legacy tables must be ready before the first auto-committing ALTER runs.
+SET @stock_auto_market_pressure_schema_guard_sql := IF(
+  @stock_auto_market_pressure_legacy_column_count = 13
+  AND @stock_auto_market_pressure_new_column_count = 0
+  AND @stock_auto_market_pressure_legacy_check_count = 15,
+  'SELECT 1',
+  'SELECT 1 FROM stock_migration_required_auto_market_pressure_distribution_schema'
+);
+
+PREPARE stock_auto_market_pressure_schema_guard_stmt FROM @stock_auto_market_pressure_schema_guard_sql;
+EXECUTE stock_auto_market_pressure_schema_guard_stmt;
+DEALLOCATE PREPARE stock_auto_market_pressure_schema_guard_stmt;
+
 ALTER TABLE stock_auto_market_config
   DROP CHECK chk_stock_auto_market_intensity,
   DROP COLUMN intensity,
@@ -146,4 +218,3 @@ ALTER TABLE stock_order_book_regime_modifier
   ADD CONSTRAINT chk_stock_order_book_regime_modifier_volatility CHECK (volatility_pressure BETWEEN -100 AND 100),
   ADD CONSTRAINT chk_stock_order_book_regime_modifier_liquidity CHECK (liquidity_pressure BETWEEN -100 AND 100),
   ADD CONSTRAINT chk_stock_order_book_regime_modifier_aggression CHECK (execution_aggression_pressure BETWEEN -100 AND 100);
-

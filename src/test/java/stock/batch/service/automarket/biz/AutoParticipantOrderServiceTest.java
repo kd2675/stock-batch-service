@@ -39,6 +39,7 @@ class AutoParticipantOrderServiceTest {
     void placeAutoOrders_unacceptedDecision_recordsExactPlanningDropReason(
             String side,
             List<AutoParticipantTradingSnapshot> snapshots,
+            BigDecimal orderPrice,
             AutoMarketOrderDropReason expectedReason
     ) {
         AutoMarketReader reader = mock(AutoMarketReader.class);
@@ -66,7 +67,6 @@ class AutoParticipantOrderServiceTest {
                 AutoParticipantProfileType.NOISE_TRADER,
                 policy
         );
-        BigDecimal orderPrice = new BigDecimal("100.00");
         when(clockService.currentSnapshot()).thenReturn(clock());
         when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(snapshots);
@@ -103,10 +103,12 @@ class AutoParticipantOrderServiceTest {
     }
 
     private static Stream<Arguments> planningDropCases() {
+        BigDecimal validPrice = new BigDecimal("100.00");
         return Stream.of(
-                Arguments.of(null, List.of(), AutoMarketOrderDropReason.SIDE_NOT_SELECTED),
-                Arguments.of("BUY", List.of(), AutoMarketOrderDropReason.INSUFFICIENT_CASH),
-                Arguments.of("SELL", List.of(), AutoMarketOrderDropReason.INSUFFICIENT_HOLDING),
+                Arguments.of(null, List.of(), validPrice, AutoMarketOrderDropReason.SIDE_NOT_SELECTED),
+                Arguments.of("BUY", List.of(), BigDecimal.ZERO, AutoMarketOrderDropReason.INVALID_PRICE),
+                Arguments.of("BUY", List.of(), validPrice, AutoMarketOrderDropReason.INSUFFICIENT_CASH),
+                Arguments.of("SELL", List.of(), validPrice, AutoMarketOrderDropReason.INSUFFICIENT_HOLDING),
                 Arguments.of(
                         "BUY",
                         List.of(new AutoParticipantTradingSnapshot(
@@ -120,6 +122,7 @@ class AutoParticipantOrderServiceTest {
                                 100,
                                 0
                         )),
+                        validPrice,
                         AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT
                 )
         );
