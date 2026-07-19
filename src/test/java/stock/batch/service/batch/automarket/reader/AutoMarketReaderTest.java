@@ -312,7 +312,7 @@ class AutoMarketReaderTest {
     }
 
     @Test
-    void findTradingSnapshots_readsCashHoldingAndDividendWithSingleQuery() {
+    void findTradingSnapshots_readsCashHoldingDividendAndOpenQuantitiesWithSingleQuery() {
         JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_snapshot_test");
         realJdbcTemplate.execute("""
                 create table stock_account (
@@ -375,8 +375,6 @@ class AutoMarketReaderTest {
         assertThat(snapshot.availableQuantity()).isEqualTo(7L);
         assertThat(snapshot.averagePrice()).isEqualByComparingTo(new BigDecimal("50000.00"));
         assertThat(snapshot.recentDividendCashAmount()).isEqualByComparingTo(new BigDecimal("3000.00"));
-        assertThat(snapshot.ownBestBid()).isEqualByComparingTo(new BigDecimal("51000.00"));
-        assertThat(snapshot.ownBestAsk()).isEqualByComparingTo(new BigDecimal("52000.00"));
         assertThat(snapshot.openBuyQuantity()).isEqualTo(5L);
         assertThat(snapshot.openSellQuantity()).isEqualTo(3L);
         AutoParticipantTradingSnapshot emptyHoldingSnapshot = snapshots.get(1);

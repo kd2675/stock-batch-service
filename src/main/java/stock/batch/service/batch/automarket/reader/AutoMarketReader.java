@@ -443,8 +443,6 @@ public class AutoMarketReader {
                 ),
                 open_order_summary as (
                     select o.account_id,
-                           max(case when o.side = 'BUY' and o.order_type = 'LIMIT' then o.limit_price end) as own_best_bid,
-                           min(case when o.side = 'SELL' and o.order_type = 'LIMIT' then o.limit_price end) as own_best_ask,
                            sum(case when o.side = 'BUY' then o.quantity - o.filled_quantity else 0 end) as open_buy_quantity,
                            sum(case when o.side = 'SELL' then o.quantity - o.filled_quantity else 0 end) as open_sell_quantity
                       from stock_order o
@@ -460,8 +458,6 @@ public class AutoMarketReader {
                        coalesce(max(h.quantity - h.reserved_quantity), 0) as available_quantity,
                        coalesce(max(case when h.quantity > 0 then h.average_price else 0 end), 0) as average_price,
                        coalesce(max(f.recent_dividend_cash_amount), 0) as recent_dividend_cash_amount,
-                       max(o.own_best_bid) as own_best_bid,
-                       max(o.own_best_ask) as own_best_ask,
                        coalesce(max(o.open_buy_quantity), 0) as open_buy_quantity,
                        coalesce(max(o.open_sell_quantity), 0) as open_sell_quantity
                 from scoped_accounts a

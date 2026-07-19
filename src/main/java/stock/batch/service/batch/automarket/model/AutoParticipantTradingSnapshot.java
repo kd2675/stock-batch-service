@@ -8,8 +8,6 @@ public record AutoParticipantTradingSnapshot(
         long availableQuantity,
         BigDecimal averagePrice,
         BigDecimal recentDividendCashAmount,
-        BigDecimal ownBestBid,
-        BigDecimal ownBestAsk,
         long openBuyQuantity,
         long openSellQuantity
 ) {

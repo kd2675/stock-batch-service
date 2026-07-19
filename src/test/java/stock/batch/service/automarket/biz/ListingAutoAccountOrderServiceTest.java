@@ -247,58 +247,63 @@ class ListingAutoAccountOrderServiceTest {
     }
 
     @Test
-    void run_buyUpDirection_neverCrossesMarketBestAsk() {
+    void run_buyUpDirection_canCrossMarketBestAsk() {
         ListingAutoAccountConfig config = listingConfig(10L, "BUY_ONLY", 10, 10L, 0L, 10L, 0L, "UP", "UP");
-        prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("102.00"));
-        acceptAllPlannedOrders();
-
-        service.run(marketConfig(), sessionApproval());
-
-        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
-            assertThat(order.price()).isLessThan(new BigDecimal("102.00"));
-            assertThat(order.side()).isEqualTo("BUY");
-        });
-    }
-
-    @Test
-    void run_sellDownDirection_neverCrossesMarketBestBid() {
-        ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "DOWN");
-        prepare(config, 10L, 10L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("102.00"));
+        prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("100.00"));
         acceptAllPlannedOrders();
 
         service.run(marketConfig(), sessionApproval());
 
         assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
             assertThat(order.price()).isGreaterThan(new BigDecimal("100.00"));
+            assertThat(order.side()).isEqualTo("BUY");
+        });
+    }
+
+    @Test
+    void run_sellDownDirection_canCrossMarketBestBid() {
+        ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "DOWN");
+        prepare(config, 10L, 10L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("100.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
+            assertThat(order.price()).isLessThan(new BigDecimal("100.00"));
             assertThat(order.side()).isEqualTo("SELL");
         });
     }
 
     @Test
-    void run_twoSidedRandomDirections_neverCrossMarketOrEachOther() {
-        ListingAutoAccountConfig config = listingConfig(
-                10L, "TWO_SIDED", 1, 10L, 10L, 100L, 10L, "RANDOM", "RANDOM"
+    void run_fragmentedOrders_useOneExternalQuoteReferenceWithoutSelfRatcheting() {
+        ListingAutoAccountConfig config = new ListingAutoAccountConfig(
+                "LST001",
+                10L,
+                "listing-user-10",
+                "BUY_ONLY",
+                1,
+                90,
+                1,
+                3L,
+                0L,
+                3L,
+                0L,
+                "UP",
+                "UP",
+                BigDecimal.ONE,
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                BigDecimal.valueOf(30)
         );
-        prepare(config, 100L, 100L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+        prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("101.00"));
         acceptAllPlannedOrders();
 
         service.run(marketConfig(), sessionApproval());
 
-        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
-        BigDecimal highestBuy = orders.stream()
-                .filter(order -> "BUY".equals(order.side()))
-                .map(AutoMarketPlannedOrder::price)
-                .max(BigDecimal::compareTo)
-                .orElseThrow();
-        BigDecimal lowestSell = orders.stream()
-                .filter(order -> "SELL".equals(order.side()))
-                .map(AutoMarketPlannedOrder::price)
-                .min(BigDecimal::compareTo)
-                .orElseThrow();
-        assertThat(orders).hasSize(20);
-        assertThat(highestBuy).isLessThan(new BigDecimal("110.00"));
-        assertThat(lowestSell).isGreaterThan(new BigDecimal("100.00"));
-        assertThat(highestBuy).isLessThan(lowestSell);
+        assertThat(capturePlannedOrders())
+                .hasSize(3)
+                .extracting(AutoMarketPlannedOrder::price)
+                .containsOnly(new BigDecimal("101.00"));
     }
 
     private void prepare(

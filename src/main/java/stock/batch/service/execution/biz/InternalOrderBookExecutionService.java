@@ -462,10 +462,20 @@ public class InternalOrderBookExecutionService {
     }
 
     private BigDecimal resolveExecutionPrice(OrderBookOrderRow buyOrder, OrderBookOrderRow sellOrder) {
-        if (sellOrder.limitPrice() != null) {
+        if (buyOrder.limitPrice() == null) {
             return sellOrder.limitPrice();
         }
-        return buyOrder.limitPrice();
+        if (sellOrder.limitPrice() == null) {
+            return buyOrder.limitPrice();
+        }
+        int receivedTimeOrder = buyOrder.createdAt().compareTo(sellOrder.createdAt());
+        if (receivedTimeOrder < 0) {
+            return buyOrder.limitPrice();
+        }
+        if (receivedTimeOrder > 0) {
+            return sellOrder.limitPrice();
+        }
+        return buyOrder.id() < sellOrder.id() ? buyOrder.limitPrice() : sellOrder.limitPrice();
     }
 
     private boolean hasEnoughBuyCash(

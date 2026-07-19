@@ -128,7 +128,7 @@ public class OrderBookExecutionReader {
     public Optional<OrderBookMatchCandidate> findBestMatchCandidate(String symbol, int scanLimit) {
         return jdbcClient.sql(
                 """
-                with buy_candidates as (
+                with buy_scan as (
                     select id, account_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
@@ -144,7 +144,7 @@ public class OrderBookExecutionReader {
                               id asc
                      limit :scanLimit
                 ),
-                sell_candidates as (
+                sell_scan as (
                     select id, account_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
@@ -159,6 +159,112 @@ public class OrderBookExecutionReader {
                               created_at asc,
                               id asc
                      limit :scanLimit
+                ),
+                best_buy as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from buy_scan
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price desc,
+                              created_at asc,
+                              id asc
+                     limit 1
+                ),
+                best_sell as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from sell_scan
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price asc,
+                              created_at asc,
+                              id asc
+                     limit 1
+                ),
+                alternate_buy_account as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'BUY'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type in ('LIMIT', 'MARKET')
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and (order_type = 'MARKET' or limit_price is not null)
+                       and exists (
+                           select 1
+                             from best_buy b
+                             join best_sell s on s.account_id = b.account_id
+                       )
+                       and account_id <> (select account_id from best_sell)
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price desc,
+                              created_at asc,
+                              id asc
+                     limit 1
+                ),
+                alternate_sell_account as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'SELL'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type in ('LIMIT', 'MARKET')
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and (order_type = 'MARKET' or limit_price is not null)
+                       and exists (
+                           select 1
+                             from best_buy b
+                             join best_sell s on s.account_id = b.account_id
+                       )
+                       and account_id <> (select account_id from best_buy)
+                     order by case when order_type = 'MARKET' then 1 else 0 end desc,
+                              limit_price asc,
+                              created_at asc,
+                              id asc
+                     limit 1
+                ),
+                fallback_limit_buy as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'BUY'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type = 'LIMIT'
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and limit_price is not null
+                       and exists (select 1 from best_sell where order_type = 'MARKET')
+                       and account_id <> (select account_id from best_sell)
+                     order by limit_price desc, created_at asc, id asc
+                     limit 1
+                ),
+                fallback_limit_sell as (
+                    select id, account_id, order_type, limit_price, created_at
+                      from stock_order
+                     where symbol = :symbol
+                       and side = 'SELL'
+                       and market_type = 'ORDER_BOOK'
+                       and order_type = 'LIMIT'
+                       and status in ('PENDING', 'PARTIALLY_FILLED')
+                       and quantity > filled_quantity
+                       and limit_price is not null
+                       and exists (select 1 from best_buy where order_type = 'MARKET')
+                       and account_id <> (select account_id from best_buy)
+                     order by limit_price asc, created_at asc, id asc
+                     limit 1
+                ),
+                buy_candidates as (
+                    select id, account_id, order_type, limit_price, created_at from buy_scan
+                    union
+                    select id, account_id, order_type, limit_price, created_at from alternate_buy_account
+                    union
+                    select id, account_id, order_type, limit_price, created_at from fallback_limit_buy
+                ),
+                sell_candidates as (
+                    select id, account_id, order_type, limit_price, created_at from sell_scan
+                    union
+                    select id, account_id, order_type, limit_price, created_at from alternate_sell_account
+                    union
+                    select id, account_id, order_type, limit_price, created_at from fallback_limit_sell
                 )
                 select b.id as buy_order_id,
                        b.account_id as buy_account_id,
@@ -204,7 +310,8 @@ public class OrderBookExecutionReader {
     public List<OrderBookOrderRow> findMatchOrdersForUpdate(OrderBookMatchCandidate candidate) {
         return jdbcClient.sql(
                 """
-                select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity, average_fill_price, reserved_cash
+                select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity,
+                       average_fill_price, reserved_cash, created_at
                   from %s
                  where id in (:buyOrderId, :sellOrderId)
                   and market_type = 'ORDER_BOOK'
@@ -273,7 +380,8 @@ public class OrderBookExecutionReader {
                 rs.getLong("quantity"),
                 rs.getLong("filled_quantity"),
                 rs.getBigDecimal("average_fill_price"),
-                rs.getBigDecimal("reserved_cash")
+                rs.getBigDecimal("reserved_cash"),
+                rs.getTimestamp("created_at").toLocalDateTime()
         );
     }
 

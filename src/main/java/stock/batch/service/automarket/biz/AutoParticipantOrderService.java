@@ -65,8 +65,10 @@ class AutoParticipantOrderService {
             LocalDateTime businessEffectiveAt
     ) {
         Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config, businessEffectiveAt);
-        AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
-        double initialOrderPressure = orderBookState.orderPressure();
+        AutoMarketOrderBookState priceReferenceOrderBookState =
+                autoMarketOrderExecutor.loadOrderBookState(config.symbol());
+        AutoMarketOrderBookState planningOrderBookState = priceReferenceOrderBookState;
+        double initialOrderPressure = planningOrderBookState.orderPressure();
         boolean atLowerPriceLimit = isAtLowerPriceLimit(config);
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
         EnumMap<AutoMarketOrderDropReason, Integer> planningDropCounts = new EnumMap<>(AutoMarketOrderDropReason.class);
@@ -90,7 +92,7 @@ class AutoParticipantOrderService {
                     unrealizedReturn,
                     0,
                     tradingState,
-                    orderBookState,
+                    planningOrderBookState,
                     profileNoise,
                     atLowerPriceLimit
             );
@@ -106,7 +108,7 @@ class AutoParticipantOrderService {
                         unrealizedReturn,
                         index,
                         tradingState,
-                        orderBookState,
+                        planningOrderBookState,
                         profileNoise,
                         atLowerPriceLimit
                 );
@@ -115,19 +117,14 @@ class AutoParticipantOrderService {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.SIDE_NOT_SELECTED);
                     continue;
                 }
-                BigDecimal price = autoParticipantOrderPricing.createAutoPrice(config, effectiveIntensity, side, policy, orderBookState);
-                if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
-                    incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.INVALID_PRICE);
-                    continue;
-                }
-                price = autoParticipantOrderPricing.avoidSelfCross(
+                BigDecimal price = autoParticipantOrderPricing.createAutoPrice(
                         config,
+                        effectiveIntensity,
                         side,
-                        price,
-                        tradingState.ownBestBid(),
-                        tradingState.ownBestAsk()
+                        policy,
+                        priceReferenceOrderBookState
                 );
-                if (price.compareTo(BigDecimal.ZERO) <= 0) {
+                if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.INVALID_PRICE);
                     continue;
                 }
@@ -145,7 +142,7 @@ class AutoParticipantOrderService {
                 }
                 long quantity = adjustQuantityForOrderPressure(side, quantityDecision.quantity(), initialOrderPressure);
                 plannedOrders.add(new AutoMarketPlannedOrder(strategy.accountId(), config.symbol(), side, price, quantity));
-                orderBookState = orderBookState.withPlacedOrder(side, price, quantity);
+                planningOrderBookState = planningOrderBookState.withPlacedOrder(side, price, quantity);
                 tradingState.reserve(side, price, quantity);
             }
         }

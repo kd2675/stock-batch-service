@@ -108,16 +108,16 @@ class InternalOrderBookExecutionServiceTest {
         assertThat(queryLong("select filled_quantity from stock_order where client_order_id = 'buyer-order'"))
                 .isEqualTo(2L);
         assertThat(queryDecimal("select average_fill_price from stock_order where client_order_id = 'buyer-order'"))
-                .isEqualByComparingTo(new BigDecimal("69000.00"));
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryDecimal("select reserved_cash from stock_order where client_order_id = 'buyer-order'"))
                 .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'buyer'"))
-                .isEqualByComparingTo(new BigDecimal("9792000.00"));
+                .isEqualByComparingTo(new BigDecimal("9790000.00"));
 
         assertThat(queryString("select status from stock_order where client_order_id = 'seller-order'"))
                 .isEqualTo("FILLED");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'seller'"))
-                .isEqualByComparingTo(new BigDecimal("238000.00"));
+                .isEqualByComparingTo(new BigDecimal("240000.00"));
         assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'seller' and symbol = '005930'"))
                 .isEqualTo(3L);
         assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'seller' and symbol = '005930'"))
@@ -126,11 +126,25 @@ class InternalOrderBookExecutionServiceTest {
         assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'buyer' and symbol = '005930'"))
                 .isEqualTo(2L);
         assertThat(queryDecimal("select average_price from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'buyer' and symbol = '005930'"))
-                .isEqualByComparingTo(new BigDecimal("69000.00"));
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930' and provider = 'internal-order-book'"))
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void executeEligibleOrders_olderSellLimit_usesSellOrderPrice() {
+        insertAccount("later-buyer", "9860000.00", "10000000.00");
+        insertAccount("older-seller", "100000.00", "10000000.00");
+        insertHolding("older-seller", "005930", 2, 2, "50000.00");
+        insertOrder("older-sell", "older-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 2, 0, null, "0.00", 1);
+        insertOrder("later-buy", "later-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 2, 0, null, "140000.00", 2);
+
+        internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(queryDecimal("select average_fill_price from stock_order where client_order_id = 'later-buy'"))
+                .isEqualByComparingTo(new BigDecimal("69000.00"));
     }
 
     @Test
@@ -152,24 +166,24 @@ class InternalOrderBookExecutionServiceTest {
         assertThat(queryLong("select filled_quantity from stock_order where client_order_id = 'multi-buy'"))
                 .isEqualTo(3L);
         assertThat(queryDecimal("select average_fill_price from stock_order where client_order_id = 'multi-buy'"))
-                .isEqualByComparingTo(new BigDecimal("68333.33"));
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
         assertThat(queryDecimal("select reserved_cash from stock_order where client_order_id = 'multi-buy'"))
                 .isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'multi-buyer'"))
-                .isEqualByComparingTo(new BigDecimal("9795000.00"));
+                .isEqualByComparingTo(new BigDecimal("9790000.00"));
         assertThat(queryLong("select quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'multi-buyer' and symbol = '005930'"))
                 .isEqualTo(3L);
         assertThat(queryDecimal("select average_price from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'multi-buyer' and symbol = '005930'"))
-                .isEqualByComparingTo(new BigDecimal("68333.33"));
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
 
         assertThat(queryString("select status from stock_order where client_order_id = 'first-sell'"))
                 .isEqualTo("FILLED");
         assertThat(queryString("select status from stock_order where client_order_id = 'second-sell'"))
                 .isEqualTo("FILLED");
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'first-seller'"))
-                .isEqualByComparingTo(new BigDecimal("169000.00"));
+                .isEqualByComparingTo(new BigDecimal("170000.00"));
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'second-seller'"))
-                .isEqualByComparingTo(new BigDecimal("336000.00"));
+                .isEqualByComparingTo(new BigDecimal("340000.00"));
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(4L);
     }
@@ -450,6 +464,130 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualByComparingTo(new BigDecimal("9928000.00"));
         assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
                 .isEqualTo(2L);
+    }
+
+    @Test
+    void executeEligibleOrders_selfCrossSellWallBeyondCandidateLimit_matchesOtherSeller() {
+        insertAccount("wall-account", "9930000.00", "10000000.00");
+        insertAccount("other-seller", "100000.00", "10000000.00");
+        insertHolding("wall-account", "005930", 20, 20, "50000.00");
+        insertHolding("other-seller", "005930", 1, 1, "50000.00");
+        insertOrder("wall-buy", "wall-account", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        for (int index = 0; index < 20; index++) {
+            insertOrder(
+                    "wall-sell-" + index,
+                    "wall-account",
+                    "005930",
+                    "SELL",
+                    "LIMIT",
+                    "PENDING",
+                    "69000.00",
+                    1,
+                    0,
+                    null,
+                    "0.00",
+                    index + 2
+            );
+        }
+        insertOrder("other-sell", "other-seller", "005930", "SELL", "LIMIT", "PENDING", "69500.00", 1, 0, null, "0.00", 30);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_order where client_order_id = 'wall-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'other-sell'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_order where client_order_id like 'wall-sell-%' and status = 'PENDING'"))
+                .isEqualTo(20L);
+    }
+
+    @Test
+    void executeEligibleOrders_selfCrossBuyWallBeyondCandidateLimit_matchesOtherBuyer() {
+        insertAccount("wall-account", "8600000.00", "10000000.00");
+        insertAccount("other-buyer", "9930500.00", "10000000.00");
+        insertHolding("wall-account", "005930", 1, 1, "50000.00");
+        insertOrder("wall-sell", "wall-account", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 1);
+        for (int index = 0; index < 20; index++) {
+            insertOrder(
+                    "wall-buy-" + index,
+                    "wall-account",
+                    "005930",
+                    "BUY",
+                    "LIMIT",
+                    "PENDING",
+                    "70000.00",
+                    1,
+                    0,
+                    null,
+                    "70000.00",
+                    index + 2
+            );
+        }
+        insertOrder("other-buy", "other-buyer", "005930", "BUY", "LIMIT", "PENDING", "69500.00", 1, 0, null, "69500.00", 30);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_order where client_order_id = 'wall-sell'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'other-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_order where client_order_id like 'wall-buy-%' and status = 'PENDING'"))
+                .isEqualTo(20L);
+    }
+
+    @Test
+    void executeEligibleOrders_sameReceivedTime_usesLowerOrderIdPrice() {
+        insertAccount("first-buyer", "9930000.00", "10000000.00");
+        insertAccount("second-seller", "100000.00", "10000000.00");
+        insertHolding("second-seller", "005930", 1, 1, "50000.00");
+        insertOrder("first-buy", "first-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("second-sell", "second-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 1);
+
+        internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(queryDecimal("select average_fill_price from stock_order where client_order_id = 'first-buy'"))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+    }
+
+    @Test
+    void executeEligibleOrders_marketOrdersFillCandidateWindow_findsLimitCounterparty() {
+        insertAccount("market-wall-buyer", "8560000.00", "10000000.00");
+        insertAccount("limit-buyer", "9930000.00", "10000000.00");
+        insertAccount("market-seller", "100000.00", "10000000.00");
+        insertHolding("market-seller", "005930", 1, 1, "50000.00");
+        for (int index = 0; index < 19; index++) {
+            insertOrder(
+                    "market-wall-buy-" + index,
+                    "market-wall-buyer",
+                    "005930",
+                    "BUY",
+                    "MARKET",
+                    "PENDING",
+                    null,
+                    1,
+                    0,
+                    null,
+                    "72000.00",
+                    index + 1
+            );
+        }
+        insertOrder("self-limit-buy", "market-seller", "005930", "BUY", "LIMIT", "PENDING", "71000.00", 1, 0, null, "71000.00", 20);
+        insertOrder("limit-buy-behind-markets", "limit-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 30);
+        insertOrder("market-sell", "market-seller", "005930", "SELL", "MARKET", "PENDING", null, 1, 0, null, "0.00", 31);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_order where client_order_id = 'limit-buy-behind-markets'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'market-sell'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_order where client_order_id like 'market-wall-buy-%' and status = 'PENDING'"))
+                .isEqualTo(19L);
+        assertThat(queryString("select status from stock_order where client_order_id = 'self-limit-buy'"))
+                .isEqualTo("PENDING");
     }
 
     private void insertAccount(String userKey, String cashBalance, String openingGrantAmount) {

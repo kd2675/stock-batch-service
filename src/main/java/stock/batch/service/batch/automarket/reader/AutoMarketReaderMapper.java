@@ -183,8 +183,6 @@ final class AutoMarketReaderMapper {
                 Math.max(0L, rs.getLong("available_quantity")),
                 zeroIfNull(rs.getBigDecimal("average_price")),
                 zeroIfNull(rs.getBigDecimal("recent_dividend_cash_amount")),
-                rs.getBigDecimal("own_best_bid"),
-                rs.getBigDecimal("own_best_ask"),
                 Math.max(0L, rs.getLong("open_buy_quantity")),
                 Math.max(0L, rs.getLong("open_sell_quantity"))
         );

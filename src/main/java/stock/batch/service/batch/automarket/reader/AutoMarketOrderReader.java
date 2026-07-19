@@ -199,32 +199,6 @@ public class AutoMarketOrderReader {
         return findBestSellPrice(symbol);
     }
 
-    public BigDecimal findBestPrice(long accountId, String symbol, String side) {
-        String sortDirection = "BUY".equals(side) ? "desc" : "asc";
-        return jdbcClient.sql(
-                """
-                select limit_price
-                  from stock_order
-                 where account_id = :accountId
-                   and symbol = :symbol
-                   and side = :side
-                   and market_type = 'ORDER_BOOK'
-                   and order_type = 'LIMIT'
-                   and status in ('PENDING', 'PARTIALLY_FILLED')
-                   and limit_price is not null
-                   and quantity > filled_quantity
-                 order by limit_price %s, created_at asc
-                 limit 1
-                """.formatted(sortDirection)
-        )
-                .param("accountId", accountId)
-                .param("symbol", symbol)
-                .param("side", side)
-                .query(BigDecimal.class)
-                .optional()
-                .orElse(null);
-    }
-
     private BigDecimal findBestBuyPrice(String symbol) {
         return jdbcClient.sql(
                 """

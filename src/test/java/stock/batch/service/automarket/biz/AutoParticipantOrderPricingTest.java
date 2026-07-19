@@ -149,27 +149,48 @@ class AutoParticipantOrderPricingTest {
     }
 
     @Test
-    void createAutoPrice_marketMaker_remainsPassiveAtSameSideBestQuotes() {
-        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 100, 100, 100, 100);
-        ProfilePolicy marketMakerPolicy = AutoProfileBehaviorRegistry.createDefault()
-                .behavior(AutoParticipantProfileType.MARKET_MAKER)
-                .defaultPolicy();
-        AutoMarketOrderBookState orderBookState = new AutoMarketOrderBookState(
-                new BigDecimal("99.00"),
-                new BigDecimal("101.00"),
-                100,
-                100
+    void createMarketMakingPrice_depthTicks_distributesQuotesBehindSameSideBest() {
+        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
+
+        BigDecimal topBuyPrice = pricing.createMarketMakingPrice(
+                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 0
+        );
+        BigDecimal deepBuyPrice = pricing.createMarketMakingPrice(
+                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 2
+        );
+        BigDecimal topSellPrice = pricing.createMarketMakingPrice(
+                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 0
+        );
+        BigDecimal deepSellPrice = pricing.createMarketMakingPrice(
+                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 2
         );
 
-        BigDecimal buyPrice = pricing.createAutoPrice(config, 10, "BUY", marketMakerPolicy, orderBookState);
-        BigDecimal sellPrice = pricing.createAutoPrice(config, 10, "SELL", marketMakerPolicy, orderBookState);
-
-        assertThat(buyPrice).isEqualByComparingTo("99.00");
-        assertThat(sellPrice).isEqualByComparingTo("101.00");
+        assertThat(List.of(topBuyPrice, deepBuyPrice, topSellPrice, deepSellPrice))
+                .containsExactly(
+                        new BigDecimal("99.00"),
+                        new BigDecimal("97.00"),
+                        new BigDecimal("101.00"),
+                        new BigDecimal("103.00")
+                );
     }
 
     @Test
-    void createAutoPrice_marketMakerWithoutLegalPassivePrice_returnsInvalidPrice() {
+    void createMarketMakingPrice_pressureMovesBothQuoteSidesInPriceDirection() {
+        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
+
+        BigDecimal positiveBuyPrice = pricing.createMarketMakingPrice(
+                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 1.0, 0
+        );
+        BigDecimal negativeSellPrice = pricing.createMarketMakingPrice(
+                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), -1.0, 0
+        );
+
+        assertThat(positiveBuyPrice).isEqualByComparingTo("101.00");
+        assertThat(negativeSellPrice).isEqualByComparingTo("99.00");
+    }
+
+    @Test
+    void createAutoPrice_marketMakerAtLowerLimit_keepsLegalLimitPrice() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "ZQ001",
                 "ORDERBOOK",
@@ -194,84 +215,76 @@ class AutoParticipantOrderPricingTest {
                 new AutoMarketOrderBookState(null, new BigDecimal("70.00"), 0, 100)
         );
 
-        assertThat(price).isZero();
+        assertThat(price).isEqualByComparingTo("70.00");
     }
 
     @Test
-    void createPassivePrice_samePressure_movesDifferentPriceLevelsBySameRate() {
-        AutoMarketOrderBookState emptyOrderBook = new AutoMarketOrderBookState(null, null, 0, 0);
-
-        BigDecimal lowPrice = pricing.createPassivePrice(
+    void createDirectionalLimitPrice_samePressure_movesDifferentPriceLevelsBySameRate() {
+        BigDecimal lowPrice = pricing.createDirectionalLimitPrice(
                 pressureConfig(new BigDecimal("10000.00"), 50, 0, 0, 0),
                 "BUY",
-                0.5,
                 1.0,
-                emptyOrderBook
+                1.0
         );
-        BigDecimal highPrice = pricing.createPassivePrice(
+        BigDecimal highPrice = pricing.createDirectionalLimitPrice(
                 pressureConfig(new BigDecimal("100000.00"), 50, 0, 0, 0),
                 "BUY",
-                0.5,
                 1.0,
-                emptyOrderBook
+                1.0
         );
 
-        assertThat(lowPrice).isEqualByComparingTo("10030.00");
-        assertThat(highPrice).isEqualByComparingTo("100300.00");
+        assertThat(lowPrice).isEqualByComparingTo("10060.00");
+        assertThat(highPrice).isEqualByComparingTo("100600.00");
     }
 
     @Test
-    void createPassivePrice_ratioMove_isCappedAtEightTenthsPercent() {
+    void createDirectionalLimitPrice_ratioMove_isCappedAtEightTenthsPercent() {
         AutoMarketConfig config = pressureConfig(new BigDecimal("100000.00"), 100, 100, 0, 0);
 
-        BigDecimal price = pricing.createPassivePrice(
+        BigDecimal price = pricing.createDirectionalLimitPrice(
                 config,
                 "BUY",
                 1.0,
-                config.volatilityMultiplier(),
-                new AutoMarketOrderBookState(null, null, 0, 0)
+                config.volatilityMultiplier()
         );
 
         assertThat(price).isEqualByComparingTo("100800.00");
     }
 
     @Test
-    void createPassivePrice_ratioMove_doesNotBypassCrossingDecision() {
+    void createDirectionalLimitPrice_ratioMove_canCrossOppositeQuoteWithoutRepricing() {
         AutoMarketConfig config = pressureConfig(new BigDecimal("100000.00"), 100, 100, 0, 0);
-        AutoMarketOrderBookState buyOrderBookState = new AutoMarketOrderBookState(
-                new BigDecimal("99000.00"),
-                new BigDecimal("100500.00"),
-                100,
-                100
-        );
-        AutoMarketOrderBookState sellOrderBookState = new AutoMarketOrderBookState(
-                new BigDecimal("99500.00"),
-                new BigDecimal("101000.00"),
-                100,
-                100
-        );
 
-        BigDecimal buyPrice = pricing.createPassivePrice(
+        BigDecimal buyPrice = pricing.createDirectionalLimitPrice(
                 config,
                 "BUY",
                 1.0,
-                config.volatilityMultiplier(),
-                buyOrderBookState
+                config.volatilityMultiplier()
         );
-        BigDecimal sellPrice = pricing.createPassivePrice(
+        BigDecimal sellPrice = pricing.createDirectionalLimitPrice(
                 config,
                 "SELL",
                 -1.0,
-                config.volatilityMultiplier(),
-                sellOrderBookState
+                config.volatilityMultiplier()
         );
 
-        assertThat(buyPrice).isEqualByComparingTo("100400.00");
-        assertThat(sellPrice).isEqualByComparingTo("99600.00");
+        assertThat(buyPrice).isEqualByComparingTo("100800.00");
+        assertThat(sellPrice).isEqualByComparingTo("99200.00");
     }
 
     @Test
-    void createPassivePrice_noLegalPriceBeforeLowerLimitAsk_returnsInvalidPrice() {
+    void createDirectionalLimitPrice_neutralPressure_keepsQuotesOffTheSameCenterLevel() {
+        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
+
+        BigDecimal buyPrice = pricing.createDirectionalLimitPrice(config, "BUY", 0.0, 1.0);
+        BigDecimal sellPrice = pricing.createDirectionalLimitPrice(config, "SELL", 0.0, 1.0);
+
+        assertThat(buyPrice).isLessThan(new BigDecimal("100.00"));
+        assertThat(sellPrice).isGreaterThan(new BigDecimal("100.00"));
+    }
+
+    @Test
+    void createDirectionalLimitPrice_atLowerLimit_returnsLegalLimitPrice() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "ZQ001",
                 "ORDERBOOK",
@@ -285,41 +298,14 @@ class AutoParticipantOrderPricingTest {
                 null
         );
 
-        BigDecimal price = pricing.createPassivePrice(
+        BigDecimal price = pricing.createDirectionalLimitPrice(
                 config,
                 "BUY",
                 1.0,
-                1.0,
-                new AutoMarketOrderBookState(null, new BigDecimal("70.00"), 0, 100)
+                1.0
         );
 
-        assertThat(price).isZero();
-    }
-
-    @Test
-    void avoidSelfCross_buyMovesBelowOwnBestAsk() {
-        BigDecimal price = pricing.avoidSelfCross(
-                maxExecutionAggressionConfig(),
-                "BUY",
-                new BigDecimal("105.00"),
-                null,
-                new BigDecimal("101.00")
-        );
-
-        assertThat(price).isLessThan(new BigDecimal("101.00"));
-    }
-
-    @Test
-    void avoidSelfCross_sellMovesAboveOwnBestBid() {
-        BigDecimal price = pricing.avoidSelfCross(
-                maxExecutionAggressionConfig(),
-                "SELL",
-                new BigDecimal("95.00"),
-                new BigDecimal("99.00"),
-                null
-        );
-
-        assertThat(price).isGreaterThan(new BigDecimal("99.00"));
+        assertThat(price).isEqualByComparingTo("70.00");
     }
 
     private AutoMarketConfig maxExecutionAggressionConfig() {

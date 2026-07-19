@@ -61,12 +61,10 @@ class ListingAutoAccountOrderService {
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         for (ListingConfigTargets item : configTargets) {
             ListingAutoAccountConfig listingConfig = item.config();
-            OwnOrderPrices ownOrderPrices = loadOwnOrderPrices(listingConfig);
             PlannedListingOrders planned = planOrders(
                     listingConfig,
                     item.targets(),
-                    orderBookState,
-                    ownOrderPrices
+                    orderBookState
             );
             if (planned.orders().isEmpty()) {
                 continue;
@@ -117,12 +115,9 @@ class ListingAutoAccountOrderService {
     private PlannedListingOrders planOrders(
             ListingAutoAccountConfig config,
             QuoteTargets targets,
-            AutoMarketOrderBookState orderBookState,
-            OwnOrderPrices ownOrderPrices
+            AutoMarketOrderBookState orderBookState
     ) {
         List<AutoMarketPlannedOrder> orders = new ArrayList<>();
-        AutoMarketOrderBookState planningOrderBookState = orderBookState;
-        OwnOrderPrices planningOwnOrderPrices = ownOrderPrices;
         List<SideDeficit> sideDeficits = orderSides(config).stream()
                 .map(side -> new SideDeficit(
                         side,
@@ -153,8 +148,7 @@ class ListingAutoAccountOrderService {
                 BigDecimal price = orderPrice(
                         config,
                         side,
-                        planningOrderBookState,
-                        planningOwnOrderPrices
+                        orderBookState
                 );
                 if (price == null) {
                     break;
@@ -184,8 +178,6 @@ class ListingAutoAccountOrderService {
                 } else {
                     remainingSellQuantity -= quantity;
                 }
-                planningOrderBookState = planningOrderBookState.withPlacedOrder(side, price, quantity);
-                planningOwnOrderPrices = planningOwnOrderPrices.withPlacedOrder(side, price);
             }
         }
         return new PlannedListingOrders(orders);
@@ -284,8 +276,7 @@ class ListingAutoAccountOrderService {
     private BigDecimal orderPrice(
             ListingAutoAccountConfig config,
             String side,
-            AutoMarketOrderBookState orderBookState,
-            OwnOrderPrices ownOrderPrices
+            AutoMarketOrderBookState orderBookState
     ) {
         int maxOffsetTicks = Math.max(0, config.priceOffsetTicks());
         int offsetTicks = maxOffsetTicks == 0 ? 0 : nextInt(1, maxOffsetTicks);
@@ -297,8 +288,7 @@ class ListingAutoAccountOrderService {
         int direction = priceOffsetDirection(config, side);
         BigDecimal rawPrice = AutoMarketPricePolicy.moveByTicks(config.market(), anchorPrice, direction * offsetTicks);
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
-        BigDecimal proposedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
-        return avoidOppositeCross(config, side, proposedPrice, orderBookState, ownOrderPrices);
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
     private int priceOffsetDirection(ListingAutoAccountConfig config, String side) {
@@ -315,61 +305,6 @@ class ListingAutoAccountOrderService {
             return nextInt(0, 1) == 0 ? -1 : 1;
         }
         return BUY.equals(side) ? -1 : 1;
-    }
-
-    private OwnOrderPrices loadOwnOrderPrices(ListingAutoAccountConfig config) {
-        return new OwnOrderPrices(
-                autoMarketOrderReader.findBestPrice(config.accountId(), config.symbol(), BUY),
-                autoMarketOrderReader.findBestPrice(config.accountId(), config.symbol(), SELL)
-        );
-    }
-
-    private BigDecimal avoidOppositeCross(
-            ListingAutoAccountConfig config,
-            String side,
-            BigDecimal proposedPrice,
-            AutoMarketOrderBookState orderBookState,
-            OwnOrderPrices ownOrderPrices
-    ) {
-        BigDecimal adjustedPrice = proposedPrice;
-        BigDecimal oppositePrice = BUY.equals(side)
-                ? lowerPrice(orderBookState.bestAsk(), ownOrderPrices.bestAsk())
-                : higherPrice(orderBookState.bestBid(), ownOrderPrices.bestBid());
-        if (BUY.equals(side) && oppositePrice != null && adjustedPrice.compareTo(oppositePrice) >= 0) {
-            adjustedPrice = AutoMarketPricePolicy.moveByTicks(config.market(), oppositePrice, -1);
-        }
-        if (SELL.equals(side) && oppositePrice != null && adjustedPrice.compareTo(oppositePrice) <= 0) {
-            adjustedPrice = AutoMarketPricePolicy.moveByTicks(config.market(), oppositePrice, 1);
-        }
-        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), adjustedPrice);
-        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(adjustedPrice.max(tick), config, tick);
-        if (BUY.equals(side) && oppositePrice != null && normalizedPrice.compareTo(oppositePrice) >= 0) {
-            return null;
-        }
-        if (SELL.equals(side) && oppositePrice != null && normalizedPrice.compareTo(oppositePrice) <= 0) {
-            return null;
-        }
-        return normalizedPrice;
-    }
-
-    private BigDecimal lowerPrice(BigDecimal first, BigDecimal second) {
-        if (first == null) {
-            return second;
-        }
-        if (second == null) {
-            return first;
-        }
-        return first.min(second);
-    }
-
-    private BigDecimal higherPrice(BigDecimal first, BigDecimal second) {
-        if (first == null) {
-            return second;
-        }
-        if (second == null) {
-            return first;
-        }
-        return first.max(second);
     }
 
     private record PlannedListingOrders(List<AutoMarketPlannedOrder> orders) {
@@ -394,13 +329,4 @@ class ListingAutoAccountOrderService {
     private record ListingConfigTargets(ListingAutoAccountConfig config, QuoteTargets targets) {
     }
 
-    private record OwnOrderPrices(BigDecimal bestBid, BigDecimal bestAsk) {
-
-        private OwnOrderPrices withPlacedOrder(String side, BigDecimal price) {
-            if (BUY.equals(side)) {
-                return new OwnOrderPrices(bestBid == null || price.compareTo(bestBid) > 0 ? price : bestBid, bestAsk);
-            }
-            return new OwnOrderPrices(bestBid, bestAsk == null || price.compareTo(bestAsk) < 0 ? price : bestAsk);
-        }
-    }
 }

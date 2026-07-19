@@ -1,6 +1,7 @@
 package stock.batch.service.batch.execution.model;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 public record OrderBookOrderRow(
         long id,
@@ -12,7 +13,8 @@ public record OrderBookOrderRow(
         long quantity,
         long filledQuantity,
         BigDecimal averageFillPrice,
-        BigDecimal reservedCash
+        BigDecimal reservedCash,
+        LocalDateTime createdAt
 ) {
     public long remainingQuantity() {
         return quantity - filledQuantity;

@@ -33,15 +33,23 @@ class AutoParticipantOrderPricing {
     ) {
         BigDecimal bestBid = orderBookState.bestBid();
         BigDecimal bestAsk = orderBookState.bestAsk();
-        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
-        if (policy.marketMakingWeight() >= 0.8) {
-            return createMarketMakingPrice(config, side, bestBid, bestAsk);
-        }
         double activityStrength = Math.clamp(strategyActivityLevel, 1, 10) / 10.0;
         double directionalPressure = config.dailyPricePressure()
                 + config.reportPricePressure() * policy.newsWeight() * 0.55;
         double pressure = Math.clamp(directionalPressure * activityStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
         double volatility = config.volatilityMultiplier();
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
+        if (policy.marketMakingWeight() >= 0.8) {
+            int maxDepthTicks = Math.clamp((int) Math.round(1.0 + volatility), 1, 3);
+            return createMarketMakingPrice(
+                    config,
+                    side,
+                    bestBid,
+                    bestAsk,
+                    pressure,
+                    nextInt(0, maxDepthTicks)
+            );
+        }
         boolean crossesOppositeQuote = chance(crossingChance(config, side, policy, pressure));
 
         if (BUY.equals(side) && crossesOppositeQuote && bestAsk != null) {
@@ -51,7 +59,7 @@ class AutoParticipantOrderPricing {
             return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestBid, -nextInt(0, 1)), config, tick);
         }
 
-        return createPassivePrice(config, side, pressure, volatility, orderBookState);
+        return createDirectionalLimitPrice(config, side, pressure, volatility);
     }
 
     double crossingChance(
@@ -89,12 +97,11 @@ class AutoParticipantOrderPricing {
         );
     }
 
-    BigDecimal createPassivePrice(
+    BigDecimal createDirectionalLimitPrice(
             AutoMarketConfig config,
             String side,
             double pressure,
-            double volatility,
-            AutoMarketOrderBookState orderBookState
+            double volatility
     ) {
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
         double pressureStrength = Math.abs(pressure);
@@ -106,90 +113,38 @@ class AutoParticipantOrderPricing {
                 MAX_DIRECTIONAL_PRICE_MOVE_RATE
         );
         BigDecimal directionalOffset = config.currentPrice().multiply(BigDecimal.valueOf(directionalMoveRate));
+        BigDecimal centerPrice = config.currentPrice().add(directionalOffset);
+        double quoteDistanceFactor;
         BigDecimal rawPrice;
         if (BUY.equals(side)) {
-            rawPrice = config.currentPrice().add(directionalOffset).subtract(pressure < 0 ? spread : BigDecimal.ZERO);
+            quoteDistanceFactor = 1.0 - Math.max(0.0, pressure);
+            rawPrice = centerPrice.subtract(spread.multiply(BigDecimal.valueOf(quoteDistanceFactor)));
         } else {
-            rawPrice = config.currentPrice().add(directionalOffset).add(pressure > 0 ? spread : BigDecimal.ZERO);
+            quoteDistanceFactor = 1.0 + Math.min(0.0, pressure);
+            rawPrice = centerPrice.add(spread.multiply(BigDecimal.valueOf(quoteDistanceFactor)));
         }
-        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
-        return keepOutsideOppositeQuote(config, side, normalizedPrice, orderBookState, tick);
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
-    BigDecimal avoidSelfCross(
-            AutoMarketConfig config,
-            String side,
-            BigDecimal proposedPrice,
-            BigDecimal ownBestBid,
-            BigDecimal ownBestAsk
-    ) {
-        BigDecimal adjustedPrice = proposedPrice;
-        if (BUY.equals(side) && ownBestAsk != null && adjustedPrice.compareTo(ownBestAsk) >= 0) {
-            adjustedPrice = moveByTicks(config.market(), ownBestAsk, -1);
-        }
-        if (SELL.equals(side) && ownBestBid != null && adjustedPrice.compareTo(ownBestBid) <= 0) {
-            adjustedPrice = moveByTicks(config.market(), ownBestBid, 1);
-        }
-        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), adjustedPrice);
-        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(adjustedPrice.max(tick), config, tick);
-        if (BUY.equals(side) && ownBestAsk != null && normalizedPrice.compareTo(ownBestAsk) >= 0) {
-            return BigDecimal.ZERO;
-        }
-        if (SELL.equals(side) && ownBestBid != null && normalizedPrice.compareTo(ownBestBid) <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return normalizedPrice;
-    }
-
-    private BigDecimal createMarketMakingPrice(
+    BigDecimal createMarketMakingPrice(
             AutoMarketConfig config,
             String side,
             BigDecimal bestBid,
-            BigDecimal bestAsk
+            BigDecimal bestAsk,
+            double pressure,
+            int depthTicks
     ) {
-        BigDecimal rawPrice;
-        if (BUY.equals(side)) {
-            rawPrice = bestBid == null ? moveByTicks(config.market(), config.currentPrice(), -1) : bestBid;
-            if (bestAsk != null && rawPrice.compareTo(bestAsk) >= 0) {
-                rawPrice = moveByTicks(config.market(), bestAsk, -1);
-            }
-        } else {
-            rawPrice = bestAsk == null ? moveByTicks(config.market(), config.currentPrice(), 1) : bestAsk;
-            if (bestBid != null && rawPrice.compareTo(bestBid) <= 0) {
-                rawPrice = moveByTicks(config.market(), bestBid, 1);
-            }
-        }
+        int directionalTicks = (int) Math.round(Math.clamp(pressure, -1.0, 1.0) * 2.0);
+        int normalizedDepthTicks = Math.max(0, depthTicks);
+        BigDecimal anchorPrice = BUY.equals(side)
+                ? (bestBid == null ? moveByTicks(config.market(), config.currentPrice(), -1) : bestBid)
+                : (bestAsk == null ? moveByTicks(config.market(), config.currentPrice(), 1) : bestAsk);
+        int quoteOffsetTicks = BUY.equals(side)
+                ? directionalTicks - normalizedDepthTicks
+                : directionalTicks + normalizedDepthTicks;
+        BigDecimal rawPrice = moveByTicks(config.market(), anchorPrice, quoteOffsetTicks);
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
-        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
-        if (BUY.equals(side) && bestAsk != null && normalizedPrice.compareTo(bestAsk) >= 0) {
-            return BigDecimal.ZERO;
-        }
-        if (SELL.equals(side) && bestBid != null && normalizedPrice.compareTo(bestBid) <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return normalizedPrice;
-    }
-
-    private BigDecimal keepOutsideOppositeQuote(
-            AutoMarketConfig config,
-            String side,
-            BigDecimal proposedPrice,
-            AutoMarketOrderBookState orderBookState,
-            BigDecimal tick
-    ) {
-        BigDecimal bestBid = orderBookState.bestBid();
-        BigDecimal bestAsk = orderBookState.bestAsk();
-        if (BUY.equals(side) && bestAsk != null && proposedPrice.compareTo(bestAsk) >= 0) {
-            BigDecimal passivePrice = moveByTicks(config.market(), bestAsk, -1);
-            BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(passivePrice, config, tick);
-            return normalizedPrice.compareTo(bestAsk) < 0 ? normalizedPrice : BigDecimal.ZERO;
-        }
-        if (SELL.equals(side) && bestBid != null && proposedPrice.compareTo(bestBid) <= 0) {
-            BigDecimal passivePrice = moveByTicks(config.market(), bestBid, 1);
-            BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(passivePrice, config, tick);
-            return normalizedPrice.compareTo(bestBid) > 0 ? normalizedPrice : BigDecimal.ZERO;
-        }
-        return proposedPrice;
+        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
     }
 
 }

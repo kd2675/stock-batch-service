@@ -7,7 +7,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -24,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import stock.batch.service.automarket.profile.AutoProfileBehavior;
@@ -97,13 +97,6 @@ class AutoParticipantOrderServiceTest {
         when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(pricing.createAutoPrice(eq(config), eq(5), anyString(), eq(policy), any()))
                 .thenReturn(orderPrice);
-        when(pricing.avoidSelfCross(
-                eq(config),
-                anyString(),
-                eq(orderPrice),
-                nullable(BigDecimal.class),
-                nullable(BigDecimal.class)
-        )).thenReturn(orderPrice);
         when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
             List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
             return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 0, 0, 0);
@@ -121,7 +114,7 @@ class AutoParticipantOrderServiceTest {
     }
 
     @Test
-    void placeAutoOrders_multiplePlannedOrders_recalculatesLatestInMemoryStateWithoutReloadingDatabase() {
+    void placeAutoOrders_multiplePlannedOrders_recalculatesQuantitiesWithoutMovingReferenceQuotes() {
         AutoMarketReader reader = mock(AutoMarketReader.class);
         AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
         AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
@@ -149,17 +142,20 @@ class AutoParticipantOrderServiceTest {
         when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(List.of(new AutoParticipantTradingSnapshot(
                         1L,
-                        new BigDecimal("150.00"),
+                        new BigDecimal("250.00"),
                         0,
                         BigDecimal.ZERO,
                         BigDecimal.ZERO,
-                        null,
-                        null,
                         0,
                         0
                 )));
         when(executor.loadOrderBookState(config.symbol()))
-                .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
+                .thenReturn(new AutoMarketOrderBookState(
+                        new BigDecimal("99.00"),
+                        new BigDecimal("101.00"),
+                        0,
+                        0
+                ));
         when(behaviorSupport.behavior(AutoParticipantProfileType.NOISE_TRADER)).thenReturn(behavior);
         when(behaviorSupport.policy(policies, AutoParticipantProfileType.NOISE_TRADER)).thenReturn(policy);
         when(behavior.effectiveIntensity(strategy, config, policy)).thenReturn(5);
@@ -173,13 +169,6 @@ class AutoParticipantOrderServiceTest {
         when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(pricing.createAutoPrice(eq(config), eq(5), eq("BUY"), eq(policy), any()))
                 .thenReturn(new BigDecimal("100.00"));
-        when(pricing.avoidSelfCross(
-                eq(config),
-                eq("BUY"),
-                eq(new BigDecimal("100.00")),
-                nullable(BigDecimal.class),
-                nullable(BigDecimal.class)
-        )).thenReturn(new BigDecimal("100.00"));
         when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
             List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
             return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 0, 0, 0);
@@ -193,13 +182,27 @@ class AutoParticipantOrderServiceTest {
                 LocalDateTime.of(2026, 7, 19, 9, 0)
         );
 
-        assertThat(observedStates).containsExactly("150.00:0.0", "50.00:1.0");
+        assertThat(observedStates).containsExactly("250.00:0.0", "150.00:1.0");
+        ArgumentCaptor<AutoMarketOrderBookState> priceReferenceCaptor =
+                ArgumentCaptor.forClass(AutoMarketOrderBookState.class);
+        verify(pricing, times(2)).createAutoPrice(
+                eq(config),
+                eq(5),
+                eq("BUY"),
+                eq(policy),
+                priceReferenceCaptor.capture()
+        );
+        assertThat(priceReferenceCaptor.getAllValues()).allSatisfy(reference -> {
+            assertThat(reference.bestBid()).isEqualByComparingTo("99.00");
+            assertThat(reference.bestAsk()).isEqualByComparingTo("101.00");
+        });
         verify(reader, times(1)).findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class));
         verify(executor, times(1)).loadOrderBookState(config.symbol());
     }
 
     @Test
-    void placeAutoOrders_selfCrossAdjustmentHasNoLegalSellPrice_dropsInvalidPrice() {
+    @SuppressWarnings("unchecked")
+    void placeAutoOrders_crossingPrice_isPlacedWithoutAdjustment() {
         AutoMarketReader reader = mock(AutoMarketReader.class);
         AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
         AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
@@ -231,8 +234,6 @@ class AutoParticipantOrderServiceTest {
                         10,
                         new BigDecimal("90.00"),
                         BigDecimal.ZERO,
-                        null,
-                        new BigDecimal("100.00"),
                         0,
                         0
                 )));
@@ -245,16 +246,11 @@ class AutoParticipantOrderServiceTest {
         when(behavior.chooseSide(any())).thenReturn("SELL");
         when(pricing.createAutoPrice(eq(config), eq(5), eq("SELL"), eq(policy), any()))
                 .thenReturn(new BigDecimal("100.00"));
-        when(pricing.avoidSelfCross(
-                eq(config),
-                eq("SELL"),
-                eq(new BigDecimal("100.00")),
-                nullable(BigDecimal.class),
-                eq(new BigDecimal("100.00"))
-        )).thenReturn(BigDecimal.ZERO);
-        when(executor.placeOrders(anyList())).thenReturn(
-                AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0)
-        );
+        when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
+        when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
+            List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
+            return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 1, 0, 0);
+        });
 
         AutoParticipantOrderGenerationResult result = service.placeAutoOrders(
                 List.of(strategy),
@@ -264,7 +260,13 @@ class AutoParticipantOrderServiceTest {
                 LocalDateTime.of(2026, 7, 19, 9, 0)
         );
 
-        assertThat(result.droppedOrderCount(AutoMarketOrderDropReason.INVALID_PRICE)).isEqualTo(1);
+        ArgumentCaptor<List<AutoMarketPlannedOrder>> captor = ArgumentCaptor.forClass(List.class);
+        verify(executor).placeOrders(captor.capture());
+        assertThat(result.generatedOrderCount()).isEqualTo(1);
+        assertThat(captor.getValue()).singleElement().satisfies(order -> {
+            assertThat(order.side()).isEqualTo("SELL");
+            assertThat(order.price()).isEqualByComparingTo("100.00");
+        });
     }
 
     private static Stream<Arguments> planningDropCases() {
@@ -282,8 +284,6 @@ class AutoParticipantOrderServiceTest {
                                 10,
                                 new BigDecimal("90.00"),
                                 BigDecimal.ZERO,
-                                null,
-                                null,
                                 100,
                                 0
                         )),
