@@ -15,6 +15,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketDailyRegimePreparationConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
+import stock.batch.service.batch.automarket.model.AutoMarketRegimeCountWeights;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
@@ -141,24 +144,63 @@ public class AutoMarketReader {
                        p.current_price,
                        p.previous_close,
                        r.score as report_score
+                  from stock_auto_market_config c
+                  join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
+                  join stock_order_book_market_config m on m.symbol = c.symbol and m.enabled = true
+                  join stock_price p on p.symbol = c.symbol
+                  left join stock_instrument_report_event r
+                    on r.id = (
+                        select re.id
+                          from stock_instrument_report_event re
+                         where re.symbol = c.symbol
+                         order by re.created_at desc, re.id desc
+                         limit 1
+                    )
+                   and r.event_type <> 'DELETE'
+                 where c.enabled = true
+                 order by c.symbol asc
+                """
+        )
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toConfig(rs))
+                .list();
+    }
+
+    public List<AutoMarketDailyRegimePreparationConfig> findDailyRegimePreparationConfigs() {
+        return jdbcClient.sql(
+                """
+                select c.symbol,
+                       c.primary_price_pressure_bias,
+                       c.primary_asset_preference_pressure_bias,
+                       c.primary_volatility_pressure_bias,
+                       c.primary_liquidity_pressure_bias,
+                       c.primary_execution_aggression_pressure_bias,
+                       c.primary_regime_count_1_weight,
+                       c.primary_regime_count_2_weight,
+                       c.primary_regime_count_3_weight,
+                       c.primary_regime_count_4_weight
                 from stock_auto_market_config c
                 join stock_order_book_instrument i on i.symbol = c.symbol and i.enabled = true
                 join stock_order_book_market_config m on m.symbol = c.symbol and m.enabled = true
-                join stock_price p on p.symbol = c.symbol
-                left join stock_instrument_report_event r
-                  on r.id = (
-                      select re.id
-                      from stock_instrument_report_event re
-                      where re.symbol = c.symbol
-                      order by re.created_at desc, re.id desc
-                      limit 1
-                  )
-                 and r.event_type <> 'DELETE'
                 where c.enabled = true
                 order by c.symbol asc
                 """
         )
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toConfig(rs))
+                .query((rs, rowNum) -> new AutoMarketDailyRegimePreparationConfig(
+                        AutoMarketReaderMapper.normalizeSymbol(rs.getString("symbol")),
+                        new AutoMarketDistributionBias(
+                                rs.getInt("primary_price_pressure_bias"),
+                                rs.getInt("primary_asset_preference_pressure_bias"),
+                                rs.getInt("primary_volatility_pressure_bias"),
+                                rs.getInt("primary_liquidity_pressure_bias"),
+                                rs.getInt("primary_execution_aggression_pressure_bias")
+                        ),
+                        new AutoMarketRegimeCountWeights(
+                                rs.getInt("primary_regime_count_1_weight"),
+                                rs.getInt("primary_regime_count_2_weight"),
+                                rs.getInt("primary_regime_count_3_weight"),
+                                rs.getInt("primary_regime_count_4_weight")
+                        )
+                ))
                 .list();
     }
 

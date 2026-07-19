@@ -35,6 +35,7 @@ class AutoMarketDailyRegimeServiceVolumeTest {
                     symbol varchar(20) not null,
                     simulation_trade_date date not null,
                     regime_phase varchar(20) not null,
+                    source_regime_phase varchar(20),
                     price_pressure int not null,
                     asset_preference_pressure int not null,
                     volatility_pressure int not null,

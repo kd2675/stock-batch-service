@@ -928,6 +928,32 @@ class StockDdlContractTest {
     }
 
     @Test
+    void autoMarketRegimeCountWeightsDdl_isSyncedAndPresentInH2Contract() throws IOException {
+        String batchAlter = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_auto_market_regime_count_weights_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backAlter = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_auto_market_regime_count_weights_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String h2Ddl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_h2.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(List.of(
+                normalizeSqlBlock(backAlter).equals(normalizeSqlBlock(batchAlter)),
+                batchAlter.contains("USE STOCK_SERVICE"),
+                batchAlter.contains("primary_regime_count_1_weight"),
+                batchAlter.contains("primary_regime_count_4_weight"),
+                batchAlter.contains("source_regime_phase"),
+                h2Ddl.contains("primary_regime_count_4_weight INT NOT NULL DEFAULT 100"),
+                h2Ddl.contains("source_regime_phase VARCHAR(20) NULL")
+        )).doesNotContain(false);
+    }
+
+    @Test
     void priceTickLatestLookupAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
         String batchDdl = Files.readString(
                 Path.of("src/main/resources/db/ddl/stock_price_tick_latest_lookup_alter.sql"),

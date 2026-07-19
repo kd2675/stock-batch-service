@@ -207,13 +207,15 @@ public class PostCloseReadinessService {
                                 on instrument.symbol = config.symbol
                                and instrument.enabled = true
                              where config.enabled = true
-                               and not exists (
-                                   select 1
+                               and (
+                                   select count(*)
                                      from stock_order_book_daily_regime regime
                                     where regime.symbol = config.symbol
                                       and regime.simulation_trade_date = ?
-                                      and regime.regime_phase = 'SLOT_0600'
-                               )
+                                      and regime.regime_phase in (
+                                          'SLOT_0600', 'SLOT_0900', 'SLOT_1200', 'SLOT_1500'
+                                      )
+                               ) <> 4
                         ) as regime_failures,
                         (
                             select case when exists (

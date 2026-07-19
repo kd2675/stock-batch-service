@@ -1215,6 +1215,10 @@ CREATE INDEX IF NOT EXISTS idx_stock_market_session_fence_state
 CREATE TABLE IF NOT EXISTS stock_auto_market_config (
   symbol VARCHAR(20) NOT NULL PRIMARY KEY,
   enabled BOOLEAN NOT NULL,
+  primary_regime_count_1_weight INT NOT NULL DEFAULT 0,
+  primary_regime_count_2_weight INT NOT NULL DEFAULT 0,
+  primary_regime_count_3_weight INT NOT NULL DEFAULT 0,
+  primary_regime_count_4_weight INT NOT NULL DEFAULT 100,
   primary_price_pressure_bias INT NOT NULL DEFAULT 0,
   primary_asset_preference_pressure_bias INT NOT NULL DEFAULT 0,
   primary_volatility_pressure_bias INT NOT NULL DEFAULT 0,
@@ -1228,6 +1232,14 @@ CREATE TABLE IF NOT EXISTS stock_auto_market_config (
   max_order_quantity INT NOT NULL,
   order_ttl_seconds INT NOT NULL,
   updated_at TIMESTAMP NOT NULL,
+  CONSTRAINT chk_stock_auto_market_regime_count_weights CHECK (
+    primary_regime_count_1_weight between 0 and 100
+    and primary_regime_count_2_weight between 0 and 100
+    and primary_regime_count_3_weight between 0 and 100
+    and primary_regime_count_4_weight between 0 and 100
+    and primary_regime_count_1_weight + primary_regime_count_2_weight
+      + primary_regime_count_3_weight + primary_regime_count_4_weight > 0
+  ),
   CONSTRAINT chk_stock_auto_market_primary_price_bias CHECK (primary_price_pressure_bias between -100 and 100),
   CONSTRAINT chk_stock_auto_market_primary_asset_bias CHECK (primary_asset_preference_pressure_bias between -100 and 100),
   CONSTRAINT chk_stock_auto_market_primary_volatility_bias CHECK (primary_volatility_pressure_bias between -100 and 100),
@@ -1248,6 +1260,7 @@ CREATE TABLE IF NOT EXISTS stock_order_book_daily_regime (
   symbol VARCHAR(20) NOT NULL,
   simulation_trade_date DATE NOT NULL,
   regime_phase VARCHAR(20) NOT NULL,
+  source_regime_phase VARCHAR(20) NULL,
   price_pressure INT NOT NULL,
   asset_preference_pressure INT NOT NULL,
   volatility_pressure INT NOT NULL,
@@ -1258,6 +1271,10 @@ CREATE TABLE IF NOT EXISTS stock_order_book_daily_regime (
   updated_at TIMESTAMP NOT NULL,
   PRIMARY KEY (symbol, simulation_trade_date, regime_phase),
   CONSTRAINT chk_stock_order_book_daily_regime_phase CHECK (CASE regime_phase WHEN 'SLOT_0600' THEN 1 WHEN 'SLOT_0900' THEN 1 WHEN 'SLOT_1200' THEN 1 WHEN 'SLOT_1500' THEN 1 ELSE 0 END = 1),
+  CONSTRAINT chk_stock_order_book_daily_regime_source_phase CHECK (
+    source_regime_phase is null
+    or CASE source_regime_phase WHEN 'SLOT_0600' THEN 1 WHEN 'SLOT_0900' THEN 1 WHEN 'SLOT_1200' THEN 1 WHEN 'SLOT_1500' THEN 1 ELSE 0 END = 1
+  ),
   CONSTRAINT chk_stock_order_book_daily_regime_price CHECK (price_pressure between -100 and 100),
   CONSTRAINT chk_stock_order_book_daily_regime_asset CHECK (asset_preference_pressure between -100 and 100),
   CONSTRAINT chk_stock_order_book_daily_regime_volatility CHECK (volatility_pressure between -100 and 100),

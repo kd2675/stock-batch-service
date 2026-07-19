@@ -284,7 +284,10 @@ class PostCloseReadinessServiceTest {
                 """);
         jdbcTemplate.update("""
                 insert into stock_order_book_daily_regime(symbol, simulation_trade_date, regime_phase)
-                values ('DEMO001', date '2026-07-02', 'SLOT_0600')
+                values ('DEMO001', date '2026-07-02', 'SLOT_0600'),
+                       ('DEMO001', date '2026-07-02', 'SLOT_0900'),
+                       ('DEMO001', date '2026-07-02', 'SLOT_1200'),
+                       ('DEMO001', date '2026-07-02', 'SLOT_1500')
                 """);
         jdbcTemplate.update("""
                 insert into stock_post_close_cycle_metric(

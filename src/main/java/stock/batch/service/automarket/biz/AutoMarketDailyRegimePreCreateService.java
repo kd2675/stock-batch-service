@@ -31,8 +31,8 @@ public class AutoMarketDailyRegimePreCreateService {
         if (!shouldPreCreateDailyRegimes(clock)) {
             return 0;
         }
-        var configs = autoMarketReader.findDailyRegimePreCreateConfigs();
-        return autoMarketDailyRegimeService.ensureFirstSlotDailyRegimes(
+        var configs = autoMarketReader.findDailyRegimePreparationConfigs();
+        return autoMarketDailyRegimeService.ensureFullDayDailyRegimes(
                 configs,
                 clock.simulationDateTime().toLocalDate(),
                 clock.simulationDateTime()
@@ -43,8 +43,8 @@ public class AutoMarketDailyRegimePreCreateService {
         if (businessDate == null || preparedAt == null) {
             throw new IllegalArgumentException("businessDate and preparedAt are required");
         }
-        var configs = autoMarketReader.findDailyRegimePreCreateConfigs();
-        return autoMarketDailyRegimeService.ensureFirstSlotDailyRegimes(
+        var configs = autoMarketReader.findDailyRegimePreparationConfigs();
+        return autoMarketDailyRegimeService.ensureFullDayDailyRegimes(
                 configs,
                 businessDate,
                 preparedAt

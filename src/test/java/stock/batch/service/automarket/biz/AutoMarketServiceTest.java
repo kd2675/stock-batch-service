@@ -271,7 +271,9 @@ class AutoMarketServiceTest {
 
         int createdCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
 
-        assertThat(createdCount).isEqualTo(1);
+        assertThat(createdCount).isEqualTo(4);
+        assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01'"))
+                .isEqualTo(4L);
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0600'"))
                 .isEqualTo(1L);
     }
@@ -296,10 +298,36 @@ class AutoMarketServiceTest {
         int firstCreatedCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
         int secondCreatedCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
 
-        assertThat(firstCreatedCount).isEqualTo(1);
+        assertThat(firstCreatedCount).isEqualTo(4);
         assertThat(secondCreatedCount).isZero();
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0600'"))
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void preCreateDailyRegimes_oneTimeWeight_carriesOpeningRegimeAcrossAllSlots() {
+        jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
+        jdbcTemplate.update(
+                """
+                update stock_auto_market_config
+                   set primary_regime_count_1_weight = 100,
+                       primary_regime_count_2_weight = 0,
+                       primary_regime_count_3_weight = 0,
+                       primary_regime_count_4_weight = 0
+                 where symbol = '005930'
+                """
+        );
+        insertSimulationClockAtSecondOfDay(7200, 5 * 3600 + 45 * 60);
+
+        int createdCount = autoMarketDailyRegimePreCreateService.preCreateDailyRegimes();
+
+        assertThat(createdCount).isEqualTo(4);
+        assertThat(queryLong(
+                "select count(distinct seed) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01'"
+        )).isEqualTo(1L);
+        assertThat(queryLong(
+                "select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and source_regime_phase = regime_phase"
+        )).isEqualTo(1L);
     }
 
     @Test

@@ -1,9 +1,14 @@
 package stock.batch.service.automarket.biz;
 
 import java.sql.Date;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -21,10 +26,12 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketDailyRegime;
+import stock.batch.service.batch.automarket.model.AutoMarketDailyRegimePreparationConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
 import stock.batch.service.batch.automarket.model.AutoMarketPressure;
 import stock.batch.service.batch.automarket.model.AutoMarketRegimePhase;
 import stock.batch.service.batch.automarket.model.AutoMarketRegimeModifier;
+import stock.batch.service.batch.automarket.model.AutoMarketRegimeCountWeights;
 
 import static stock.batch.service.automarket.support.AutoMarketPressureSampler.sample;
 
@@ -82,12 +89,36 @@ class AutoMarketDailyRegimeService {
         return ensureDailyRegimes(configs, simulationTradeDate, now, resolveRegimePhase(now));
     }
 
-    int ensureFirstSlotDailyRegimes(
-            List<AutoMarketConfig> configs,
+    int ensureFullDayDailyRegimes(
+            List<AutoMarketDailyRegimePreparationConfig> configs,
             LocalDate simulationTradeDate,
             LocalDateTime now
     ) {
-        return ensureDailyRegimes(configs, simulationTradeDate, now, AutoMarketRegimePhase.SLOT_0600);
+        if (configs.isEmpty()) {
+            return 0;
+        }
+        Map<String, AutoMarketDailyRegimePreparationConfig> configsBySymbol = distinctPreparationConfigsBySymbol(configs);
+        List<String> symbols = List.copyOf(configsBySymbol.keySet());
+        Map<String, Map<AutoMarketRegimePhase, AutoMarketDailyRegime>> existing = findFullDayDailyRegimes(
+                symbols,
+                simulationTradeDate
+        );
+        List<AutoMarketDailyRegime> missing = new ArrayList<>();
+        for (AutoMarketDailyRegimePreparationConfig config : configsBySymbol.values()) {
+            appendMissingFullDayRegimes(
+                    config,
+                    simulationTradeDate,
+                    existing.getOrDefault(config.symbol(), Map.of()),
+                    missing
+            );
+        }
+        int createdCount = missing.isEmpty() ? 0 : insertDailyRegimes(missing, now);
+        Map<String, Map<AutoMarketRegimePhase, AutoMarketDailyRegime>> loaded = findFullDayDailyRegimes(
+                symbols,
+                simulationTradeDate
+        );
+        requireFullDayRegimesLoaded(symbols, loaded);
+        return createdCount;
     }
 
     private int ensureDailyRegimes(
@@ -152,6 +183,7 @@ class AutoMarketDailyRegimeService {
                         select symbol,
                                simulation_trade_date,
                                regime_phase,
+                               source_regime_phase,
                                price_pressure,
                                asset_preference_pressure,
                                volatility_pressure,
@@ -168,22 +200,73 @@ class AutoMarketDailyRegimeService {
                 .param("symbols", symbols)
                 .param("simulationTradeDate", simulationTradeDate)
                 .param("regimePhase", regimePhase.name())
-                .query((rs, rowNum) -> new AutoMarketDailyRegime(
-                        rs.getString("symbol"),
-                        rs.getDate("simulation_trade_date").toLocalDate(),
-                        AutoMarketRegimePhase.parseOrDefault(rs.getString("regime_phase")),
-                        new AutoMarketPressure(
-                                rs.getInt("price_pressure"),
-                                rs.getInt("asset_preference_pressure"),
-                                rs.getInt("volatility_pressure"),
-                                rs.getInt("liquidity_pressure"),
-                                rs.getInt("execution_aggression_pressure")
-                        ),
-                        rs.getLong("seed")
-                ))
+                .query((rs, rowNum) -> mapDailyRegime(rs))
                 .list()
                 .stream()
                 .collect(LinkedHashMap::new, (map, regime) -> map.put(regime.symbol(), regime), LinkedHashMap::putAll);
+    }
+
+    private Map<String, Map<AutoMarketRegimePhase, AutoMarketDailyRegime>> findFullDayDailyRegimes(
+            List<String> symbols,
+            LocalDate simulationTradeDate
+    ) {
+        if (symbols.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Map<AutoMarketRegimePhase, AutoMarketDailyRegime>> regimesBySymbol = new LinkedHashMap<>();
+        for (int start = 0; start < symbols.size(); start += REGIME_QUERY_SYMBOL_CHUNK_SIZE) {
+            int end = Math.min(symbols.size(), start + REGIME_QUERY_SYMBOL_CHUNK_SIZE);
+            List<AutoMarketDailyRegime> rows = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                    .sql(
+                            """
+                            select symbol,
+                                   simulation_trade_date,
+                                   regime_phase,
+                                   source_regime_phase,
+                                   price_pressure,
+                                   asset_preference_pressure,
+                                   volatility_pressure,
+                                   liquidity_pressure,
+                                   execution_aggression_pressure,
+                                   seed
+                              from stock_order_book_daily_regime
+                             where symbol in (:symbols)
+                               and simulation_trade_date = :simulationTradeDate
+                             order by symbol asc, regime_phase asc
+                            """
+                    )
+                    .param("symbols", symbols.subList(start, end))
+                    .param("simulationTradeDate", simulationTradeDate)
+                    .query((rs, rowNum) -> mapDailyRegime(rs))
+                    .list();
+            for (AutoMarketDailyRegime row : rows) {
+                regimesBySymbol.computeIfAbsent(row.symbol(), ignored -> new EnumMap<>(AutoMarketRegimePhase.class))
+                        .put(row.regimePhase(), row);
+            }
+        }
+        return regimesBySymbol;
+    }
+
+    private AutoMarketDailyRegime mapDailyRegime(ResultSet rs) throws SQLException {
+        AutoMarketRegimePhase regimePhase = AutoMarketRegimePhase.parseOrDefault(rs.getString("regime_phase"));
+        String sourcePhaseValue = rs.getString("source_regime_phase");
+        AutoMarketRegimePhase sourceRegimePhase = sourcePhaseValue == null || sourcePhaseValue.isBlank()
+                ? regimePhase
+                : AutoMarketRegimePhase.parseOrDefault(sourcePhaseValue);
+        return new AutoMarketDailyRegime(
+                rs.getString("symbol"),
+                rs.getDate("simulation_trade_date").toLocalDate(),
+                regimePhase,
+                sourceRegimePhase,
+                new AutoMarketPressure(
+                        rs.getInt("price_pressure"),
+                        rs.getInt("asset_preference_pressure"),
+                        rs.getInt("volatility_pressure"),
+                        rs.getInt("liquidity_pressure"),
+                        rs.getInt("execution_aggression_pressure")
+                ),
+                rs.getLong("seed")
+        );
     }
 
     private int insertDailyRegimes(List<AutoMarketDailyRegime> regimes, LocalDateTime now) {
@@ -192,28 +275,31 @@ class AutoMarketDailyRegimeService {
             int end = Math.min(regimes.size(), start + REGIME_WRITE_ROW_CHUNK_SIZE);
             List<AutoMarketDailyRegime> chunk = regimes.subList(start, end);
             String placeholders = IntStream.range(0, chunk.size())
-                    .mapToObj(index -> "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .mapToObj(index -> "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                     .collect(java.util.stream.Collectors.joining(", "));
             String sql = mysql
                     ? """
                       insert ignore into stock_order_book_daily_regime(
-                          symbol, simulation_trade_date, regime_phase, price_pressure, asset_preference_pressure,
+                          symbol, simulation_trade_date, regime_phase, source_regime_phase,
+                          price_pressure, asset_preference_pressure,
                           volatility_pressure, liquidity_pressure, execution_aggression_pressure, seed,
                           created_at, updated_at
                       ) values %s
                       """.formatted(placeholders)
                     : """
                       merge into stock_order_book_daily_regime(
-                          symbol, simulation_trade_date, regime_phase, price_pressure, asset_preference_pressure,
+                          symbol, simulation_trade_date, regime_phase, source_regime_phase,
+                          price_pressure, asset_preference_pressure,
                           volatility_pressure, liquidity_pressure, execution_aggression_pressure, seed,
                           created_at, updated_at
                       ) key(symbol, simulation_trade_date, regime_phase) values %s
                       """.formatted(placeholders);
-            List<Object> parameters = new ArrayList<>(chunk.size() * 11);
+            List<Object> parameters = new ArrayList<>(chunk.size() * 12);
             for (AutoMarketDailyRegime regime : chunk) {
                 parameters.add(regime.symbol());
                 parameters.add(Date.valueOf(regime.simulationTradeDate()));
                 parameters.add(regime.regimePhase().name());
+                parameters.add(regime.sourceRegimePhase().name());
                 parameters.add(regime.pressure().price());
                 parameters.add(regime.pressure().assetPreference());
                 parameters.add(regime.pressure().volatility());
@@ -233,15 +319,81 @@ class AutoMarketDailyRegimeService {
             LocalDate simulationTradeDate,
             AutoMarketRegimePhase regimePhase
     ) {
+        return createRandomRegime(
+                config.symbol(),
+                config.primaryDistributionBias(),
+                simulationTradeDate,
+                regimePhase
+        );
+    }
+
+    private AutoMarketDailyRegime createRandomRegime(
+            String symbol,
+            AutoMarketDistributionBias distributionBias,
+            LocalDate simulationTradeDate,
+            AutoMarketRegimePhase regimePhase
+    ) {
         long seed = ThreadLocalRandom.current().nextLong();
         Random random = new Random(seed);
         return new AutoMarketDailyRegime(
-                config.symbol(),
+                symbol,
                 simulationTradeDate,
                 regimePhase,
-                samplePressures(random, config.primaryDistributionBias()),
+                regimePhase,
+                samplePressures(random, distributionBias),
                 seed
         );
+    }
+
+    private void appendMissingFullDayRegimes(
+            AutoMarketDailyRegimePreparationConfig config,
+            LocalDate simulationTradeDate,
+            Map<AutoMarketRegimePhase, AutoMarketDailyRegime> existing,
+            List<AutoMarketDailyRegime> missing
+    ) {
+        Set<AutoMarketRegimePhase> refreshPhases = selectRefreshPhases(config.countWeights());
+        AutoMarketDailyRegime effectiveRegime = null;
+        for (AutoMarketRegimePhase phase : AutoMarketRegimePhase.values()) {
+            AutoMarketDailyRegime existingRegime = existing.get(phase);
+            if (existingRegime != null) {
+                effectiveRegime = existingRegime;
+                continue;
+            }
+            AutoMarketDailyRegime newRegime;
+            if (effectiveRegime == null || refreshPhases.contains(phase)) {
+                newRegime = createRandomRegime(
+                        config.symbol(),
+                        config.primaryDistributionBias(),
+                        simulationTradeDate,
+                        phase
+                );
+            } else {
+                newRegime = new AutoMarketDailyRegime(
+                        config.symbol(),
+                        simulationTradeDate,
+                        phase,
+                        effectiveRegime.sourceRegimePhase(),
+                        effectiveRegime.pressure(),
+                        effectiveRegime.seed()
+                );
+            }
+            missing.add(newRegime);
+            effectiveRegime = newRegime;
+        }
+    }
+
+    private Set<AutoMarketRegimePhase> selectRefreshPhases(AutoMarketRegimeCountWeights weights) {
+        Random random = new Random(ThreadLocalRandom.current().nextLong());
+        int selectedCount = weights.selectCount(random);
+        List<AutoMarketRegimePhase> optionalPhases = new ArrayList<>(List.of(
+                AutoMarketRegimePhase.SLOT_0900,
+                AutoMarketRegimePhase.SLOT_1200,
+                AutoMarketRegimePhase.SLOT_1500
+        ));
+        Collections.shuffle(optionalPhases, random);
+        Set<AutoMarketRegimePhase> selected = EnumSet.of(AutoMarketRegimePhase.SLOT_0600);
+        selected.addAll(optionalPhases.subList(0, selectedCount - 1));
+        return selected;
     }
 
     private RegimeModifierLoad ensureRegimeModifiersAndLoad(
@@ -436,6 +588,18 @@ class AutoMarketDailyRegimeService {
         return Map.copyOf(configsBySymbol);
     }
 
+    private Map<String, AutoMarketDailyRegimePreparationConfig> distinctPreparationConfigsBySymbol(
+            List<AutoMarketDailyRegimePreparationConfig> configs
+    ) {
+        Map<String, AutoMarketDailyRegimePreparationConfig> configsBySymbol = new LinkedHashMap<>();
+        for (AutoMarketDailyRegimePreparationConfig config : configs) {
+            if (config.symbol() != null && !config.symbol().isBlank()) {
+                configsBySymbol.putIfAbsent(config.symbol(), config);
+            }
+        }
+        return Map.copyOf(configsBySymbol);
+    }
+
     private void requireAllSymbolsLoaded(String valueType, List<String> expectedSymbols, Set<String> loadedSymbols) {
         if (Set.copyOf(expectedSymbols).equals(loadedSymbols)) {
             return;
@@ -443,6 +607,22 @@ class AutoMarketDailyRegimeService {
         throw new IllegalStateException(
                 "Auto market %s write did not persist every symbol: expected=%d, loaded=%d"
                         .formatted(valueType, expectedSymbols.size(), loadedSymbols.size())
+        );
+    }
+
+    private void requireFullDayRegimesLoaded(
+            List<String> expectedSymbols,
+            Map<String, Map<AutoMarketRegimePhase, AutoMarketDailyRegime>> loaded
+    ) {
+        long completeSymbolCount = expectedSymbols.stream()
+                .filter(symbol -> loaded.getOrDefault(symbol, Map.of()).size() == AutoMarketRegimePhase.values().length)
+                .count();
+        if (completeSymbolCount == expectedSymbols.size()) {
+            return;
+        }
+        throw new IllegalStateException(
+                "Auto market full-day regime write did not persist every phase: expectedSymbols=%d, completeSymbols=%d"
+                        .formatted(expectedSymbols.size(), completeSymbolCount)
         );
     }
 
