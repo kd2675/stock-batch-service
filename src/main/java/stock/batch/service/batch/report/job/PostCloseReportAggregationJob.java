@@ -2,7 +2,6 @@ package stock.batch.service.batch.report.job;
 
 import java.time.LocalDateTime;
 
-import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -11,7 +10,6 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.infrastructure.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -48,17 +46,18 @@ public class PostCloseReportAggregationJob {
     }
 
     @Bean(name = SYMBOL_STEP_NAME)
-    @StepScope
     public Step aggregateOrderBookDailyReportStep(
             JobRepository jobRepository,
             @Qualifier(BatchRepositoryConfig.STOCK_BATCH_TASKLET_TRANSACTION_MANAGER)
             PlatformTransactionManager transactionManager,
-            PostCloseReportAggregationService aggregationService,
-            @Value("#{jobParameters['" + StockBatchJobParameters.CYCLE_ID + "']}") Long closeCycleId,
-            @Value("#{jobParameters['" + StockBatchJobParameters.SNAPSHOT_AT + "']}") LocalDateTime aggregatedAt
+            PostCloseReportAggregationService aggregationService
     ) {
         Tasklet tasklet = (contribution, chunkContext) -> {
-            var executionContext = contribution.getStepExecution().getExecutionContext();
+            var stepExecution = contribution.getStepExecution();
+            var jobParameters = stepExecution.getJobParameters();
+            long closeCycleId = jobParameters.getLong(StockBatchJobParameters.CYCLE_ID);
+            LocalDateTime aggregatedAt = jobParameters.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT);
+            var executionContext = stepExecution.getExecutionContext();
             var result = aggregationService.aggregateOrderBookDailySnapshotChunk(
                     closeCycleId,
                     aggregatedAt,
@@ -74,17 +73,18 @@ public class PostCloseReportAggregationJob {
     }
 
     @Bean(name = ACCOUNT_STEP_NAME)
-    @StepScope
     public Step aggregateAccountDailyReportStep(
             JobRepository jobRepository,
             @Qualifier(BatchRepositoryConfig.STOCK_BATCH_TASKLET_TRANSACTION_MANAGER)
             PlatformTransactionManager transactionManager,
-            PostCloseReportAggregationService aggregationService,
-            @Value("#{jobParameters['" + StockBatchJobParameters.CYCLE_ID + "']}") Long closeCycleId,
-            @Value("#{jobParameters['" + StockBatchJobParameters.SNAPSHOT_AT + "']}") LocalDateTime aggregatedAt
+            PostCloseReportAggregationService aggregationService
     ) {
         Tasklet tasklet = (contribution, chunkContext) -> {
-            var executionContext = contribution.getStepExecution().getExecutionContext();
+            var stepExecution = contribution.getStepExecution();
+            var jobParameters = stepExecution.getJobParameters();
+            long closeCycleId = jobParameters.getLong(StockBatchJobParameters.CYCLE_ID);
+            LocalDateTime aggregatedAt = jobParameters.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT);
+            var executionContext = stepExecution.getExecutionContext();
             var result = aggregationService.aggregateAccountDailySnapshotChunk(
                     closeCycleId,
                     aggregatedAt,
@@ -100,16 +100,16 @@ public class PostCloseReportAggregationJob {
     }
 
     @Bean(name = SUMMARY_STEP_NAME)
-    @StepScope
     public Step rebuildExecutionAccountDaySummaryStep(
             JobRepository jobRepository,
             @Qualifier(BatchRepositoryConfig.STOCK_BATCH_TASKLET_TRANSACTION_MANAGER)
             PlatformTransactionManager transactionManager,
-            PostCloseReportAggregationService aggregationService,
-            @Value("#{jobParameters['" + StockBatchJobParameters.CYCLE_ID + "']}") Long closeCycleId,
-            @Value("#{jobParameters['" + StockBatchJobParameters.SNAPSHOT_AT + "']}") LocalDateTime rebuiltAt
+            PostCloseReportAggregationService aggregationService
     ) {
         Tasklet tasklet = (contribution, chunkContext) -> {
+            var jobParameters = contribution.getStepExecution().getJobParameters();
+            long closeCycleId = jobParameters.getLong(StockBatchJobParameters.CYCLE_ID);
+            LocalDateTime rebuiltAt = jobParameters.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT);
             contribution.incrementWriteCount(
                     aggregationService.rebuildAccountDaySummary(closeCycleId, rebuiltAt)
             );

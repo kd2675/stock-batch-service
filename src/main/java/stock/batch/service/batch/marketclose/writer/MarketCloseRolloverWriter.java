@@ -32,9 +32,9 @@ public class MarketCloseRolloverWriter {
     private final JdbcClient jdbcClient;
     private final String openOrderCaptureTable;
     private final String lockedOrderTable;
-    private final String executionRangeTable;
-    private final String executionCandleTable;
-    private final String executionAccountReportTable;
+    private final String executionRangeIndexHint;
+    private final String executionCandleIndexHint;
+    private final String executionAccountReportIndexHint;
 
     public MarketCloseRolloverWriter(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -44,15 +44,15 @@ public class MarketCloseRolloverWriter {
                 ? "stock_order force index (idx_stock_order_market_status_symbol)"
                 : "stock_order";
         this.lockedOrderTable = mySql ? "stock_order force index (primary)" : "stock_order";
-        this.executionRangeTable = mySql
-                ? "stock_execution force index (idx_stock_execution_source_symbol_time)"
-                : "stock_execution";
-        this.executionCandleTable = mySql
-                ? "stock_execution force index (idx_stock_execution_candle)"
-                : "stock_execution";
-        this.executionAccountReportTable = mySql
-                ? "stock_execution force index (idx_stock_execution_market_report_flow)"
-                : "stock_execution";
+        this.executionRangeIndexHint = mySql
+                ? "force index (idx_stock_execution_source_symbol_time)"
+                : "";
+        this.executionCandleIndexHint = mySql
+                ? "force index (idx_stock_execution_candle)"
+                : "";
+        this.executionAccountReportIndexHint = mySql
+                ? "force index (idx_stock_execution_market_report_flow)"
+                : "";
     }
 
     public long createCloseRun(String symbol, LocalDate businessDate, LocalDateTime closedAt) {
@@ -1195,7 +1195,7 @@ public class MarketCloseRolloverWriter {
                        sum(execution.gross_amount),
                        max(execution.executed_at),
                        :snapshotAt
-                  from %s execution
+                  from stock_execution execution %s
                   join stock_close_account_snapshot account_snapshot
                     on account_snapshot.close_cycle_id = :closeCycleId
                    and account_snapshot.account_id = execution.account_id
@@ -1206,7 +1206,7 @@ public class MarketCloseRolloverWriter {
                  group by execution.symbol,
                           execution.account_id,
                           account_snapshot.participant_category
-                """.formatted(executionAccountReportTable);
+                """.formatted(executionAccountReportIndexHint);
         JdbcClient.StatementSpec statement = jdbcClient.sql(sql)
                 .param("closeCycleId", closeCycleId)
                 .param("closeRunId", closeRunId)
@@ -1449,7 +1449,7 @@ public class MarketCloseRolloverWriter {
                               sum(case when execution.side = 'BUY' then execution.gross_amount else 0 end) as turnover_amount,
                               (
                                   select opening_execution.price
-                                    from %s opening_execution
+                                    from stock_execution opening_execution %s
                                    where opening_execution.source = 'INTERNAL_ORDER_BOOK'
                                      and opening_execution.symbol = :symbol
                                      and opening_execution.side = 'BUY'
@@ -1462,7 +1462,7 @@ public class MarketCloseRolloverWriter {
                               min(case when execution.side = 'BUY' then execution.price end) as low_price,
                               (
                                   select closing_execution.price
-                                    from %s closing_execution
+                                    from stock_execution closing_execution %s
                                    where closing_execution.source = 'INTERNAL_ORDER_BOOK'
                                      and closing_execution.symbol = :symbol
                                      and closing_execution.side = 'BUY'
@@ -1477,7 +1477,7 @@ public class MarketCloseRolloverWriter {
                               sum(case when execution.side = 'SELL' then execution.net_amount else 0 end) as sell_net_amount,
                               min(execution.executed_at) as first_executed_at,
                               max(execution.executed_at) as last_executed_at
-                         from %s execution
+                         from stock_execution execution %s
                         where execution.source = 'INTERNAL_ORDER_BOOK'
                           and execution.symbol = :symbol
                           and execution.executed_at >= :executionRangeStart
@@ -1510,9 +1510,9 @@ public class MarketCloseRolloverWriter {
                   ) c on c.symbol = i.symbol
                  where i.symbol = :symbol
                 """.formatted(
-                executionCandleTable,
-                executionCandleTable,
-                executionRangeTable
+                executionCandleIndexHint,
+                executionCandleIndexHint,
+                executionRangeIndexHint
         );
         JdbcClient.StatementSpec statement = jdbcClient.sql(sql)
                 .param("closeRunId", closeRunId)
@@ -1576,7 +1576,7 @@ public class MarketCloseRolloverWriter {
                 update stock_close_price_snapshot
                    set last_execution_id = (
                        select max(execution.id)
-                         from %s execution
+                         from stock_execution execution %s
                         where execution.source = 'INTERNAL_ORDER_BOOK'
                           and execution.symbol = ?
                           and execution.executed_at >= ?
@@ -1584,7 +1584,7 @@ public class MarketCloseRolloverWriter {
                    )
                  where close_cycle_id = ?
                    and symbol = ?
-                """.formatted(executionRangeTable),
+                """.formatted(executionRangeIndexHint),
                 symbol,
                 executionRangeStart,
                 executionRangeEnd,

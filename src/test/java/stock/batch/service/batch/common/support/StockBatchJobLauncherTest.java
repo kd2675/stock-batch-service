@@ -3,6 +3,7 @@ package stock.batch.service.batch.common.support;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -600,6 +602,51 @@ class StockBatchJobLauncherTest {
                 .isEqualTo(CorporateActionJob.OPERATION_CASH);
         assertThat(parameters.getLocalDateTime(StockBatchJobParameters.SWEEP_AT))
                 .isEqualTo(BUSINESS_DATE.plusDays(1).atTime(0, 5));
+    }
+
+    @Test
+    void postCloseReports_retryKeepsStableJobInstanceIdentity() {
+        LocalDateTime firstAggregatedAt = BUSINESS_DATE.plusDays(1).atTime(0, 10);
+        LocalDateTime retryAggregatedAt = firstAggregatedAt.plusMinutes(15);
+        when(postCloseCycleService.findById(501L)).thenReturn(Optional.of(cycle(
+                501L,
+                PostCloseScopeType.FULL_MARKET,
+                "ALL",
+                PostClosePhase.CORPORATE_CASH_APPLIED
+        )));
+
+        launcher.aggregatePostCloseReports(501L, firstAggregatedAt);
+        launcher.aggregatePostCloseReports(501L, retryAggregatedAt);
+
+        ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(runner, times(2)).run(
+                eq(postCloseReportAggregationJob),
+                eq("post-close-reports"),
+                captor.capture()
+        );
+        JobParameters first = captor.getAllValues().get(0);
+        JobParameters retry = captor.getAllValues().get(1);
+        assertThat(List.of(
+                first.getLong(StockBatchJobParameters.CYCLE_ID),
+                retry.getLong(StockBatchJobParameters.CYCLE_ID),
+                first.getLong(StockBatchJobParameters.PHASE_REVISION),
+                retry.getLong(StockBatchJobParameters.PHASE_REVISION),
+                first.getParameter(StockBatchJobParameters.CYCLE_ID).identifying(),
+                first.getParameter(StockBatchJobParameters.PHASE_REVISION).identifying(),
+                first.getParameter(StockBatchJobParameters.SNAPSHOT_AT).identifying(),
+                first.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT),
+                retry.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT)
+        )).containsExactly(
+                501L,
+                501L,
+                1L,
+                1L,
+                true,
+                true,
+                false,
+                firstAggregatedAt,
+                retryAggregatedAt
+        );
     }
 
     @Test

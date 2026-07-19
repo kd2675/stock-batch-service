@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import org.junit.jupiter.api.Tag;
@@ -15,6 +17,8 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
+
+import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -93,6 +97,48 @@ class StockMysqlDdlMigrationTest {
                 "idx_stock_close_open_order_snapshot_cycle_stream"
         )).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_cash_flow_run")).isEqualTo(1);
+    }
+
+    @Test
+    void postCloseReportQueries_mysqlIndexHintGrammar_executesAgainstCanonicalSchema() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        MarketCloseRolloverWriter writer = new MarketCloseRolloverWriter(jdbcTemplate);
+        LocalDate businessDate = LocalDate.of(2026, 7, 19);
+        LocalDateTime rangeStart = businessDate.atStartOfDay();
+        LocalDateTime rangeEnd = businessDate.plusDays(1).atStartOfDay();
+
+        assertThat(List.of(
+                writer.snapshotOrderBookDailySymbols(
+                        1L,
+                        1L,
+                        "NO_MATCHING_SYMBOL",
+                        businessDate,
+                        rangeEnd,
+                        rangeStart,
+                        rangeEnd
+                ),
+                writer.snapshotDailyAccountExecutions(
+                        1L,
+                        1L,
+                        "NO_MATCHING_SYMBOL",
+                        businessDate,
+                        rangeEnd,
+                        rangeStart,
+                        rangeEnd
+                ),
+                writer.updateClosePriceLastExecutionId(
+                        1L,
+                        "NO_MATCHING_SYMBOL",
+                        rangeStart,
+                        rangeEnd
+                )
+        )).containsExactly(0, 0, 0);
     }
 
     @Test

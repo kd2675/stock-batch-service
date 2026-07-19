@@ -97,4 +97,17 @@ class MarketCloseRolloverWriterSqlContractTest {
                 .doesNotContain("date(execution.executed_at)")
                 .doesNotContain("time(execution.executed_at)");
     }
+
+    @Test
+    void mysqlExecutionIndexHints_followTableAliases() throws Exception {
+        String source = Files.readString(WRITER_SOURCE, StandardCharsets.UTF_8);
+
+        assertThat(source)
+                .contains("from stock_execution opening_execution %s")
+                .contains("from stock_execution closing_execution %s")
+                .contains("from stock_execution execution %s")
+                .doesNotContain("from %s opening_execution")
+                .doesNotContain("from %s closing_execution")
+                .doesNotContain("from %s execution");
+    }
 }
