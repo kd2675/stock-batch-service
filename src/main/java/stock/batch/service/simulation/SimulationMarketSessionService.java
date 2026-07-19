@@ -6,7 +6,6 @@ import java.time.LocalTime;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import web.common.core.simulation.SimulationClockSnapshot;
 import web.common.core.simulation.SimulationMarketSession;
 import web.common.core.simulation.SimulationMarketSessions;
 
@@ -31,7 +30,14 @@ public class SimulationMarketSessionService {
     }
 
     public SimulationMarketSession currentSession() {
-        return resolve(simulationClockService.currentSnapshot());
+        return sessionAt(simulationClockService.currentSnapshot().simulationDateTime());
+    }
+
+    public SimulationMarketSession sessionAt(LocalDateTime simulationDateTime) {
+        if (simulationDateTime == null) {
+            throw new IllegalArgumentException("simulationDateTime is required");
+        }
+        return SimulationMarketSessions.resolve(simulationDateTime, openTime, closeTime);
     }
 
     public boolean isRegularSession() {
@@ -60,10 +66,6 @@ public class SimulationMarketSessionService {
 
     public LocalTime closeTime() {
         return closeTime;
-    }
-
-    private SimulationMarketSession resolve(SimulationClockSnapshot clock) {
-        return SimulationMarketSessions.resolve(clock.simulationDateTime(), openTime, closeTime);
     }
 
     private LocalTime parseTime(String value, LocalTime defaultValue) {

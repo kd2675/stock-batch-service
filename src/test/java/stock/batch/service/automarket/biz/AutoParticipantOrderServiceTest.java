@@ -1,6 +1,7 @@
 package stock.batch.service.automarket.biz;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -11,15 +12,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import stock.batch.service.automarket.profile.AutoProfileBehavior;
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
@@ -29,10 +31,23 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
-import stock.batch.service.simulation.SimulationClockService;
-import web.common.core.simulation.SimulationClockSnapshot;
 
 class AutoParticipantOrderServiceTest {
+
+    @Test
+    void validateVolumeConfiguration_openOrderMultiplierAboveSafeMaximum_rejectsStartup() {
+        AutoParticipantOrderService service = new AutoParticipantOrderService(
+                mock(AutoMarketReader.class),
+                mock(AutoMarketOrderExecutor.class),
+                mock(AutoParticipantOrderPricing.class),
+                mock(AutoProfileBehaviorSupport.class)
+        );
+        ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 101);
+
+        assertThatThrownBy(service::validateVolumeConfiguration)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-open-order-quantity-multiplier must be between 1 and 100");
+    }
 
     @ParameterizedTest
     @MethodSource("planningDropCases")
@@ -46,15 +61,14 @@ class AutoParticipantOrderServiceTest {
         AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
         AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
         AutoProfileBehaviorSupport behaviorSupport = mock(AutoProfileBehaviorSupport.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         AutoProfileBehavior behavior = mock(AutoProfileBehavior.class);
         AutoParticipantOrderService service = new AutoParticipantOrderService(
                 reader,
                 executor,
                 pricing,
-                behaviorSupport,
-                clockService
+                behaviorSupport
         );
+        ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 1);
         AutoMarketConfig config = config();
         AutoParticipantStrategy strategy = new AutoParticipantStrategy(
                 "auto-001",
@@ -67,7 +81,6 @@ class AutoParticipantOrderServiceTest {
                 AutoParticipantProfileType.NOISE_TRADER,
                 policy
         );
-        when(clockService.currentSnapshot()).thenReturn(clock());
         when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(snapshots);
         when(executor.loadOrderBookState(config.symbol()))
@@ -96,7 +109,8 @@ class AutoParticipantOrderServiceTest {
                 List.of(strategy),
                 config,
                 policies,
-                0.0
+                0.0,
+                LocalDateTime.of(2026, 7, 14, 9, 0)
         );
 
         assertThat(result.droppedOrderCount(expectedReason)).isEqualTo(1);
@@ -141,20 +155,4 @@ class AutoParticipantOrderServiceTest {
         );
     }
 
-    private static SimulationClockSnapshot clock() {
-        LocalDateTime now = LocalDateTime.of(2026, 7, 14, 9, 0);
-        return new SimulationClockSnapshot(
-                LocalDate.of(2026, 7, 14),
-                now,
-                LocalDateTime.of(2026, 7, 14, 0, 0),
-                now,
-                LocalDateTime.of(2026, 7, 14, 0, 0),
-                7200,
-                true,
-                false,
-                0,
-                now,
-                now
-        );
-    }
 }

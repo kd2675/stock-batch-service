@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
 import stock.batch.service.batch.marketdata.processor.MarketPriceRefreshProcessor;
 import stock.batch.service.batch.marketdata.reader.MarketPriceQuoteReader;
@@ -16,6 +18,7 @@ import stock.batch.service.batch.marketdata.reader.MarketPriceRefreshTargetReade
 import stock.batch.service.batch.marketdata.writer.MarketPriceRefreshWriter;
 import stock.batch.service.marketdata.provider.MarketPriceProvider;
 import stock.batch.service.marketdata.provider.MarketPriceQuote;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 
 import java.io.IOException;
@@ -24,6 +27,8 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
@@ -43,6 +48,7 @@ class MarketDataRefreshServiceTest {
     private MarketDataRefreshService marketDataRefreshService;
     private StockPriceRedisPublisher stockPriceRedisPublisher;
     private ObjectMapper objectMapper;
+    private MarketSessionFenceService marketSessionFenceService;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -53,6 +59,7 @@ class MarketDataRefreshServiceTest {
         marketPriceProvider = mock(MarketPriceProvider.class);
         simulationClockService = mock(SimulationClockService.class);
         objectMapper = new ObjectMapper();
+        marketSessionFenceService = mock(MarketSessionFenceService.class);
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(simulationClockService.currentMarketDateTime()).thenReturn(SIMULATION_PRICE_TIME);
         stockPriceRedisPublisher = new StockPriceRedisPublisher(redisTemplate, objectMapper);
@@ -62,7 +69,12 @@ class MarketDataRefreshServiceTest {
                 new MarketPriceQuoteReader(marketPriceProvider),
                 new MarketPriceRefreshProcessor(simulationClockService),
                 marketPriceRefreshWriter,
-                stockPriceRedisPublisher
+                stockPriceRedisPublisher,
+                new MarketDataRefreshTransactionExecutor(
+                        new DataSourceTransactionManager(jdbcTemplate.getDataSource()),
+                        marketSessionFenceService
+                ),
+                marketSessionFenceService
         );
         ReflectionTestUtils.setField(stockPriceRedisPublisher, "priceCacheTtlSeconds", 60L);
 
@@ -98,6 +110,26 @@ class MarketDataRefreshServiceTest {
                 .isEqualTo(SIMULATION_PRICE_TIME);
         verify(valueOperations).set("stock:price:005930", "70100.00", Duration.ofSeconds(60));
         verifyPublishedPriceEvent("stock.price.005930", "005930", "70100.00", SIMULATION_PRICE_TIME, "test-provider");
+    }
+
+    @Test
+    void refreshWatchedPrices_providerCall_doesNotHoldDatabaseTransaction() {
+        insertInstrument("005930", true);
+        insertPrice("005930", "70000.00");
+        when(marketPriceProvider.fetch("005930", new BigDecimal("70000.00")))
+                .thenAnswer(invocation -> {
+                    assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                    return new MarketPriceQuote(
+                            "005930",
+                            new BigDecimal("70100.00"),
+                            "test-provider",
+                            SIMULATION_PRICE_TIME
+                    );
+                });
+
+        int refreshedCount = marketDataRefreshService.refreshWatchedPrices();
+
+        assertThat(refreshedCount).isEqualTo(1);
     }
 
     @Test
@@ -154,6 +186,26 @@ class MarketDataRefreshServiceTest {
                 .isEqualTo(1L);
         verify(valueOperations).set("stock:price:654321", "83100.00", Duration.ofSeconds(60));
         verifyPublishedPriceEvent("stock.price.654321", "654321", "83100.00", SIMULATION_PRICE_TIME, "test-provider");
+    }
+
+    @Test
+    void refreshWatchedPrices_manyOrdersAndHoldings_preAggregatesToOneSymbolWithMaximumReference() {
+        insertPendingOrder("reference-order-low", "654321", "71000.00");
+        insertPendingOrder("reference-order-high", "654321", "82000.00");
+        insertHolding("reference-holder-low", "654321", "76000.00");
+        insertHolding("reference-holder-high", "654321", "83000.00");
+        when(marketPriceProvider.fetch("654321", new BigDecimal("83000.00")))
+                .thenReturn(new MarketPriceQuote(
+                        "654321",
+                        new BigDecimal("83100.00"),
+                        "test-provider",
+                        SIMULATION_PRICE_TIME
+                ));
+
+        int refreshedCount = marketDataRefreshService.refreshWatchedPrices();
+
+        assertThat(refreshedCount).isEqualTo(1);
+        verify(marketPriceProvider).fetch("654321", new BigDecimal("83000.00"));
     }
 
     @Test
@@ -220,6 +272,58 @@ class MarketDataRefreshServiceTest {
     }
 
     @Test
+    void refreshWatchedPricesStrict_providerFailure_updatesSuccessfulTargetsAndFailsPhase() {
+        LocalDateTime priceTime = LocalDateTime.of(2026, 6, 17, 9, 16);
+        insertInstrument("005930", true);
+        insertInstrument("000660", true);
+        insertPrice("005930", "70000.00");
+        insertPrice("000660", "240000.00");
+        when(marketPriceProvider.fetch("000660", new BigDecimal("240000.00")))
+                .thenReturn(new MarketPriceQuote("000660", new BigDecimal("241000.00"), "test-provider", priceTime));
+        when(marketPriceProvider.fetch("005930", new BigDecimal("70000.00")))
+                .thenThrow(new IllegalStateException("provider down"));
+
+        assertThatThrownBy(marketDataRefreshService::refreshWatchedPricesStrict)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("failedCount=1")
+                .hasMessageContaining("005930");
+
+        assertThat(queryDecimal("select current_price from stock_price where symbol = '000660'"))
+                .isEqualByComparingTo(new BigDecimal("241000.00"));
+        assertThat(queryDecimal("select current_price from stock_price where symbol = '005930'"))
+                .isEqualByComparingTo(new BigDecimal("70000.00"));
+    }
+
+    @Test
+    void refreshWatchedPricesStrict_marketOpenedBeforeTargetRead_failsWithoutProviderCall() {
+        insertInstrument("005930", true);
+        insertPrice("005930", "70000.00");
+        doThrow(new IllegalStateException("Cannot run pre-open market data refresh while any enabled market is open"))
+                .when(marketSessionFenceService)
+                .assertMarketLedgerMutationAllowed("pre-open market data refresh");
+
+        assertThatThrownBy(marketDataRefreshService::refreshWatchedPricesStrict)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("while any enabled market is open");
+        org.mockito.Mockito.verifyNoInteractions(marketPriceProvider);
+    }
+
+    @Test
+    void refreshWatchedPrices_sameProviderTickRetried_doesNotDuplicateTick() {
+        LocalDateTime priceTime = LocalDateTime.of(2026, 6, 17, 9, 17);
+        insertInstrument("005930", true);
+        insertPrice("005930", "70000.00");
+        when(marketPriceProvider.fetch(eq("005930"), any(BigDecimal.class)))
+                .thenReturn(new MarketPriceQuote("005930", new BigDecimal("70300.00"), "test-provider", priceTime));
+
+        marketDataRefreshService.refreshWatchedPrices();
+        marketDataRefreshService.refreshWatchedPrices();
+
+        assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930'"))
+                .isEqualTo(1L);
+    }
+
+    @Test
     void refreshWatchedPrices_redisFailure_stillUpdatesDatabaseAndCountsRefresh() {
         LocalDateTime priceTime = LocalDateTime.of(2026, 6, 17, 9, 20);
         insertInstrument("005930", true);
@@ -233,6 +337,28 @@ class MarketDataRefreshServiceTest {
         int refreshedCount = marketDataRefreshService.refreshWatchedPrices();
 
         assertThat(refreshedCount).isEqualTo(1);
+        assertThat(queryDecimal("select current_price from stock_price where symbol = '005930'"))
+                .isEqualByComparingTo(new BigDecimal("70300.00"));
+        assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930'"))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void refreshWatchedPricesStrict_redisFailure_updatesDatabaseButFailsPreOpenPhase() {
+        LocalDateTime priceTime = LocalDateTime.of(2026, 6, 17, 9, 21);
+        insertInstrument("005930", true);
+        insertPrice("005930", "70000.00");
+        when(marketPriceProvider.fetch("005930", new BigDecimal("70000.00")))
+                .thenReturn(new MarketPriceQuote("005930", new BigDecimal("70300.00"), "test-provider", priceTime));
+        doThrow(new IllegalStateException("redis down"))
+                .when(valueOperations)
+                .set("stock:price:005930", "70300.00", Duration.ofSeconds(60));
+
+        assertThatThrownBy(marketDataRefreshService::refreshWatchedPricesStrict)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("failedCount=1")
+                .hasRootCauseMessage("redis down");
+
         assertThat(queryDecimal("select current_price from stock_price where symbol = '005930'"))
                 .isEqualByComparingTo(new BigDecimal("70300.00"));
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930'"))
@@ -377,17 +503,23 @@ class MarketDataRefreshServiceTest {
     }
 
     private void insertPendingOrder(String clientOrderId, String symbol) {
+        insertPendingOrder(clientOrderId, symbol, "70000.00");
+    }
+
+    private void insertPendingOrder(String clientOrderId, String symbol, String limitPrice) {
         Long accountId = accountIdFor("watch-user");
         jdbcTemplate.update(
                 """
                 insert into stock_order(
-                  client_order_id, account_id, symbol, side, order_type, status, limit_price,
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
                   quantity, filled_quantity, reserved_cash, created_at, updated_at
-                ) values (?, ?, ?, 'BUY', 'LIMIT', 'PENDING', 70000.00, 1, 0, 70000.00, ?, ?)
+                ) values (?, ?, ?, 'VIRTUAL_PRICE', 'BUY', 'LIMIT', 'PENDING', ?, 1, 0, ?, ?, ?)
                 """,
                 clientOrderId,
                 accountId,
                 symbol,
+                new BigDecimal(limitPrice),
+                new BigDecimal(limitPrice),
                 LocalDateTime.now(),
                 LocalDateTime.now()
         );

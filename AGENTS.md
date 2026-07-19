@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Updated: 2026-07-10 -->
+<!-- Updated: 2026-07-16 -->
 
 # stock-batch-service
 
@@ -40,6 +40,7 @@
 ./gradlew :stock-batch-service:bootRun --args='--spring.profiles.active=local-direct'
 ./gradlew :stock-batch-service:compileJava
 ./gradlew :stock-batch-service:test
+./gradlew :stock-batch-service:mysqlTest
 ```
 
 ## Operational Notes
@@ -75,3 +76,11 @@
 - 스케줄러와 수동 internal job API는 같은 job service를 호출해 실행 모드 분기가 갈라지지 않게 유지합니다.
 - 내부 주문장 체결은 가격 우선, 시간 우선으로 매칭하고 같은 사용자끼리 체결하지 않습니다.
 - Redis 발행 실패는 체결/정산 원장 처리를 막지 않도록 degrade 처리합니다.
+- 주문·체결 hot path에는 전역 row lock, 범위 `FOR UPDATE`, 무제한 반복 조회, EOD 보고서 집계를 넣지 않습니다. 종목 session fence 뒤에 계좌 ID, 보유 row, 정확한 주문 PK 순으로 잠그고 모든 대상 수와 트랜잭션 chunk에 상한을 둡니다.
+- 장마감·정산·기업행사·보고서 작업은 정규장 체결 worker와 DB 자원을 경쟁하지 않도록 cycle phase와 heavy-job admission control을 거칩니다. 한 시점에 무거운 EOD Job은 하나만 허용하고, 18시 hot path에는 원장 동결에 필요한 작업만 둡니다.
+- 자동 주문 worker/chunk/계좌당 주문 수, 체결 worker 수, 만료·유동성 공급 batch size를 동시에 키우지 않습니다. 기본 최악치 계획량과 실제 저장량을 구분하고, 설정 증가는 동일 데이터·동일 동시성 MySQL A/B에서 TPS 95% 이상과 지연·lock wait·deadlock 기준을 통과한 뒤에만 허용합니다.
+- `stock_order`·`stock_execution` 인덱스 추가는 기존 실행계획이 부족하다는 `EXPLAIN ANALYZE`와 INSERT/체결 A/B 근거가 있을 때만 검토합니다. EOD 편의를 위한 인덱스는 snapshot/summary/queue 테이블에 둡니다.
+- EOD 구현·배포·부하검증의 기준 문서는 `docs/stock-eod-refactoring-plan-2026-07-15.md`입니다. Java/H2 테스트만 통과한 상태를 “주문·체결 부하 문제 없음”으로 판정하지 않습니다.
+- `mysqlTest`는 일반 `test`/`check`에서 분리된 Testcontainers MySQL 8 검증입니다. Docker 부재로 테스트가 skipped된 `BUILD SUCCESSFUL`은 통과로 간주하지 않고 XML의 실행·skip·failure 수를 확인합니다. 실제 배포 승인은 같은 데이터·같은 동시성의 사용자 주문 API와 체결 p95/p99·TPS·commit·lock wait·deadlock A/B까지 통과해야 합니다.
+- 장중 체결 계좌 일일요약은 원본 체결의 권위 원장이 아닙니다. after-commit에서는 DB를 쓰지 않고 `(거래일, 계좌)`별 메모리 누적값만 병합해 객체 수가 체결 건수에 비례하지 않게 합니다. 실패 재병합도 고유 슬롯 설정 상한을 넘지 않아야 하며, 초과분은 원본 체결을 지연·실패시키지 않고 저카디널리티 metric으로만 기록한 뒤 야간 `[T, T+1)` `stock_execution` 인덱스 범위 재구축으로 복구합니다.
+- Spring Batch metadata archive/purge는 정규장이나 일반 polling 경로에 추가하지 않습니다. `REPORTS_AGGREGATED` 이후 cycle 소속 경량 작업으로만 실행하고, `STOCK_BATCH_METADATA` 전용 DDL·보존기간·purge allow-list·동일 MySQL 호스트 주문/체결 A/B가 승인될 때까지 `metadata-retention.enabled=false`, `purge-enabled=false`를 유지합니다.

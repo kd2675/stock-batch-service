@@ -2,19 +2,20 @@ package stock.batch.service.batch.corporateaction.writer;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
-
-import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 
 @Component
 @RequiredArgsConstructor
 public class CorporateActionWriter {
 
     private final JdbcTemplate jdbcTemplate;
-    private final StockHoldingReservationJdbcSupport holdingReservationJdbcSupport;
 
     public int markActionExRightsApplied(long actionId, String nextStatus, String sourceStatus, LocalDateTime appliedAt) {
         return markCorporateActionTimestamp(actionId, nextStatus, sourceStatus, "applied_at", appliedAt);
@@ -59,23 +60,92 @@ public class CorporateActionWriter {
         return markCorporateActionTimestamp(actionId, delistedStatus, sourceStatus, "applied_at", appliedAt);
     }
 
-    public void releaseReservedSellQuantity(long accountId, String symbol, long quantity, LocalDateTime updatedAt) {
-        holdingReservationJdbcSupport.releaseReservedSellQuantity(accountId, symbol, quantity, updatedAt);
-    }
-
-    public boolean cancelOrder(long orderId, LocalDateTime updatedAt) {
+    public int cancelOrders(List<Long> orderIds, LocalDateTime updatedAt) {
+        List<Long> orderedOrderIds = orderIds.stream().distinct().sorted().toList();
+        if (orderedOrderIds.isEmpty()) {
+            return 0;
+        }
+        if (orderedOrderIds.size() != orderIds.size()) {
+            throw new IllegalArgumentException("Corporate action cancellation chunk contains duplicate order ids");
+        }
+        String placeholders = String.join(",", Collections.nCopies(orderedOrderIds.size(), "?"));
+        List<Object> parameters = new ArrayList<>(orderedOrderIds.size() + 1);
+        parameters.add(updatedAt);
+        parameters.addAll(orderedOrderIds);
         return jdbcTemplate.update(
                 """
                 update stock_order
                    set status = 'CANCELLED',
                        reserved_cash = 0,
                        updated_at = ?
-                 where id = ?
+                 where id in (%s)
                    and status in ('PENDING', 'PARTIALLY_FILLED')
-                """,
-                updatedAt,
-                orderId
-        ) > 0;
+                """.formatted(placeholders),
+                parameters.toArray()
+        );
+    }
+
+    public int creditCashChunk(Map<Long, BigDecimal> cashByAccountId, LocalDateTime updatedAt) {
+        if (cashByAccountId.isEmpty()) {
+            return 0;
+        }
+        List<Map.Entry<Long, BigDecimal>> entries = cashByAccountId.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .toList();
+        String cashCases = String.join(" ", Collections.nCopies(entries.size(), "when ? then ?"));
+        String placeholders = String.join(",", Collections.nCopies(entries.size(), "?"));
+        List<Object> parameters = new ArrayList<>(entries.size() * 3 + 1);
+        for (Map.Entry<Long, BigDecimal> entry : entries) {
+            parameters.add(entry.getKey());
+            parameters.add(entry.getValue());
+        }
+        parameters.add(updatedAt);
+        entries.forEach(entry -> parameters.add(entry.getKey()));
+        return jdbcTemplate.update(
+                """
+                update stock_account
+                   set cash_balance = cash_balance + case id %s else 0 end,
+                       updated_at = ?
+                 where id in (%s)
+                """.formatted(cashCases, placeholders),
+                parameters.toArray()
+        );
+    }
+
+    public int releaseReservedSellQuantityChunk(
+            String symbol,
+            Map<Long, Long> quantityByAccountId,
+            LocalDateTime updatedAt
+    ) {
+        if (quantityByAccountId.isEmpty()) {
+            return 0;
+        }
+        List<Map.Entry<Long, Long>> entries = quantityByAccountId.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .toList();
+        String quantityCases = String.join(" ", Collections.nCopies(entries.size(), "when ? then ?"));
+        String placeholders = String.join(",", Collections.nCopies(entries.size(), "?"));
+        List<Object> parameters = new ArrayList<>(entries.size() * 3 + 2);
+        for (Map.Entry<Long, Long> entry : entries) {
+            parameters.add(entry.getKey());
+            parameters.add(entry.getValue());
+        }
+        parameters.add(updatedAt);
+        parameters.add(symbol);
+        entries.forEach(entry -> parameters.add(entry.getKey()));
+        return jdbcTemplate.update(
+                """
+                update stock_holding
+                   set reserved_quantity = greatest(
+                           0,
+                           reserved_quantity - case account_id %s else 0 end
+                       ),
+                       updated_at = ?
+                 where symbol = ?
+                   and account_id in (%s)
+                """.formatted(quantityCases, placeholders),
+                parameters.toArray()
+        );
     }
 
     public int delistInstrument(String symbol, LocalDateTime updatedAt) {
@@ -185,13 +255,51 @@ public class CorporateActionWriter {
         );
     }
 
-    public void multiplyHoldingsForSplit(
+    public int lockHoldingChunkForSplit(String symbol, List<Long> accountIds) {
+        if (accountIds.isEmpty()) {
+            return 0;
+        }
+        List<Long> orderedAccountIds = accountIds.stream().distinct().sorted().toList();
+        if (orderedAccountIds.size() != accountIds.size()) {
+            throw new IllegalArgumentException("Stock split chunk contains duplicate account ids");
+        }
+        String placeholders = String.join(",", Collections.nCopies(orderedAccountIds.size(), "?"));
+        List<Object> parameters = new ArrayList<>(orderedAccountIds.size() + 1);
+        parameters.add(symbol);
+        parameters.addAll(orderedAccountIds);
+        return jdbcTemplate.queryForList(
+                """
+                select id
+                  from stock_holding
+                 where symbol = ?
+                   and account_id in (%s)
+                 order by account_id asc, symbol asc
+                 for update
+                """.formatted(placeholders),
+                Long.class,
+                parameters.toArray()
+        ).size();
+    }
+
+    public int multiplyHoldingChunkForSplit(
             String symbol,
+            List<Long> accountIds,
             int multiplier,
             BigDecimal priceDivisor,
             LocalDateTime updatedAt
     ) {
-        jdbcTemplate.update(
+        if (accountIds.isEmpty()) {
+            return 0;
+        }
+        String placeholders = String.join(",", Collections.nCopies(accountIds.size(), "?"));
+        List<Object> parameters = new ArrayList<>(accountIds.size() + 5);
+        parameters.add(multiplier);
+        parameters.add(multiplier);
+        parameters.add(priceDivisor);
+        parameters.add(updatedAt);
+        parameters.add(symbol);
+        parameters.addAll(accountIds);
+        return jdbcTemplate.update(
                 """
                 update stock_holding
                    set quantity = quantity * ?,
@@ -199,12 +307,9 @@ public class CorporateActionWriter {
                        average_price = average_price / ?,
                        updated_at = ?
                  where symbol = ?
-                """,
-                multiplier,
-                multiplier,
-                priceDivisor,
-                updatedAt,
-                symbol
+                   and account_id in (%s)
+                """.formatted(placeholders),
+                parameters.toArray()
         );
     }
 

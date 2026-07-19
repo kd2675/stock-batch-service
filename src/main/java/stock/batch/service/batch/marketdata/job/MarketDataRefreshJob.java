@@ -34,4 +34,9 @@ public class MarketDataRefreshJob implements LightweightBatchTask {
     public int run() {
         return marketDataRefreshService.refreshWatchedPrices();
     }
+
+    @Override
+    public int runForPostCloseCycle(long closeCycleId) {
+        return marketDataRefreshService.refreshWatchedPricesStrict();
+    }
 }

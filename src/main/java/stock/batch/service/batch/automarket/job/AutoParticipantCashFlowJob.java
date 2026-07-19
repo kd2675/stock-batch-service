@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import stock.batch.service.automarket.biz.AutoParticipantCashFlowService;
+import stock.batch.service.batch.common.support.PostClosePhaseAttemptJobExecutionListener;
 import stock.batch.service.batch.common.support.StockBatchJobParameters;
 import stock.batch.service.batch.config.BatchRepositoryConfig;
 
@@ -27,10 +28,12 @@ public class AutoParticipantCashFlowJob {
     @Bean(name = JOB_NAME)
     public Job autoParticipantCashFlowBatchJob(
             JobRepository jobRepository,
-            @Qualifier(STEP_NAME) Step autoParticipantCashFlowStep
+            @Qualifier(STEP_NAME) Step autoParticipantCashFlowStep,
+            PostClosePhaseAttemptJobExecutionListener phaseAttemptListener
     ) {
         return new JobBuilder(JOB_NAME, jobRepository)
                 .start(autoParticipantCashFlowStep)
+                .listener(phaseAttemptListener)
                 .build();
     }
 
@@ -44,9 +47,14 @@ public class AutoParticipantCashFlowJob {
         Tasklet tasklet = (contribution, chunkContext) -> {
             String operation = contribution.getStepExecution().getJobParameters()
                     .getString(StockBatchJobParameters.OPERATION);
+            String runKey = contribution.getStepExecution().getJobParameters()
+                    .getString(StockBatchJobParameters.REQUEST_ID);
+            if (runKey == null || runKey.isBlank()) {
+                throw new IllegalArgumentException("Recurring cash requestId is required for restart idempotency");
+            }
             int processedCount = switch (operation) {
-                case OPERATION_SCHEDULED -> autoParticipantCashFlowService.fundRecurringCash();
-                case OPERATION_MANUAL -> autoParticipantCashFlowService.fundRecurringCashManually();
+                case OPERATION_SCHEDULED -> autoParticipantCashFlowService.fundRecurringCash(runKey);
+                case OPERATION_MANUAL -> autoParticipantCashFlowService.fundRecurringCashManually(runKey);
                 default -> throw new IllegalArgumentException("Unknown auto participant cash flow operation: " + operation);
             };
             contribution.incrementWriteCount(processedCount);

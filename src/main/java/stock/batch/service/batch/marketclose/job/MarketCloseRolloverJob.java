@@ -46,17 +46,24 @@ public class MarketCloseRolloverJob {
             var parameters = contribution.getStepExecution().getJobParameters();
             String operation = parameters.getString(StockBatchJobParameters.OPERATION);
             String symbol = parameters.getString(StockBatchJobParameters.SYMBOL);
+            Long jobExecutionId = contribution.getStepExecution().getJobExecution().getId();
             int processedCount = switch (operation) {
                 case OPERATION_FULL -> marketCloseRolloverService.rolloverClosingPrices(
                         parameters.getLocalDate(StockBatchJobParameters.BUSINESS_DATE),
-                        parameters.getLocalDateTime(StockBatchJobParameters.CLOSED_AT)
+                        parameters.getLocalDateTime(StockBatchJobParameters.CLOSED_AT),
+                        jobExecutionId
                 );
                 case OPERATION_SYMBOL -> marketCloseRolloverService.rolloverClosingPrices(
                         symbol,
                         parameters.getLocalDate(StockBatchJobParameters.BUSINESS_DATE),
+                        parameters.getLocalDateTime(StockBatchJobParameters.CLOSED_AT),
+                        jobExecutionId
+                );
+                case OPERATION_CANCEL_OPEN_ORDERS -> marketCloseRolloverService.cancelOpenOrderBookOrders(
+                        symbol,
+                        parameters.getLocalDate(StockBatchJobParameters.BUSINESS_DATE),
                         parameters.getLocalDateTime(StockBatchJobParameters.CLOSED_AT)
                 );
-                case OPERATION_CANCEL_OPEN_ORDERS -> marketCloseRolloverService.cancelOpenOrderBookOrders(symbol);
                 default -> throw new IllegalArgumentException("Unknown market close operation: " + operation);
             };
             contribution.incrementWriteCount(processedCount);

@@ -51,13 +51,25 @@ public class MarketPriceRefreshWriter {
         jdbcTemplate.update(
                 """
                 insert into stock_price_tick(symbol, price, provider, price_time, created_at)
-                values (?, ?, ?, ?, ?)
+                select ?, ?, ?, ?, ?
+                 where not exists (
+                       select 1
+                         from stock_price_tick
+                        where symbol = ?
+                          and price_time = ?
+                          and price = ?
+                          and provider = ?
+                 )
                 """,
                 quote.symbol(),
                 quote.currentPrice(),
                 quote.provider(),
                 quote.priceTime(),
-                quote.priceTime()
+                quote.priceTime(),
+                quote.symbol(),
+                quote.priceTime(),
+                quote.currentPrice(),
+                quote.provider()
         );
     }
 }

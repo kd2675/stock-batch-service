@@ -2,7 +2,9 @@ package stock.batch.service.batch.corporateaction.reader;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -35,7 +37,8 @@ public class CorporateActionReader {
     public List<ExRightsActionRow> findDueExRights(
             LocalDate today,
             String announcedStatus,
-            List<String> actionTypes
+            List<String> actionTypes,
+            int limit
     ) {
         return jdbcClient.sql(
                 """
@@ -48,11 +51,13 @@ public class CorporateActionReader {
 	                   and theoretical_ex_rights_price is not null
 	                   and (action_type <> 'PAID_IN_CAPITAL_INCREASE' or offering_type = 'SHAREHOLDER_ALLOCATION')
 	                 order by ex_rights_date asc, id asc
+	                 limit :limit
                 """
         )
                 .param("actionTypes", actionTypes)
                 .param("announcedStatus", announcedStatus)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new ExRightsActionRow(
 	                        rs.getLong("id"),
 	                        rs.getString("symbol"),
@@ -67,7 +72,12 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public List<Long> findDueCashDividendActionIds(LocalDate today, String actionType, String sourceStatus) {
+    public List<Long> findDueCashDividendActionIds(
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select id
@@ -76,11 +86,13 @@ public class CorporateActionReader {
                    and status = :sourceStatus
                    and payment_date <= :today
                  order by payment_date asc, id asc
+                 limit :limit
                 """
         )
                 .param("actionType", actionType)
                 .param("sourceStatus", sourceStatus)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> rs.getLong("id"))
                 .list();
     }
@@ -88,7 +100,8 @@ public class CorporateActionReader {
     public List<CapitalIncreaseSubscriptionActionRow> findOpenCapitalIncreaseSubscriptions(
             LocalDate today,
             String actionType,
-            List<String> statuses
+            List<String> statuses,
+            int limit
     ) {
         return jdbcClient.sql(
                 """
@@ -101,12 +114,27 @@ public class CorporateActionReader {
                    and subscription_end_date >= :today
                    and share_quantity > 0
                    and issue_price > 0
+                   and not exists (
+                       select 1
+                         from stock_corporate_action_processing processing
+                        where processing.action_id = stock_corporate_action.id
+                          and processing.account_scope_key = 'ALL'
+                          and processing.action_phase = case
+                              when stock_corporate_action.offering_type = 'SHAREHOLDER_ALLOCATION'
+                              then 'shareholder-allocation-auto-subscription'
+                              else 'public-offering-auto-subscription'
+                          end
+                          and processing.effective_business_date = :today
+                          and processing.status = 'COMPLETED'
+                   )
                  order by subscription_end_date asc, id asc
+                 limit :limit
                 """
         )
                 .param("actionType", actionType)
                 .param("statuses", statuses)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new CapitalIncreaseSubscriptionActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol"),
@@ -115,6 +143,97 @@ public class CorporateActionReader {
                         rs.getBigDecimal("issue_price")
                 ))
                 .list();
+    }
+
+    public long countIncompleteCorporateCashActions(LocalDate effectiveBusinessDate) {
+        Long count = jdbcClient.sql(
+                        """
+                        select count(*)
+                          from stock_corporate_action a
+                         where (
+                               a.action_type = 'CASH_DIVIDEND'
+                               and a.status = 'EX_RIGHTS_APPLIED'
+                               and a.payment_date <= :effectiveBusinessDate
+                         ) or (
+                               a.action_type = 'PAID_IN_CAPITAL_INCREASE'
+                               and a.payment_date <= :effectiveBusinessDate
+                               and (
+                                   (a.offering_type = 'SHAREHOLDER_ALLOCATION' and a.status = 'EX_RIGHTS_APPLIED')
+                                   or (a.offering_type = 'PUBLIC_OFFERING' and a.status = 'ANNOUNCED')
+                               )
+                         ) or (
+                               a.action_type = 'PAID_IN_CAPITAL_INCREASE'
+                               and a.subscription_start_date <= :effectiveBusinessDate
+                               and a.subscription_end_date >= :effectiveBusinessDate
+                               and (
+                                   (a.offering_type = 'SHAREHOLDER_ALLOCATION' and a.status = 'EX_RIGHTS_APPLIED')
+                                   or (a.offering_type = 'PUBLIC_OFFERING' and a.status = 'ANNOUNCED')
+                               )
+                               and not exists (
+                                   select 1
+                                     from stock_corporate_action_processing p
+                                    where p.action_id = a.id
+                                      and p.account_scope_key = 'ALL'
+                                      and p.action_phase = case
+                                          when a.offering_type = 'SHAREHOLDER_ALLOCATION'
+                                          then 'shareholder-allocation-auto-subscription'
+                                          else 'public-offering-auto-subscription'
+                                      end
+                                      and p.effective_business_date = :effectiveBusinessDate
+                                      and p.status = 'COMPLETED'
+                               )
+                         )
+                        """
+                )
+                .param("effectiveBusinessDate", effectiveBusinessDate)
+                .query(Long.class)
+                .single();
+        return count == null ? 0L : count;
+    }
+
+    public long countIncompletePreOpenSecurityTransforms(LocalDate preparingBusinessDate) {
+        Long count = jdbcClient.sql(
+                        """
+                        select count(*)
+                          from stock_corporate_action a
+                         where (
+                               a.status = 'ANNOUNCED'
+                               and a.action_type in (
+                                   'PAID_IN_CAPITAL_INCREASE', 'CASH_DIVIDEND',
+                                   'BONUS_ISSUE', 'STOCK_DIVIDEND'
+                               )
+                               and a.ex_rights_date <= :preparingBusinessDate
+                               and a.theoretical_ex_rights_price is not null
+                               and (
+                                   a.action_type <> 'PAID_IN_CAPITAL_INCREASE'
+                                   or a.offering_type = 'SHAREHOLDER_ALLOCATION'
+                               )
+                         ) or (
+                               a.status = 'PAID'
+                               and a.action_type in (
+                                   'PAID_IN_CAPITAL_INCREASE', 'BONUS_ISSUE', 'STOCK_DIVIDEND'
+                               )
+                               and a.listing_date <= :preparingBusinessDate
+                         ) or (
+                               a.status = 'EX_RIGHTS_APPLIED'
+                               and a.action_type in ('BONUS_ISSUE', 'STOCK_DIVIDEND')
+                               and a.listing_date <= :preparingBusinessDate
+                         ) or (
+                               a.status = 'ANNOUNCED'
+                               and a.action_type = 'STOCK_SPLIT'
+                               and a.listing_date <= :preparingBusinessDate
+                         ) or (
+                               a.status = 'ANNOUNCED'
+                               and a.action_type = 'DELISTING'
+                               and a.delisting_date <= :preparingBusinessDate
+                               and a.delisting_treatment = 'ZERO_VALUE'
+                         )
+                        """
+                )
+                .param("preparingBusinessDate", preparingBusinessDate)
+                .query(Long.class)
+                .single();
+        return count == null ? 0L : count;
     }
 
     public Optional<CapitalIncreaseSubscriptionActionRow> findCapitalIncreaseSubscriptionForUpdate(
@@ -154,9 +273,13 @@ public class CorporateActionReader {
                 .optional();
     }
 
-    public List<AutoParticipantCapitalIncreaseCandidate> findShareholderAllocationAutoCandidates(
+    public List<AutoParticipantCapitalIncreaseCandidate> findShareholderAllocationAutoCandidateChunk(
             long actionId,
-            String entitlementStatus
+            String entitlementStatus,
+            String actionPhase,
+            LocalDate effectiveBusinessDate,
+            long afterAccountId,
+            int limit
     ) {
         return jdbcClient.sql(
                 """
@@ -176,11 +299,26 @@ public class CorporateActionReader {
                  where e.action_id = :actionId
                    and e.status = :entitlementStatus
                    and e.share_quantity > 0
-                 order by p.profile_type asc, a.id asc
+                   and a.id > :afterAccountId
+                   and not exists (
+                       select 1
+                         from stock_corporate_action_processing cap
+                        where cap.action_id = e.action_id
+                          and cap.account_scope_key = concat('A:', a.id)
+                          and cap.action_phase = :actionPhase
+                          and cap.effective_business_date = :effectiveBusinessDate
+                          and cap.status = 'COMPLETED'
+                   )
+                 order by a.id asc, e.id asc
+                 limit :limit
                 """
         )
                 .param("actionId", actionId)
                 .param("entitlementStatus", entitlementStatus)
+                .param("actionPhase", actionPhase)
+                .param("effectiveBusinessDate", effectiveBusinessDate)
+                .param("afterAccountId", afterAccountId)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new AutoParticipantCapitalIncreaseCandidate(
                         rs.getLong("entitlement_id"),
                         rs.getLong("account_id"),
@@ -191,7 +329,13 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public List<AutoParticipantCapitalIncreaseCandidate> findPublicOfferingAutoCandidates(long actionId) {
+    public List<AutoParticipantCapitalIncreaseCandidate> findPublicOfferingAutoCandidateChunk(
+            long actionId,
+            String actionPhase,
+            LocalDate effectiveBusinessDate,
+            long afterAccountId,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select null as entitlement_id,
@@ -205,16 +349,31 @@ public class CorporateActionReader {
                    and a.status = 'ACTIVE'
                  where p.enabled = true
                    and p.withdrawn_at is null
+                   and a.id > :afterAccountId
                    and not exists (
                        select 1
                          from stock_corporate_action_entitlement e
                         where e.action_id = :actionId
                           and e.account_id = a.id
                    )
-                 order by p.profile_type asc, a.id asc
+                   and not exists (
+                       select 1
+                         from stock_corporate_action_processing cap
+                        where cap.action_id = :actionId
+                          and cap.account_scope_key = concat('A:', a.id)
+                          and cap.action_phase = :actionPhase
+                          and cap.effective_business_date = :effectiveBusinessDate
+                          and cap.status = 'COMPLETED'
+                   )
+                 order by a.id asc
+                 limit :limit
                 """
         )
                 .param("actionId", actionId)
+                .param("actionPhase", actionPhase)
+                .param("effectiveBusinessDate", effectiveBusinessDate)
+                .param("afterAccountId", afterAccountId)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new AutoParticipantCapitalIncreaseCandidate(
                         null,
                         rs.getLong("account_id"),
@@ -225,49 +384,72 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public Optional<BigDecimal> findActiveAccountCashForUpdate(long accountId) {
-        return jdbcClient.sql(
+    public Map<Long, BigDecimal> findActiveAccountCashForUpdate(List<Long> accountIds) {
+        List<Long> sortedAccountIds = accountIds.stream().distinct().sorted().toList();
+        if (sortedAccountIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map.Entry<Long, BigDecimal>> rows = jdbcClient.sql(
                 """
-                select cash_balance
+                select id, cash_balance
                   from stock_account
-                 where id = :accountId
+                 where id in (:accountIds)
                    and status = 'ACTIVE'
+                 order by id asc
                  for update
                 """
         )
-                .param("accountId", accountId)
-                .query(BigDecimal.class)
-                .optional();
+                .param("accountIds", sortedAccountIds)
+                .query((rs, rowNum) -> Map.entry(
+                        rs.getLong("id"),
+                        rs.getBigDecimal("cash_balance")
+                ))
+                .list();
+        Map<Long, BigDecimal> cashByAccountId = new LinkedHashMap<>();
+        rows.forEach(row -> cashByAccountId.put(row.getKey(), row.getValue()));
+        return cashByAccountId;
     }
 
-    public Optional<Long> findAnnouncedEntitlementShareQuantityForUpdate(
-            long entitlementId,
+    public Map<Long, Long> findAnnouncedEntitlementShareQuantityForUpdate(
+            List<Long> entitlementIds,
             long actionId,
             String status
     ) {
-        return jdbcClient.sql(
+        List<Long> sortedEntitlementIds = entitlementIds.stream().distinct().sorted().toList();
+        if (sortedEntitlementIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map.Entry<Long, Long>> rows = jdbcClient.sql(
                 """
-                select share_quantity
+                select id, share_quantity
                   from stock_corporate_action_entitlement
-                 where id = :entitlementId
+                 where id in (:entitlementIds)
                    and action_id = :actionId
                    and status = :status
                    and share_quantity > 0
+                 order by id asc
                  for update
                 """
         )
-                .param("entitlementId", entitlementId)
+                .param("entitlementIds", sortedEntitlementIds)
                 .param("actionId", actionId)
                 .param("status", status)
-                .query(Long.class)
-                .optional();
+                .query((rs, rowNum) -> Map.entry(
+                        rs.getLong("id"),
+                        rs.getLong("share_quantity")
+                ))
+                .list();
+        Map<Long, Long> sharesByEntitlementId = new LinkedHashMap<>();
+        rows.forEach(row -> sharesByEntitlementId.put(row.getKey(), row.getValue()));
+        return sharesByEntitlementId;
     }
 
     public List<CapitalIncreaseSubscriptionActionRow> findDueCapitalIncreasePayments(
             LocalDate today,
             String actionType,
             String shareholderStatus,
-            String publicOfferingStatus
+            String publicOfferingStatus,
+            int limit
     ) {
         return jdbcClient.sql(
                 """
@@ -280,12 +462,14 @@ public class CorporateActionReader {
                        or (offering_type = 'PUBLIC_OFFERING' and status = :publicOfferingStatus)
                    )
                  order by payment_date asc, id asc
+                 limit :limit
                 """
         )
                 .param("today", today)
                 .param("actionType", actionType)
                 .param("shareholderStatus", shareholderStatus)
                 .param("publicOfferingStatus", publicOfferingStatus)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new CapitalIncreaseSubscriptionActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol"),
@@ -374,18 +558,20 @@ public class CorporateActionReader {
         }
     }
 
-    public List<DividendEntitlementRow> findAnnouncedDividendEntitlements(long actionId, String status) {
+    public List<DividendEntitlementRow> findDividendEntitlementChunk(long actionId, String status, int limit) {
         return jdbcClient.sql(
                 """
                 select id, account_id, cash_amount
                   from stock_corporate_action_entitlement
                  where action_id = :actionId
                    and status = :status
-                 order by account_id asc, id asc
+                 order by id asc
+                 limit :limit
                 """
         )
                 .param("actionId", actionId)
                 .param("status", status)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new DividendEntitlementRow(
                         rs.getLong("id"),
                         rs.getLong("account_id"),
@@ -394,7 +580,48 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public List<ListingActionRow> findDueListings(LocalDate today, String actionType, String sourceStatus) {
+    public boolean existsEntitlementWithStatus(long actionId, String status) {
+        return jdbcClient.sql(
+                """
+                select id
+                  from stock_corporate_action_entitlement
+                 where action_id = :actionId
+                   and status = :status
+                 order by id asc
+                 limit 1
+                """
+        )
+                .param("actionId", actionId)
+                .param("status", status)
+                .query(Long.class)
+                .optional()
+                .isPresent();
+    }
+
+    public List<Long> findEntitlementIdChunk(long actionId, String status, int limit) {
+        return jdbcClient.sql(
+                """
+                select id
+                  from stock_corporate_action_entitlement
+                 where action_id = :actionId
+                   and status = :status
+                 order by id asc
+                 limit :limit
+                """
+        )
+                .param("actionId", actionId)
+                .param("status", status)
+                .param("limit", limit)
+                .query(Long.class)
+                .list();
+    }
+
+    public List<ListingActionRow> findDueListings(
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select a.id,
@@ -417,11 +644,13 @@ public class CorporateActionReader {
                        or a.share_quantity > 0
                    )
                  order by a.listing_date asc, a.id asc
+                 limit :limit
                 """
         )
                 .param("actionType", actionType)
                 .param("sourceStatus", sourceStatus)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new ListingActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol"),
@@ -489,7 +718,12 @@ public class CorporateActionReader {
                 .isPresent();
     }
 
-    public List<StockSplitActionRow> findDueStockSplits(LocalDate today, String actionType, String status) {
+    public List<StockSplitActionRow> findDueStockSplits(
+            LocalDate today,
+            String actionType,
+            String status,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select id, symbol, split_from, split_to
@@ -500,11 +734,13 @@ public class CorporateActionReader {
                    and split_from > 0
                    and split_to > split_from
                  order by listing_date asc, id asc
+                 limit :limit
                 """
         )
                 .param("actionType", actionType)
                 .param("status", status)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new StockSplitActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol"),
@@ -514,7 +750,49 @@ public class CorporateActionReader {
                 .list();
     }
 
-    public List<DelistingActionRow> findDueDelistings(LocalDate today, String actionType, String status) {
+    public List<Long> findHoldingAccountChunkForSplit(
+            long actionId,
+            String symbol,
+            String actionPhase,
+            LocalDate effectiveBusinessDate,
+            long afterAccountId,
+            int limit
+    ) {
+        return jdbcClient.sql(
+                """
+                select h.account_id
+                  from stock_holding h
+                 where h.symbol = :symbol
+                   and h.account_id > :afterAccountId
+                   and not exists (
+                       select 1
+                         from stock_corporate_action_processing cap
+                        where cap.action_id = :actionId
+                          and cap.account_scope_key = concat('A:', h.account_id)
+                          and cap.action_phase = :actionPhase
+                          and cap.effective_business_date = :effectiveBusinessDate
+                          and cap.status = 'COMPLETED'
+                   )
+                 order by h.account_id asc
+                 limit :limit
+                """
+        )
+                .param("actionId", actionId)
+                .param("symbol", symbol)
+                .param("actionPhase", actionPhase)
+                .param("effectiveBusinessDate", effectiveBusinessDate)
+                .param("afterAccountId", afterAccountId)
+                .param("limit", limit)
+                .query(Long.class)
+                .list();
+    }
+
+    public List<DelistingActionRow> findDueDelistings(
+            LocalDate today,
+            String actionType,
+            String status,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select id, symbol
@@ -524,11 +802,13 @@ public class CorporateActionReader {
                    and delisting_date <= :today
                    and delisting_treatment = 'ZERO_VALUE'
                  order by delisting_date asc, id asc
+                 limit :limit
                 """
         )
                 .param("actionType", actionType)
                 .param("status", status)
                 .param("today", today)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new DelistingActionRow(
                         rs.getLong("id"),
                         rs.getString("symbol")
@@ -590,7 +870,7 @@ public class CorporateActionReader {
         return count != null && count > 0;
     }
 
-    public List<ShareEntitlementRow> findAnnouncedShareEntitlements(long actionId, String status) {
+    public List<ShareEntitlementRow> findShareEntitlementChunk(long actionId, String status, int limit) {
         return jdbcClient.sql(
                 """
                 select id,
@@ -602,11 +882,13 @@ public class CorporateActionReader {
                  where action_id = :actionId
                    and status = :status
                    and coalesce(subscribed_share_quantity, share_quantity) > 0
-                 order by account_id asc, symbol asc, id asc
+                 order by id asc
+                 limit :limit
                 """
         )
                 .param("actionId", actionId)
                 .param("status", status)
+                .param("limit", limit)
                 .query((rs, rowNum) -> new ShareEntitlementRow(
                         rs.getLong("id"),
                         rs.getLong("account_id"),

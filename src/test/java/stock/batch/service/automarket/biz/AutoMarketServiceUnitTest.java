@@ -39,13 +39,61 @@ import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.automarket.config.AutoMarketGenerationSlotLimiter;
 import stock.batch.service.automarket.lock.AutoMarketProfileLock;
 import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
+import stock.batch.service.automarket.queue.InMemoryAutoMarketReadyProfileQueue;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import web.common.core.simulation.SimulationClockSnapshot;
+import web.common.core.simulation.SimulationMarketSession;
 
 class AutoMarketServiceUnitTest {
+
+    @Test
+    void runAutoMarketStep_withoutDueProfile_skipsAllAutoMarketDatabaseReads() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        AutoMarketDailyRegimeService autoMarketDailyRegimeService = mock(AutoMarketDailyRegimeService.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        LocalDateTime now = LocalDateTime.of(2026, 7, 22, 16, 0);
+        SimulationClockSnapshot clock = new SimulationClockSnapshot(
+                now.toLocalDate(),
+                now,
+                now.toLocalDate().atStartOfDay(),
+                now,
+                now.toLocalDate().atStartOfDay(),
+                7200,
+                true,
+                false,
+                0,
+                now,
+                now
+        );
+        when(simulationClockService.currentSnapshot()).thenReturn(clock);
+        when(simulationMarketSessionService.sessionAt(now)).thenReturn(SimulationMarketSession.REGULAR);
+        AutoMarketService service = new AutoMarketService(
+                autoMarketReader,
+                autoMarketDailyRegimeService,
+                mock(AutoParticipantOrderService.class),
+                mock(AutoParticipantOrderScheduleService.class),
+                mock(AutoProfileBehaviorSupport.class),
+                simulationClockService,
+                simulationMarketSessionService,
+                mock(TransactionTemplate.class),
+                profileType -> Optional.empty(),
+                new InMemoryAutoMarketReadyProfileQueue(),
+                Runnable::run,
+                new AutoMarketGenerationSlotLimiter(12),
+                new SimpleMeterRegistry()
+        );
+
+        int processedCount = service.runAutoMarketStep();
+
+        assertThat(processedCount).isZero();
+        verify(autoMarketReader, never()).findEnabledConfigs();
+        verify(autoMarketReader, never()).findParticipantProfileConfigs();
+        verify(autoMarketDailyRegimeService, never()).applyDailyRegimes(any(), any(), any());
+    }
 
     @Test
     void claimReadyProfiles_claimsOnlyRedisReadyProfiles() {
@@ -78,7 +126,7 @@ class AutoMarketServiceUnitTest {
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
 
-        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now);
+        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now, 1);
 
         assertThat(profiles).hasSize(1);
         assertThat(ReflectionTestUtils.getField(profiles.get(0), "profileType"))
@@ -119,7 +167,7 @@ class AutoMarketServiceUnitTest {
         );
         ReflectionTestUtils.setField(service, "generationProfileWorkerCount", 1);
 
-        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now);
+        List<?> profiles = ReflectionTestUtils.invokeMethod(service, "claimReadyProfiles", now, 1);
 
         assertThat(profiles).isEmpty();
         assertThat(readyProfileQueue.readyAtByProfile)
@@ -196,7 +244,8 @@ class AutoMarketServiceUnitTest {
         ProfilePolicy noisePolicy = new NoiseTraderBehavior().defaultPolicy();
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = Map.of(AutoParticipantProfileType.NOISE_TRADER, noisePolicy);
         when(simulationClockService.currentSnapshot()).thenReturn(clock);
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(clock.simulationDateTime()))
+                .thenReturn(SimulationMarketSession.REGULAR);
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
         when(autoMarketDailyRegimeService.applyDailyRegimes(any(), eq(now.toLocalDate()), eq(now)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -215,7 +264,7 @@ class AutoMarketServiceUnitTest {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0))
+        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now))
                 .thenThrow(new CannotAcquireLockException("deadlock"));
 
         int processedCount = service.runAutoMarketStep();
@@ -282,7 +331,8 @@ class AutoMarketServiceUnitTest {
                 now,
                 now
         ));
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(now))
+                .thenReturn(SimulationMarketSession.REGULAR);
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
         when(autoMarketDailyRegimeService.applyDailyRegimes(any(), eq(now.toLocalDate()), eq(now)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -301,7 +351,7 @@ class AutoMarketServiceUnitTest {
         assertThat(processedCount).isZero();
         assertThat(readyProfileQueue.readyAtByProfile)
                 .containsEntry(AutoParticipantProfileType.MARKET_MAKER, now.plusSeconds(1));
-        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble());
+        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble(), any(LocalDateTime.class));
     }
 
     @Test
@@ -364,7 +414,8 @@ class AutoMarketServiceUnitTest {
         ProfilePolicy noisePolicy = new NoiseTraderBehavior().defaultPolicy();
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = Map.of(AutoParticipantProfileType.NOISE_TRADER, noisePolicy);
         when(simulationClockService.currentSnapshot()).thenReturn(clock);
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(clock.simulationDateTime()))
+                .thenReturn(SimulationMarketSession.REGULAR);
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
         when(autoMarketDailyRegimeService.applyDailyRegimes(any(), eq(now.toLocalDate()), eq(now)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -383,7 +434,7 @@ class AutoMarketServiceUnitTest {
         assertThat(processedCount).isZero();
         verify(scheduleService, never()).ensureSchedules(any(), any(), any());
         verify(scheduleService, never()).claimDueStrategies(any(), any(), any(), eq(true));
-        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble());
+        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble(), any(LocalDateTime.class));
     }
 
     @Test
@@ -457,7 +508,8 @@ class AutoMarketServiceUnitTest {
         ProfilePolicy noisePolicy = new NoiseTraderBehavior().defaultPolicy();
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = Map.of(AutoParticipantProfileType.NOISE_TRADER, noisePolicy);
         when(simulationClockService.currentSnapshot()).thenReturn(clock);
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(clock.simulationDateTime()))
+                .thenReturn(SimulationMarketSession.REGULAR);
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
         when(autoMarketDailyRegimeService.applyDailyRegimes(any(), eq(now.toLocalDate()), eq(now)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -476,7 +528,7 @@ class AutoMarketServiceUnitTest {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0))
+        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now))
                 .thenThrow(new CannotAcquireLockException("deadlock"))
                 .thenReturn(new AutoParticipantOrderGenerationResult(
                         3,
@@ -507,7 +559,7 @@ class AutoMarketServiceUnitTest {
                 "reason",
                 AutoMarketOrderDropReason.BUY_RESERVATION_FAILED.metricTag()
         ).count()).isEqualTo(1.0);
-        verify(autoParticipantOrderService, times(2)).placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0);
+        verify(autoParticipantOrderService, times(2)).placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now);
         verify(scheduleService, times(1)).completeStrategies(List.of(strategy), profilePolicies, now);
     }
 
@@ -553,7 +605,8 @@ class AutoMarketServiceUnitTest {
                 null
         );
         when(simulationClockService.currentSnapshot()).thenReturn(clock);
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(clock.simulationDateTime()))
+                .thenReturn(SimulationMarketSession.REGULAR);
 
         int processedCount = service.runAutoMarketStep();
 
@@ -573,6 +626,11 @@ class AutoMarketServiceUnitTest {
             @Override
             public Optional<AutoParticipantProfileType> claimDueProfile(LocalDateTime now) {
                 return Optional.ofNullable(readyProfiles.poll());
+            }
+
+            @Override
+            public Map<AutoParticipantProfileType, LocalDateTime> snapshot() {
+                return Map.of();
             }
         };
     }
@@ -595,6 +653,11 @@ class AutoMarketServiceUnitTest {
                     .min(Comparator.comparing(Map.Entry::getValue));
             claimedEntry.ifPresent(entry -> readyAtByProfile.remove(entry.getKey()));
             return claimedEntry.map(Map.Entry::getKey);
+        }
+
+        @Override
+        public Map<AutoParticipantProfileType, LocalDateTime> snapshot() {
+            return Map.copyOf(readyAtByProfile);
         }
     }
 }

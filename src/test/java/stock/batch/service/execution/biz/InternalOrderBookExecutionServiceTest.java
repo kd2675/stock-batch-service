@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import stock.batch.service.simulation.SimulationClockService;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -27,8 +28,24 @@ class InternalOrderBookExecutionServiceTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private SimulationClockService simulationClockService;
+
     @BeforeEach
     void setUp() {
+        simulationClockService.currentDate();
+        jdbcTemplate.update(
+                """
+                update stock_simulation_clock
+                   set real_seconds_per_simulation_day = 7200,
+                       accumulated_real_seconds = 3600,
+                       running = false,
+                       last_started_at = null,
+                       last_heartbeat_at = null,
+                       updated_at = current_timestamp
+                 where clock_id = 'DEFAULT'
+                """
+        );
         jdbcTemplate.update("delete from stock_price_tick");
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_execution");
@@ -48,6 +65,30 @@ class InternalOrderBookExecutionServiceTest {
                 key(symbol)
                 values ('005930', true, 'OPEN', current_timestamp)
                 """
+        );
+        var businessDate = simulationClockService.currentDate();
+        jdbcTemplate.update(
+                """
+                merge into stock_market_business_state(
+                    state_id, active_business_date, preparing_business_date, raw_simulation_date,
+                    version, created_at, updated_at
+                )
+                key(state_id)
+                values ('DEFAULT', ?, null, ?, 0, current_timestamp, current_timestamp)
+                """,
+                businessDate,
+                businessDate
+        );
+        jdbcTemplate.update(
+                """
+                merge into stock_market_session_fence(
+                    market_type, symbol, business_date, session_epoch, session_state,
+                    state_changed_at, version, created_at, updated_at
+                )
+                key(market_type, symbol)
+                values ('ORDER_BOOK', '005930', ?, 1, 'OPEN', current_timestamp, 0, current_timestamp, current_timestamp)
+                """,
+                businessDate
         );
     }
 
@@ -215,6 +256,28 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo("PENDING");
         assertThat(queryLong("select count(*) from stock_execution"))
                 .isZero();
+    }
+
+    @Test
+    void executeEligibleOrders_closingFence_rejectsPreviouslySelectedCrossedPair() {
+        insertAccount("closing-buyer", "9930000.00", "10000000.00");
+        insertAccount("closing-seller", "100000.00", "10000000.00");
+        insertHolding("closing-seller", "005930", 1, 1, "50000.00");
+        insertOrder("closing-buy", "closing-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("closing-sell", "closing-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 2);
+        jdbcTemplate.update(
+                "update stock_market_session_fence set session_state = 'CLOSING' where market_type = 'ORDER_BOOK' and symbol = '005930'"
+        );
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isZero();
+        assertThat(queryLong("select count(*) from stock_execution"))
+                .isZero();
+        assertThat(queryString("select status from stock_order where client_order_id = 'closing-buy'"))
+                .isEqualTo("PENDING");
+        assertThat(queryString("select status from stock_order where client_order_id = 'closing-sell'"))
+                .isEqualTo("PENDING");
     }
 
     @Test
@@ -415,6 +478,20 @@ class InternalOrderBookExecutionServiceTest {
                 merge into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
                 key(symbol)
                 values (?, true, 'OPEN', current_timestamp)
+                """,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                merge into stock_market_session_fence(
+                    market_type, symbol, business_date, session_epoch, session_state,
+                    state_changed_at, version, created_at, updated_at
+                )
+                key(market_type, symbol)
+                select 'ORDER_BOOK', ?, active_business_date, 1, 'OPEN',
+                       current_timestamp, 0, current_timestamp, current_timestamp
+                  from stock_market_business_state
+                 where state_id = 'DEFAULT'
                 """,
                 symbol
         );

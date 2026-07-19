@@ -21,7 +21,10 @@ public class AutoParticipantCashFlowReader {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
     }
 
-    public List<AutoParticipantRecurringCashTarget> findRecurringCashTargets() {
+    public List<AutoParticipantRecurringCashTarget> findRecurringCashTargetChunk(
+            long afterAccountId,
+            int limit
+    ) {
         return jdbcClient.sql(
                 """
                 select a.id as account_id,
@@ -33,9 +36,13 @@ public class AutoParticipantCashFlowReader {
                   join stock_account a on a.user_key = p.user_key and a.status = 'ACTIVE'
                  where p.enabled = true
                    and p.withdrawn_at is null
-                 order by p.user_key asc
+                   and a.id > :afterAccountId
+                 order by a.id asc
+                 limit :limit
                 """
         )
+                .param("afterAccountId", afterAccountId)
+                .param("limit", limit)
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toRecurringCashTarget(rs))
                 .list();
     }
@@ -53,13 +60,14 @@ public class AutoParticipantCashFlowReader {
         List<String> sortedCreatedByValues = createdByValues.stream().sorted().toList();
         return jdbcClient.sql(
                 """
-                select account_id, reason, created_at
-                from stock_account_cash_flow
-                where account_id in (:accountIds)
-                  and reason in (:reasons)
-                  and created_by in (:createdByValues)
-                  and created_at >= :since
-                order by account_id asc, created_at desc, id desc
+                select account_id, reason, max(created_at) as created_at
+                  from stock_account_cash_flow
+                 where account_id in (:accountIds)
+                   and reason in (:reasons)
+                   and created_by in (:createdByValues)
+                   and created_at >= :since
+                 group by account_id, reason
+                 order by account_id asc, reason asc
                 """
         )
                 .param("accountIds", accountIds)

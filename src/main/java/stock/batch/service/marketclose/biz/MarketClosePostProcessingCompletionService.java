@@ -13,9 +13,10 @@ public class MarketClosePostProcessingCompletionService {
     private final JdbcClient jdbcClient;
 
     /**
-     * Completion criteria: full market-close rollover and portfolio settlement must both be
-     * present for the same simulation business date. This is the gate for opening the next
-     * regular session or advancing the simulation clock.
+     * Early post-close completion criteria: full market-close rollover and portfolio settlement
+     * must both be present for the same simulation business date. This permits advancing to the
+     * next 00:00 maintenance window; opening the next regular session additionally requires the
+     * cycle to reach READY_TO_OPEN.
      */
     public boolean isComplete(LocalDate businessDate) {
         if (businessDate == null || !hasCompletedFullCloseRun(businessDate)) {
@@ -45,38 +46,45 @@ public class MarketClosePostProcessingCompletionService {
     }
 
     /**
-     * Listing supply accounts are excluded because they are operational inventory accounts, not
-     * participant portfolios. When no eligible accounts exist, settlement has no remaining work.
+     * Completion is based on the account cohort frozen by the close cycle. Accounts created,
+     * detached, or reactivated after close must never change a past settlement result. The
+     * settlement completion transaction already reconciles every frozen account; polling reads
+     * its O(1) metric row instead of rescanning the cohort every ten seconds.
      */
     public boolean isPortfolioSettlementComplete(LocalDate businessDate) {
-        Long eligibleAccountCount = jdbcClient.sql(
+        Long settledCycleCount = jdbcClient.sql(
                         """
                         select count(*)
-                          from stock_account
-                         where status = 'ACTIVE'
-                           and user_key is not null
-                           and user_key not like 'stock-listing-%'
-                        """
-                )
-                .query(Long.class)
-                .single();
-        if (eligibleAccountCount == null || eligibleAccountCount == 0) {
-            return true;
-        }
-        Long snapshotAccountCount = jdbcClient.sql(
-                        """
-                        select count(distinct ps.account_id)
-                          from portfolio_snapshot ps
-                          join stock_account a on a.id = ps.account_id
-                         where ps.snapshot_date = ?
-                           and a.status = 'ACTIVE'
-                           and a.user_key is not null
-                           and a.user_key not like 'stock-listing-%'
+                          from stock_post_close_cycle cycle
+                          left join stock_post_close_cycle_metric metric
+                            on metric.close_cycle_id = cycle.id
+                         where cycle.business_date = ?
+                           and cycle.scope_type = 'FULL_MARKET'
+                           and cycle.scope_key = 'ALL'
+                           and cycle.phase in (
+                               'PORTFOLIO_SETTLED', 'OVERNIGHT_CASH_APPLIED', 'CORPORATE_CASH_APPLIED',
+                               'REPORTS_AGGREGATED', 'PREOPEN_SECURITY_TRANSFORMS_APPLIED',
+                               'MARKET_DATA_PREPARED', 'AUTO_MARKET_PREPARED', 'READY_TO_OPEN', 'COMPLETED'
+                           )
+                           and (
+                               (
+                                   metric.close_cycle_id is not null
+                                   and metric.settlement_missing_account_count = 0
+                                   and metric.settlement_target_account_count = metric.settled_account_count
+                               )
+                               or (
+                                   metric.close_cycle_id is null
+                                   and cycle.phase = 'COMPLETED'
+                                   and cycle.status = 'COMPLETED'
+                                   and cycle.build_version is null
+                                   and cycle.schema_version is null
+                               )
+                           )
                         """
                 )
                 .param(businessDate)
                 .query(Long.class)
                 .single();
-        return snapshotAccountCount != null && snapshotAccountCount >= eligibleAccountCount;
+        return settledCycleCount != null && settledCycleCount == 1L;
     }
 }

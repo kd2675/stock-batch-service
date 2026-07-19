@@ -13,8 +13,12 @@ public class AutoMarketGenerationSlotLimiter {
     public AutoMarketGenerationSlotLimiter(
             @Value("${stock.batch.auto-market.thread-pool.max-size:12}") int maxConcurrentGenerations
     ) {
-        if (maxConcurrentGenerations <= 0) {
-            throw new IllegalArgumentException("stock.batch.auto-market.thread-pool.max-size must be positive");
+        if (maxConcurrentGenerations <= 0
+                || maxConcurrentGenerations > AutoMarketGenerationExecutorConfig.MAX_GENERATION_POOL_SIZE) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.thread-pool.max-size must be between 1 and %d"
+                            .formatted(AutoMarketGenerationExecutorConfig.MAX_GENERATION_POOL_SIZE)
+            );
         }
         this.permits = new Semaphore(maxConcurrentGenerations);
     }

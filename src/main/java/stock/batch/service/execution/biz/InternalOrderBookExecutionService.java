@@ -1,5 +1,7 @@
 package stock.batch.service.execution.biz;
 
+import jakarta.annotation.PostConstruct;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
@@ -26,18 +28,27 @@ import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
-import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 @Slf4j
 @Service
 public class InternalOrderBookExecutionService {
+
+    private static final int MAX_SCAN_LIMIT = 5_000;
+    private static final int MAX_BUY_CANDIDATE_SCAN_LIMIT = 100;
+    private static final int MAX_SYMBOL_CHUNK_LIMIT = 50;
+    private static final long MAX_SYMBOL_CHUNK_DURATION_MILLIS = 1_000L;
+    private static final int MAX_READY_SYMBOL_FALLBACK_SCAN_LIMIT = 100;
+    private static final int MAX_DEADLOCK_RETRY_ATTEMPTS = 10;
+    private static final long MAX_DEADLOCK_RETRY_BACKOFF_MILLIS = 1_000L;
+    private static final long MAX_SLOW_SYMBOL_LOG_THRESHOLD_MILLIS = 60_000L;
 
     private final ExecutionCostCalculator executionCostCalculator;
     private final OrderBookExecutionReader orderBookExecutionReader;
     private final OrderBookExecutionWriter orderBookExecutionWriter;
     private final OrderBookPriceWriter orderBookPriceWriter;
     private final StockPriceRedisPublisher priceRedisPublisher;
-    private final SimulationClockService simulationClockService;
+    private final MarketSessionFenceService marketSessionFenceService;
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
     private final OrderBookReadySymbolQueue readySymbolQueue;
@@ -49,7 +60,7 @@ public class InternalOrderBookExecutionService {
             OrderBookExecutionWriter orderBookExecutionWriter,
             OrderBookPriceWriter orderBookPriceWriter,
             StockPriceRedisPublisher priceRedisPublisher,
-            SimulationClockService simulationClockService,
+            MarketSessionFenceService marketSessionFenceService,
             TransactionTemplate transactionTemplate,
             OrderBookSymbolLock orderBookSymbolLock,
             OrderBookReadySymbolQueue readySymbolQueue,
@@ -60,7 +71,7 @@ public class InternalOrderBookExecutionService {
         this.orderBookExecutionWriter = orderBookExecutionWriter;
         this.orderBookPriceWriter = orderBookPriceWriter;
         this.priceRedisPublisher = priceRedisPublisher;
-        this.simulationClockService = simulationClockService;
+        this.marketSessionFenceService = marketSessionFenceService;
         this.transactionTemplate = transactionTemplate;
         this.orderBookSymbolLock = orderBookSymbolLock;
         this.readySymbolQueue = readySymbolQueue;
@@ -73,7 +84,7 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.buy-candidate-scan-limit:20}")
     private int buyCandidateScanLimit;
 
-    @Value("${stock.batch.execution.symbol-chunk-limit:50}")
+    @Value("${stock.batch.execution.symbol-chunk-limit:5}")
     private int symbolChunkLimit;
 
     @Value("${stock.batch.execution.symbol-chunk-max-duration-ms:500}")
@@ -91,6 +102,38 @@ public class InternalOrderBookExecutionService {
     @Value("${stock.batch.execution.slow-symbol-log-threshold-ms:1000}")
     private long slowSymbolLogThresholdMillis;
 
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        validateRange("scan-limit", scanLimit, 1, MAX_SCAN_LIMIT);
+        validateRange("buy-candidate-scan-limit", buyCandidateScanLimit, 1, MAX_BUY_CANDIDATE_SCAN_LIMIT);
+        validateRange("symbol-chunk-limit", symbolChunkLimit, 1, MAX_SYMBOL_CHUNK_LIMIT);
+        validateRange(
+                "symbol-chunk-max-duration-ms",
+                symbolChunkMaxDurationMillis,
+                1L,
+                MAX_SYMBOL_CHUNK_DURATION_MILLIS
+        );
+        validateRange(
+                "ready-symbol-fallback-scan-limit",
+                readySymbolFallbackScanLimit,
+                1,
+                MAX_READY_SYMBOL_FALLBACK_SCAN_LIMIT
+        );
+        validateRange("deadlock-retry-max-attempts", deadlockRetryMaxAttempts, 1, MAX_DEADLOCK_RETRY_ATTEMPTS);
+        validateRange(
+                "deadlock-retry-backoff-ms",
+                deadlockRetryBackoffMillis,
+                0L,
+                MAX_DEADLOCK_RETRY_BACKOFF_MILLIS
+        );
+        validateRange(
+                "slow-symbol-log-threshold-ms",
+                slowSymbolLogThresholdMillis,
+                1L,
+                MAX_SLOW_SYMBOL_LOG_THRESHOLD_MILLIS
+        );
+    }
+
     public int executeEligibleOrders() {
         return executeEligibleOrders(true);
     }
@@ -100,10 +143,7 @@ public class InternalOrderBookExecutionService {
     }
 
     private int executeEligibleOrders(boolean allowDatabaseFallback) {
-        int maxMatches = Math.max(0, scanLimit);
-        if (maxMatches <= 0) {
-            return 0;
-        }
+        int maxMatches = scanLimit;
         AtomicInteger remainingMatches = new AtomicInteger(maxMatches);
         return executeNextReadySymbol(remainingMatches, allowDatabaseFallback);
     }
@@ -159,7 +199,13 @@ public class InternalOrderBookExecutionService {
                         readySymbolQueue.enqueue(symbol);
                         throw ex;
                     }
-                    requeueIfStillExecutable(symbol);
+                    // A zero-match chunk already proved that its lock-free candidate was absent
+                    // or became invalid under exact locks. Rechecking the same symbol immediately
+                    // would duplicate the candidate query and can keep an unmatchable symbol hot
+                    // in Redis. Successful chunks alone need a follow-up check to drain more pairs.
+                    if (matchCount > 0) {
+                        requeueIfStillExecutable(symbol);
+                    }
                     return matchCount;
                 })
                 .orElseGet(() -> {
@@ -237,7 +283,13 @@ public class InternalOrderBookExecutionService {
         int attempts = Math.max(1, deadlockRetryMaxAttempts);
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
-                Boolean matched = transactionTemplate.execute(status -> matchNext(symbol));
+                Optional<OrderBookMatchCandidate> candidate = findMatchCandidate(symbol);
+                if (candidate.isEmpty()) {
+                    return false;
+                }
+                Boolean matched = transactionTemplate.execute(
+                        status -> matchSelectedCandidate(symbol, candidate.get())
+                );
                 return Boolean.TRUE.equals(matched);
             } catch (CannotAcquireLockException ex) {
                 if (attempt >= attempts) {
@@ -247,6 +299,15 @@ public class InternalOrderBookExecutionService {
             }
         }
         return false;
+    }
+
+    private Optional<OrderBookMatchCandidate> findMatchCandidate(String symbol) {
+        int candidateLimit = Math.max(1, Math.min(scanLimit, buyCandidateScanLimit));
+        // Keep the overwhelmingly common no-match probe outside a business transaction. This
+        // avoids both a session-fence lookup and an otherwise empty COMMIT when prices do not
+        // cross. The selected pair is stale-safe because matchSelectedCandidate locks and
+        // revalidates every exact row before applying any mutation.
+        return orderBookExecutionReader.findBestMatchCandidate(symbol, candidateLimit);
     }
 
     private void sleepBeforeRetry(String symbol, int attempt, CannotAcquireLockException ex) {
@@ -269,13 +330,12 @@ public class InternalOrderBookExecutionService {
         }
     }
 
-    private boolean matchNext(String symbol) {
-        int candidateLimit = Math.max(1, Math.min(scanLimit, buyCandidateScanLimit));
-        Optional<OrderBookMatchCandidate> candidate = orderBookExecutionReader.findBestMatchCandidate(symbol, candidateLimit);
-        if (candidate.isEmpty()) {
+    private boolean matchSelectedCandidate(String symbol, OrderBookMatchCandidate selectedCandidate) {
+        Optional<MarketSessionFenceService.MarketSessionApproval> sessionApproval =
+                marketSessionFenceService.lockOpenOrderBookFences(List.of(symbol));
+        if (sessionApproval.isEmpty()) {
             return false;
         }
-        OrderBookMatchCandidate selectedCandidate = candidate.get();
         orderBookExecutionWriter.lockAccountsForUpdate(
                 selectedCandidate.buyAccountId(),
                 selectedCandidate.sellAccountId()
@@ -293,7 +353,12 @@ public class InternalOrderBookExecutionService {
         if (!isExecutablePair(symbol, buyOrder, sellOrder)) {
             return false;
         }
-        return matchOrders(buyOrder, sellOrder, sellHolding);
+        return matchOrders(
+                buyOrder,
+                sellOrder,
+                sellHolding,
+                sessionApproval.get().businessEffectiveAt()
+        );
     }
 
     private OrderBookOrderRow findLockedOrder(List<OrderBookOrderRow> orders, long orderId, String side) {
@@ -328,7 +393,8 @@ public class InternalOrderBookExecutionService {
     private boolean matchOrders(
             OrderBookOrderRow buyOrder,
             OrderBookOrderRow sellOrder,
-            OrderBookHoldingRow sellHolding
+            OrderBookHoldingRow sellHolding,
+            LocalDateTime executedAt
     ) {
         long quantity = Math.min(buyOrder.remainingQuantity(), sellOrder.remainingQuantity());
         if (quantity <= 0) {
@@ -339,7 +405,6 @@ public class InternalOrderBookExecutionService {
         if (executionPrice == null) {
             return false;
         }
-        LocalDateTime executedAt = simulationClockService.currentMarketDateTime();
         ExecutionCostCalculator.ExecutionAmounts buyAmounts = executionCostCalculator.buy(quantity, executionPrice);
         ExecutionCostCalculator.ExecutionAmounts sellAmounts = resolveSellAmounts(sellHolding, quantity, executionPrice);
         if (sellAmounts == null) {
@@ -370,13 +435,13 @@ public class InternalOrderBookExecutionService {
             executionAccountDaySummaryAccumulator.recordBuy(
                     buyOrder.accountId(),
                     quantity,
-                    buyAmounts.grossAmount(),
+                    buyAmounts,
                     executedAt
             );
             executionAccountDaySummaryAccumulator.recordSell(
                     sellOrder.accountId(),
                     quantity,
-                    sellAmounts.grossAmount(),
+                    sellAmounts,
                     executedAt
             );
         });
@@ -520,6 +585,15 @@ public class InternalOrderBookExecutionService {
                 costAmount,
                 executedAt
         );
+    }
+
+    private void validateRange(String propertyName, long value, long minimum, long maximum) {
+        if (value < minimum || value > maximum) {
+            throw new IllegalStateException(
+                    "stock.batch.execution.%s must be between %d and %d: %d"
+                            .formatted(propertyName, minimum, maximum, value)
+            );
+        }
     }
 
 }

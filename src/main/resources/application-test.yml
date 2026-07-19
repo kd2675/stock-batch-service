@@ -29,6 +29,10 @@ spring:
 
 stock:
   batch:
+    scheduler-pools:
+      # Test suites create several cached application contexts. Do not serialize
+      # the production graceful-shutdown allowance for idle polling executors.
+      shutdown-await-seconds: 0
     internal:
       allow-empty-token: true
     repository:
@@ -45,6 +49,9 @@ stock:
           maximum-pool-size: 2
           connection-timeout: 30000
           validation-timeout: 5000
+    metadata-retention:
+      enabled: false
+      purge-enabled: false
     market-data:
       enabled: false
       initial-delay-ms: 600000
@@ -60,15 +67,27 @@ stock:
       enabled: false
     auto-market:
       enabled: false
+      daily-regime:
+        enabled: false
       profile-lock:
         type: none
       profile-queue:
         type: memory
+        reconcile-enabled: false
+    auto-market-order-expiry:
+      enabled: false
+    listing-auto-market:
+      enabled: false
     auto-participant-cash-flow:
       enabled: false
     market-close:
       enabled: false
+    post-close:
+      coordinator:
+        enabled: false
     settlement:
+      enabled: false
+    execution-account-summary:
       enabled: false
     holding-cleanup:
       enabled: false

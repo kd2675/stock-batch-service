@@ -6,9 +6,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
 
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class OrderBookExecutionWriterTest {
 
@@ -21,17 +21,19 @@ class OrderBookExecutionWriterTest {
                 mock(StockHoldingReservationJdbcSupport.class)
         );
 
+        when(jdbcTemplate.queryForList(
+                eq("select id from stock_account where id in (?, ?) order by id asc for update"),
+                eq(Long.class),
+                eq(10L),
+                eq(20L)
+        )).thenReturn(java.util.List.of(10L, 20L));
+
         writer.lockAccountsForUpdate(20L, 10L);
 
-        var inOrder = inOrder(jdbcTemplate);
-        inOrder.verify(jdbcTemplate).queryForList(
-                eq("select id from stock_account where id = ? for update"),
+        verify(jdbcTemplate).queryForList(
+                eq("select id from stock_account where id in (?, ?) order by id asc for update"),
                 eq(Long.class),
-                eq(10L)
-        );
-        inOrder.verify(jdbcTemplate).queryForList(
-                eq("select id from stock_account where id = ? for update"),
-                eq(Long.class),
+                eq(10L),
                 eq(20L)
         );
     }

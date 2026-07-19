@@ -21,18 +21,12 @@ import stock.batch.service.batch.execution.model.OrderBookOrderRow;
 public class OrderBookExecutionReader {
 
     private final JdbcClient jdbcClient;
-    private final String lockClause;
     private final String lockedOrderTable;
 
     public OrderBookExecutionReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
         boolean mysql = isMySql(jdbcTemplate);
-        this.lockClause = mysql ? "for update skip locked" : "for update";
         this.lockedOrderTable = mysql ? "stock_order force index (primary)" : "stock_order";
-    }
-
-    public List<String> findExecutableSymbols() {
-        return findExecutableSymbolCandidates(Integer.MAX_VALUE);
     }
 
     public List<String> findExecutableSymbolCandidates(int limit) {
@@ -219,8 +213,8 @@ public class OrderBookExecutionReader {
                   and quantity > filled_quantity
                   and (order_type = 'MARKET' or limit_price is not null)
                  order by id asc
-                %s
-                """.formatted(lockedOrderTable, lockClause)
+                for update
+                """.formatted(lockedOrderTable)
         )
                 .param("buyOrderId", candidate.buyOrderId())
                 .param("sellOrderId", candidate.sellOrderId())

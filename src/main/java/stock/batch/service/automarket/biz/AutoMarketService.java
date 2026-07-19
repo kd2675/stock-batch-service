@@ -1,5 +1,7 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -14,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -40,6 +43,7 @@ import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
+import web.common.core.simulation.SimulationMarketSession;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.positiveOrDefault;
 
@@ -48,6 +52,13 @@ import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.positiveO
 public class AutoMarketService {
 
     private static final Duration PROJECT_SHORT_MOMENTUM_WINDOW = Duration.ofHours(1);
+    private static final int MAX_GENERATION_PARTICIPANT_CHUNK_SIZE = 100;
+    private static final int MAX_GENERATION_DUE_LIMIT_PER_SYMBOL = 500;
+    private static final int MAX_GENERATION_CANDIDATE_ROW_LIMIT = 10_000;
+    private static final int MAX_GENERATION_PROFILE_WORKER_COUNT = 16;
+    private static final int MAX_DEADLOCK_RETRY_ATTEMPTS = 10;
+    private static final long MAX_DEADLOCK_RETRY_BACKOFF_MILLIS = 1_000L;
+    private static final long MAX_SLOW_SYMBOL_LOG_THRESHOLD_MILLIS = 60_000L;
 
     private final AutoMarketReader autoMarketReader;
     private final AutoMarketDailyRegimeService autoMarketDailyRegimeService;
@@ -65,19 +76,24 @@ public class AutoMarketService {
     private final Counter orderDecisionCounter;
     private final Counter plannedOrderCounter;
     private final Counter storedOrderCounter;
+    private final Counter candidateBudgetSkippedCounter;
     private final Map<AutoMarketOrderDropReason, Counter> droppedOrderCounters;
+    private final AtomicBoolean candidateBudgetWarningLogged = new AtomicBoolean();
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
-    private int generationParticipantChunkSize;
+    private int generationParticipantChunkSize = 25;
 
     @Value("${stock.batch.auto-market.generation-due-limit-per-symbol:100}")
-    private int generationDueLimitPerSymbol;
+    private int generationDueLimitPerSymbol = 100;
+
+    @Value("${stock.batch.auto-market.generation-candidate-row-limit:2000}")
+    private int generationCandidateRowLimit = 2_000;
 
     @Value("${stock.batch.auto-market.generation-profile-worker-count:9}")
-    private int generationProfileWorkerCount;
+    private int generationProfileWorkerCount = 9;
 
     @Value("${stock.batch.auto-market.slow-symbol-log-threshold-ms:1000}")
-    private long slowSymbolLogThresholdMs;
+    private long slowSymbolLogThresholdMs = 1_000L;
 
     @Value("${stock.batch.auto-market.deadlock-retry-max-attempts:5}")
     private int deadlockRetryMaxAttempts = 5;
@@ -125,6 +141,7 @@ public class AutoMarketService {
         this.orderDecisionCounter = meterRegistry.counter("stock.auto.market.order.decisions");
         this.plannedOrderCounter = meterRegistry.counter("stock.auto.market.order.planned");
         this.storedOrderCounter = meterRegistry.counter("stock.auto.market.order.stored");
+        this.candidateBudgetSkippedCounter = meterRegistry.counter("stock.auto.market.candidate.budget.skipped");
         EnumMap<AutoMarketOrderDropReason, Counter> dropCounters = new EnumMap<>(AutoMarketOrderDropReason.class);
         for (AutoMarketOrderDropReason reason : AutoMarketOrderDropReason.values()) {
             dropCounters.put(
@@ -135,37 +152,93 @@ public class AutoMarketService {
         this.droppedOrderCounters = Map.copyOf(dropCounters);
     }
 
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        if (generationParticipantChunkSize < 1
+                || generationParticipantChunkSize > MAX_GENERATION_PARTICIPANT_CHUNK_SIZE) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.generation-participant-chunk-size must be between 1 and %d: %d"
+                            .formatted(MAX_GENERATION_PARTICIPANT_CHUNK_SIZE, generationParticipantChunkSize)
+            );
+        }
+        if (generationDueLimitPerSymbol < 1
+                || generationDueLimitPerSymbol > MAX_GENERATION_DUE_LIMIT_PER_SYMBOL) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.generation-due-limit-per-symbol must be between 1 and %d: %d"
+                            .formatted(MAX_GENERATION_DUE_LIMIT_PER_SYMBOL, generationDueLimitPerSymbol)
+            );
+        }
+        if (generationCandidateRowLimit < 1
+                || generationCandidateRowLimit > MAX_GENERATION_CANDIDATE_ROW_LIMIT) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.generation-candidate-row-limit must be between 1 and %d: %d"
+                            .formatted(MAX_GENERATION_CANDIDATE_ROW_LIMIT, generationCandidateRowLimit)
+            );
+        }
+        if (generationProfileWorkerCount < 1
+                || generationProfileWorkerCount > MAX_GENERATION_PROFILE_WORKER_COUNT) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.generation-profile-worker-count must be between 1 and %d: %d"
+                            .formatted(MAX_GENERATION_PROFILE_WORKER_COUNT, generationProfileWorkerCount)
+            );
+        }
+        if (deadlockRetryMaxAttempts < 1 || deadlockRetryMaxAttempts > MAX_DEADLOCK_RETRY_ATTEMPTS) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.deadlock-retry-max-attempts must be between 1 and %d: %d"
+                            .formatted(MAX_DEADLOCK_RETRY_ATTEMPTS, deadlockRetryMaxAttempts)
+            );
+        }
+        if (deadlockRetryBackoffMs < 0 || deadlockRetryBackoffMs > MAX_DEADLOCK_RETRY_BACKOFF_MILLIS) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.deadlock-retry-backoff-ms must be between 0 and %d: %d"
+                            .formatted(MAX_DEADLOCK_RETRY_BACKOFF_MILLIS, deadlockRetryBackoffMs)
+            );
+        }
+        if (slowSymbolLogThresholdMs < 1 || slowSymbolLogThresholdMs > MAX_SLOW_SYMBOL_LOG_THRESHOLD_MILLIS) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.slow-symbol-log-threshold-ms must be between 1 and %d: %d"
+                            .formatted(MAX_SLOW_SYMBOL_LOG_THRESHOLD_MILLIS, slowSymbolLogThresholdMs)
+            );
+        }
+    }
+
     public int runAutoMarketStep() {
         long startedNanos = System.nanoTime();
-        if (!isAutoMarketSessionActive()) {
+        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
+        if (!isAutoMarketSessionActive(clock)) {
+            return 0;
+        }
+        if (!readyProfileQueue.hasDueProfile(clock.simulationDateTime())) {
             return 0;
         }
         List<AutoMarketConfig> configs = autoMarketReader.findEnabledConfigs();
         if (configs.isEmpty()) {
             return 0;
         }
+        if (!hasCandidateCapacity(configs.size())) {
+            return 0;
+        }
 
         AutoMarketRunCount totalCount = new AutoMarketRunCount();
-        Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        configs = autoMarketDailyRegimeService.applyDailyRegimes(
-                configs,
-                clock.simulationDateTime().toLocalDate(),
-                clock.simulationDateTime()
-        );
-        Map<String, AutoMarketConfig> configBySymbol = configs.stream()
-                .collect(Collectors.toMap(
-                        AutoMarketConfig::symbol,
-                        config -> config,
-                        (left, right) -> left,
-                        LinkedHashMap::new
-                ));
-        List<ClaimedProfile> readyProfiles = claimReadyProfiles(clock.simulationDateTime());
+        List<ClaimedProfile> readyProfiles = claimReadyProfiles(clock.simulationDateTime(), configs.size());
         if (readyProfiles.isEmpty()) {
             return 0;
         }
         int activeParticipantCount = 0;
         try {
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
+            configs = autoMarketDailyRegimeService.applyDailyRegimes(
+                    configs,
+                    clock.simulationDateTime().toLocalDate(),
+                    clock.simulationDateTime()
+            );
+            Map<String, AutoMarketConfig> configBySymbol = configs.stream()
+                    .collect(Collectors.toMap(
+                            AutoMarketConfig::symbol,
+                            config -> config,
+                            (left, right) -> left,
+                            LinkedHashMap::new
+                    ));
             Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = findDueCandidatesByProfile(
                     readyProfiles,
                     configs,
@@ -226,12 +299,41 @@ public class AutoMarketService {
                 .count();
     }
 
-    private int generationDueParticipantLimit(int symbolCount) {
-        return Math.max(1, generationDueLimitPerSymbol) * Math.max(1, symbolCount);
+    private int generationDueParticipantLimit(int symbolCount, int readyProfileCount) {
+        int normalizedSymbolCount = Math.max(1, symbolCount);
+        int normalizedProfileCount = Math.max(1, readyProfileCount);
+        long candidateRowsPerParticipant = (long) normalizedSymbolCount * normalizedProfileCount;
+        int rowBudgetParticipantLimit = (int) Math.max(
+                1L,
+                generationCandidateRowLimit / candidateRowsPerParticipant
+        );
+        return Math.min(generationDueLimitPerSymbol, rowBudgetParticipantLimit);
     }
 
-    private List<ClaimedProfile> claimReadyProfiles(LocalDateTime now) {
-        int workerCount = Math.max(1, generationProfileWorkerCount);
+    private int generationReadyProfileLimit(int symbolCount) {
+        int normalizedSymbolCount = Math.max(1, symbolCount);
+        int rowBudgetProfileLimit = Math.max(1, generationCandidateRowLimit / normalizedSymbolCount);
+        return Math.min(generationProfileWorkerCount, rowBudgetProfileLimit);
+    }
+
+    private boolean hasCandidateCapacity(int symbolCount) {
+        if (symbolCount <= generationCandidateRowLimit) {
+            candidateBudgetWarningLogged.set(false);
+            return true;
+        }
+        candidateBudgetSkippedCounter.increment();
+        if (candidateBudgetWarningLogged.compareAndSet(false, true)) {
+            log.warn(
+                    "Auto market generation skipped because active symbols exceed the candidate row budget: symbols={}, rowBudget={}",
+                    symbolCount,
+                    generationCandidateRowLimit
+            );
+        }
+        return false;
+    }
+
+    private List<ClaimedProfile> claimReadyProfiles(LocalDateTime now, int symbolCount) {
+        int workerCount = generationReadyProfileLimit(symbolCount);
         List<ClaimedProfile> profiles = new ArrayList<>();
         while (profiles.size() < workerCount) {
             if (!generationSlotLimiter.tryAcquire()) {
@@ -291,7 +393,7 @@ public class AutoMarketService {
             LocalDateTime now
     ) {
         Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile = new LinkedHashMap<>();
-        int participantLimit = generationDueParticipantLimit(configs.size());
+        int participantLimit = generationDueParticipantLimit(configs.size(), readyProfiles.size());
         for (ClaimedProfile claimedProfile : readyProfiles) {
             AutoParticipantProfileType profileType = claimedProfile.profileType();
             List<AutoParticipantSymbolStrategy> candidates = autoMarketReader.findDueParticipantSymbolStrategies(
@@ -795,7 +897,8 @@ public class AutoMarketService {
                         chunk,
                         config,
                         profilePolicies,
-                        momentumPressure
+                        momentumPressure,
+                        now
                 );
                 autoParticipantOrderScheduleService.completeStrategies(
                         chunk,
@@ -812,9 +915,10 @@ public class AutoMarketService {
         return count;
     }
 
-    private boolean isAutoMarketSessionActive() {
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        return clock.running() && simulationMarketSessionService.isRegularSession();
+    private boolean isAutoMarketSessionActive(SimulationClockSnapshot clock) {
+        return clock.running()
+                && simulationMarketSessionService.sessionAt(clock.simulationDateTime())
+                == SimulationMarketSession.REGULAR;
     }
 
     int effectiveIntensity(AutoParticipantStrategy strategy, AutoMarketConfig config) {

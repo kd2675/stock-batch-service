@@ -14,8 +14,7 @@ import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.automarket.reader.ListingAutoAccountReader;
-import stock.batch.service.simulation.SimulationClockService;
-import web.common.core.simulation.SimulationClockSnapshot;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.normalizePriceWithinDailyLimit;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.nextInt;
@@ -36,16 +35,17 @@ class ListingAutoAccountOrderService {
     private final ListingAutoAccountReader listingAutoAccountReader;
     private final AutoMarketOrderReader autoMarketOrderReader;
     private final AutoMarketOrderExecutor autoMarketOrderExecutor;
-    private final SimulationClockService simulationClockService;
 
-    int run(AutoMarketConfig config) {
+    int run(
+            AutoMarketConfig config,
+            MarketSessionFenceService.MarketSessionApproval sessionApproval
+    ) {
         int processed = 0;
         List<ListingAutoAccountConfig> listingConfigs = listingAutoAccountReader.findEnabledListingAutoAccountConfigs(config);
         if (listingConfigs.isEmpty()) {
             return 0;
         }
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        LocalDateTime now = clock.simulationDateTime();
+        LocalDateTime now = sessionApproval.businessEffectiveAt();
         List<AutoOrder> expiredOrders = new ArrayList<>();
         for (ListingAutoAccountConfig listingConfig : listingConfigs) {
             expiredOrders.addAll(findOldOrders(listingConfig, now));
@@ -67,7 +67,8 @@ class ListingAutoAccountOrderService {
                         side,
                         item.targets().forSide(side),
                         orderBookState,
-                        ownOrderPrices
+                        ownOrderPrices,
+                        sessionApproval
                 );
                 if (placedOrder != null) {
                     orderBookState = orderBookState.withPlacedOrder(
@@ -121,7 +122,8 @@ class ListingAutoAccountOrderService {
             String side,
             long targetQuantity,
             AutoMarketOrderBookState orderBookState,
-            OwnOrderPrices ownOrderPrices
+            OwnOrderPrices ownOrderPrices,
+            MarketSessionFenceService.MarketSessionApproval sessionApproval
     ) {
         long openQuantity = autoMarketOrderReader.getOpenOrderQuantity(config.accountId(), config.symbol(), side);
         long deficitQuantity = Math.max(0L, targetQuantity - openQuantity);
@@ -138,7 +140,14 @@ class ListingAutoAccountOrderService {
         if (quantity <= 0) {
             return null;
         }
-        return autoMarketOrderExecutor.placeOrder(config.accountId(), config.symbol(), side, price, quantity)
+        return autoMarketOrderExecutor.placeOrderWithOpenFenceHeld(
+                        config.accountId(),
+                        config.symbol(),
+                        side,
+                        price,
+                        quantity,
+                        sessionApproval
+                )
                 ? new PlacedListingOrder(side, price, quantity)
                 : null;
     }

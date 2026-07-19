@@ -1,5 +1,7 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -18,30 +20,41 @@ import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
-import stock.batch.service.simulation.SimulationClockService;
-import web.common.core.simulation.SimulationClockSnapshot;
 
 @Component
 @RequiredArgsConstructor
 class AutoMarketOrderExpiryService {
 
     private static final int EXPIRED_AUTO_ORDER_LIMIT_PER_PROFILE = 200;
+    private static final int MAX_EXPIRY_CHUNK_LIMIT = 1_000;
 
     private final AutoMarketOrderReader autoMarketOrderReader;
     private final AutoMarketOrderExecutor autoMarketOrderExecutor;
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
-    private final SimulationClockService simulationClockService;
 
     @Value("${stock.batch.auto-market-order-expiry.expiry-chunk-limit:100}")
     private int expiryChunkLimit;
 
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        if (expiryChunkLimit < 1 || expiryChunkLimit > MAX_EXPIRY_CHUNK_LIMIT) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market-order-expiry.expiry-chunk-limit must be between 1 and %d: %d"
+                            .formatted(MAX_EXPIRY_CHUNK_LIMIT, expiryChunkLimit)
+            );
+        }
+    }
+
     int expireOldAutoOrders(
             AutoMarketConfig config,
-            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
+            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            LocalDateTime now
     ) {
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        LocalDateTime now = clock.simulationDateTime();
-        Map<AutoParticipantProfileType, LocalDateTime> thresholdsByProfile = expiryThresholdsByProfile(config, profilePolicies, clock);
+        Map<AutoParticipantProfileType, LocalDateTime> thresholdsByProfile = expiryThresholdsByProfile(
+                config,
+                profilePolicies,
+                now
+        );
         LocalDateTime candidateThreshold = thresholdsByProfile.values().stream()
                 .max(LocalDateTime::compareTo)
                 .orElse(now);
@@ -66,7 +79,7 @@ class AutoMarketOrderExpiryService {
     private Map<AutoParticipantProfileType, LocalDateTime> expiryThresholdsByProfile(
             AutoMarketConfig config,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
-            SimulationClockSnapshot clock
+            LocalDateTime now
     ) {
         return Arrays.stream(AutoParticipantProfileType.values())
                 .collect(Collectors.toMap(
@@ -75,7 +88,7 @@ class AutoMarketOrderExpiryService {
                             ProfilePolicy policy = autoProfileBehaviorSupport.policy(profilePolicies, profileType);
                             AutoProfileBehavior behavior = autoProfileBehaviorSupport.behavior(profileType);
                             int projectTtlSeconds = behavior.orderTtlSeconds(config.orderTtlSeconds(), policy);
-                            return clock.simulationDateTime().minusSeconds(Math.max(1, projectTtlSeconds));
+                            return now.minusSeconds(Math.max(1, projectTtlSeconds));
                         }
                 ));
     }

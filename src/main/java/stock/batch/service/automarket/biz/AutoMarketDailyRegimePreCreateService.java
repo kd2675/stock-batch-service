@@ -1,6 +1,7 @@
 package stock.batch.service.automarket.biz;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 
@@ -35,6 +36,18 @@ public class AutoMarketDailyRegimePreCreateService {
                 configs,
                 clock.simulationDateTime().toLocalDate(),
                 clock.simulationDateTime()
+        );
+    }
+
+    public int preCreateDailyRegimes(LocalDate businessDate, LocalDateTime preparedAt) {
+        if (businessDate == null || preparedAt == null) {
+            throw new IllegalArgumentException("businessDate and preparedAt are required");
+        }
+        var configs = autoMarketReader.findDailyRegimePreCreateConfigs();
+        return autoMarketDailyRegimeService.ensureFirstSlotDailyRegimes(
+                configs,
+                businessDate,
+                preparedAt
         );
     }
 

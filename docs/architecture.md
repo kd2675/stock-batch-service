@@ -74,13 +74,23 @@ native Job 경계는 다음과 같다.
 
 | Job | Step | 형태 | 재시작 단위 |
 | --- | --- | --- | --- |
-| `market-close-rollover` | `market-close-snapshot-step` | Tasklet | 영업일·operation·symbol/신호 |
-| `portfolio-settlement` | `portfolio-settlement-step` | paging chunk | 영업일·snapshot 시각·강제 실행 version |
-| `corporate-actions` | `apply-due-corporate-actions-step` | Tasklet | 시뮬레이션 분 단위 sweep |
-| `auto-participant-cash-flow` | `auto-participant-cash-flow-step` | Tasklet | 시뮬레이션 분 또는 수동 signal |
+| `market-close-rollover` | `market-close-snapshot-step` | Tasklet | cycle·영업일·operation·scope |
+| `portfolio-settlement` | `validate-close-snapshot-step` → `portfolio-settlement-step` → `complete-portfolio-settlement-step` | 검증 Tasklet + paging chunk + 완료 Tasklet | cycle·영업일·phase revision |
+| `post-close-report-aggregation` | 종목·계좌·계좌 일일요약 재구축 Step | Tasklet flow | cycle·영업일·phase revision |
+| `corporate-actions` | CASH: 배당 → 자동청약 → 납입 → 검증 / PREOPEN: 권리락 → 신주·분할·상폐 → 검증 | 재시작 가능한 Tasklet flow | cycle·영업일·phase revision·operation |
+| `auto-participant-cash-flow` | `auto-participant-cash-flow-step` | Tasklet + 업무 청크 cursor | 시뮬레이션 분·수동 signal·close cycle의 stable `requestId` |
 | `auto-market-daily-regime-pre-create` | `auto-market-daily-regime-pre-create-step` | Tasklet | 영업일 |
+| `market-open-readiness` | `validate-market-open-readiness-step` | Tasklet | cycle·준비 거래일·phase revision |
 
-포트폴리오 정산은 처리 대상이 많고 계좌별 결과가 독립적이므로 `JdbcPagingItemReader -> ItemProcessor -> ItemWriter`와 configurable chunk transaction을 사용한다. 다른 네 Job은 기존 command service가 자체 업무 트랜잭션 또는 이벤트별 독립 트랜잭션을 소유하므로 억지로 가짜 Reader/Writer로 나누지 않고 의미 있는 Tasklet Step 하나로 표현한다.
+포트폴리오 정산은 처리 대상이 많고 계좌별 결과가 독립적이므로 `JdbcPagingItemReader -> ItemProcessor -> ItemWriter`와 configurable chunk transaction을 사용한다. reader는 `(close_cycle_id, settlement_target, account_id)` 인덱스의 계좌 스냅샷만 paging하고, 보유 합계는 freeze 때 계좌당 한 번 고정한 뒤 정산 시작 전 cycle 전체를 한 번 대사한다. 페이지마다 보유 원장을 재집계하지 않는다.
+
+장마감 freeze는 하나의 의미 있는 Tasklet Step을 유지하지만 하나의 장기 업무 트랜잭션으로 실행하지 않는다. 세션 fence가 신규 거래를 차단한 뒤 기존 `(market_type, status, symbol)` 보조 인덱스의 InnoDB 확장 PK를 사용해 미체결 주문을 `id` keyset 1,000건씩 불변 cohort에 캡처하고, 취소·예약금/예약수량 반환·`released_at` checkpoint를 500건씩 같은 트랜잭션에 커밋한다. 보유·계좌·대사도 계좌 500건씩 처리한다. 서버가 중단되면 snapshot의 마지막 PK와 `released_at is null` 조건에서 재개하므로 이미 완료한 반환을 반복하지 않는다. 주문 캡처 청크는 최대 10,000, 주문 취소·반환 청크는 최대 5,000, 계좌 청크는 최대 2,000을 넘는 설정으로 기동할 수 없다. 이 구조는 Step 수와 JobRepository 쓰기를 주문 수만큼 늘리지 않으면서, 거래량이 커져도 한 DB connection과 계좌·보유·주문 잠금이 전체 freeze 동안 유지되는 것을 막는다. 이 실행계획은 MySQL `EXPLAIN` 격리 테스트로 filesort 비회귀를 검증하며, Docker 없이 skip된 결과는 운영 부하 통과로 간주하지 않는다.
+
+야간 종목·계좌 보고서는 symbol별 `[start, end)` 인덱스 범위를 짧은 독립 트랜잭션으로 처리한다. 종목 수만큼 범위 조회가 반복되더라도 하나의 전역 대형 정렬·장기 트랜잭션으로 바꾸지 않으며, coordinator가 정규장 및 다른 무거운 phase와 중첩되지 않게 한다. PRE_OPEN 시세 provider 호출도 DB 트랜잭션 밖에서 수행하고 성공한 종목의 가격·tick 쓰기만 종목별로 커밋한다. 감시 대상 산출은 주문·보유 원시 행을 UNION하기 전에 각 소스를 symbol별로 선집계하여 거래량 증가가 중간 결과와 JVM 대상 수를 증폭시키지 않게 한다.
+
+`POST_CLOSE` scheduler는 단일 스레드만 허용한다. 풀 크기가 1이 아니면 서버 기동을 거부하며, close freeze·settlement·overnight·PREOPEN phase가 서로 겹쳐 정규장 주문·체결 DB pool과 I/O를 동시에 잠식하는 구성을 허용하지 않는다.
+
+원시 시뮬레이션 시간이 REGULAR로 넘어갔더라도 이전 freeze·정산이 남아 실제 시장이 `CLOSED`이면 prefix 복구를 계속한다. 이는 거래 가능한 장과 무거운 EOD를 겹치는 예외가 아니다. 실제 시장 `OPEN` 여부를 launcher 전에 다시 검사해 하나라도 열려 있으면 즉시 연기하고, 정상 정규장의 10초 판정은 cycle/business-state 제어 인덱스만 읽으며 주문·체결 원장을 조회하거나 DB write transaction을 만들지 않는다.
 
 주문 체결, 자동 주문 생성, 주문 만료, 상장주관사 유동성 공급, 프로필 큐 정합화 등 초단위 micro 작업은 `LightweightBatchTask` 경계로 실행한다. 이 작업들은 재시작 checkpoint보다 낮은 지연과 작은 metadata가 중요하므로 `BATCH_*` row를 만들지 않고 Micrometer와 업무 원장을 관측 기준으로 사용한다.
 
@@ -273,14 +283,16 @@ Identifying:
 
 - `businessDate`
 - `jobMode`
-- 업무 결과 범위를 바꾸는 `operation`, `symbol`, `snapshotAt`, `sweepAt`, `signalId`
-- 운영자가 명시적으로 동일 범위를 다시 계산할 때만 사용하는 양의 `runVersion`
+- EOD 업무 결과 범위를 바꾸는 `cycleId`, `scopeKey`, `phaseRevision`, `operation`, `symbol`
+- 반복 sweep의 실제 업무 구간을 바꾸는 `sweepAt`
 
 Non-identifying:
 
 - `requestId`
 - `triggeredAt`
 - `traceId`
+- `signalId`, `triggeredBy`
+- 동일 frozen input을 가리키는 실행 시각 성격의 `snapshotAt`
 
 원칙:
 
@@ -288,7 +300,7 @@ Non-identifying:
 - `requestId`는 호출 추적용이다.
 - `triggeredAt`은 매번 달라도 같은 업무 실행을 새 `JobInstance`로 만들면 안 된다.
 - 재시작해야 하는 job은 identifying parameter를 안정적으로 유지한다.
-- 강제 재실행이 필요한 경우 `force=true`만으로 처리하지 말고 별도 `jobMode` 또는 operator action을 기록한다.
+- 강제 재계산이 필요한 경우 임의 `runVersion`이나 `force=true`만으로 처리하지 말고 별도 correction workflow가 cycle의 `phaseRevision`을 올리고 사유·승인·원본 결과를 기록한다.
 - 현재 구현은 임의 `runId`를 사용하지 않는다. 실패 재시도는 같은 identifying parameter로 같은 `JobInstance`의 새 `JobExecution`을 만들고, 완료된 instance는 다시 실행하지 않는다.
 
 권장 model:

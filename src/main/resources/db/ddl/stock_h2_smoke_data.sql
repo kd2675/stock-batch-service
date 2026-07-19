@@ -10,6 +10,20 @@ VALUES ('005930', TRUE, 'OPEN', CURRENT_TIMESTAMP);
 INSERT INTO stock_order_book_market_config(symbol, enabled, market_status, updated_at)
 VALUES ('005930', TRUE, 'OPEN', CURRENT_TIMESTAMP);
 
+INSERT INTO stock_market_business_state(
+  state_id, active_business_date, preparing_business_date, raw_simulation_date,
+  version, created_at, updated_at
+)
+VALUES ('DEFAULT', CURRENT_DATE, NULL, CURRENT_DATE, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO stock_market_session_fence(
+  market_type, symbol, business_date, session_epoch, session_state,
+  state_changed_at, version, created_at, updated_at
+)
+VALUES
+  ('VIRTUAL_PRICE', '005930', CURRENT_DATE, 1, 'OPEN', CURRENT_TIMESTAMP, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('ORDER_BOOK', '005930', CURRENT_DATE, 1, 'OPEN', CURRENT_TIMESTAMP, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
 INSERT INTO stock_price(symbol, current_price, previous_close, price_time, provider)
 VALUES ('005930', 70000.00, 70000.00, CURRENT_TIMESTAMP, 'smoke-seed');
 

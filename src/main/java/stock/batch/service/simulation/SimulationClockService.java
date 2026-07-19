@@ -112,27 +112,22 @@ public class SimulationClockService {
                 .update();
     }
 
-    @Transactional
     public LocalDate currentDate() {
         return currentSnapshot().simulationDate();
     }
 
-    @Transactional
     public LocalDate baseSimulationDate() {
         return findClock().orElseGet(this::createPausedClock).baseSimulationDate();
     }
 
-    @Transactional
     public LocalDateTime currentMarketDateTime() {
         return currentSnapshot().simulationDateTime();
     }
 
-    @Transactional
     public LocalDateTime currentRealDateTime() {
         return currentMarketDateTime();
     }
 
-    @Transactional
     public SimulationClockSnapshot currentSnapshot() {
         SimulationClockRow row = findClock().orElseGet(this::createPausedClock);
         return toSnapshot(row, LocalDateTime.now());

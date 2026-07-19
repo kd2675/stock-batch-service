@@ -10,16 +10,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.UUID;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
-import stock.batch.service.simulation.SimulationClockService;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 @Component
 @RequiredArgsConstructor
@@ -30,7 +30,7 @@ class AutoMarketOrderExecutor {
 
     private final AutoMarketOrderReader autoMarketOrderReader;
     private final AutoMarketWriter autoMarketWriter;
-    private final SimulationClockService simulationClockService;
+    private final MarketSessionFenceService marketSessionFenceService;
 
     AutoMarketOrderBookState loadOrderBookState(String symbol) {
         return new AutoMarketOrderBookState(
@@ -51,58 +51,26 @@ class AutoMarketOrderExecutor {
         }
         lockCancellationResources(orders);
         List<AutoOrder> lockedOrders = autoMarketOrderReader.lockOpenOrdersForUpdate(orders);
-        List<AutoOrder> cancelledOrders = new ArrayList<>();
-        for (AutoOrder order : lockedOrders) {
-            if (autoMarketWriter.cancelOpenOrder(order, now)) {
-                cancelledOrders.add(order);
-            }
+        if (lockedOrders.isEmpty()) {
+            return 0;
         }
-        creditCancelledBuyReservations(cancelledOrders, now);
-        releaseCancelledSellReservations(cancelledOrders, now);
-        return cancelledOrders.size();
+        int cancelledCount = autoMarketWriter.cancelOpenOrders(lockedOrders, now);
+        if (cancelledCount != lockedOrders.size()) {
+            throw new IllegalStateException(
+                    "Auto-order expiry cancellation count mismatch: expected=%d, actual=%d"
+                            .formatted(lockedOrders.size(), cancelledCount)
+            );
+        }
+        autoMarketWriter.creditCancelledBuyReservations(lockedOrders, now);
+        autoMarketWriter.releaseCancelledSellReservations(lockedOrders, now);
+        return cancelledCount;
     }
 
     private void lockCancellationResources(List<AutoOrder> orders) {
-        orders.stream()
-                .map(AutoOrder::accountId)
-                .distinct()
-                .sorted()
-                .forEach(autoMarketWriter::lockAccountForUpdate);
-        orders.stream()
-                .filter(order -> SELL.equals(order.side()))
-                .map(order -> new SellReservationKey(order.accountId(), order.symbol()))
-                .distinct()
-                .sorted(Comparator.comparingLong(SellReservationKey::accountId)
-                        .thenComparing(SellReservationKey::symbol))
-                .forEach(key -> autoMarketWriter.lockHoldingForUpdate(key.accountId(), key.symbol()));
-    }
-
-    private void creditCancelledBuyReservations(List<AutoOrder> cancelledOrders, LocalDateTime now) {
-        Map<Long, BigDecimal> reservedCashByAccount = new TreeMap<>();
-        for (AutoOrder order : cancelledOrders) {
-            if (!BUY.equals(order.side()) || order.reservedCash().compareTo(BigDecimal.ZERO) <= 0) {
-                continue;
-            }
-            reservedCashByAccount.merge(order.accountId(), order.reservedCash(), BigDecimal::add);
-        }
-        reservedCashByAccount.forEach((accountId, reservedCash) -> autoMarketWriter.creditCash(accountId, reservedCash, now));
-    }
-
-    private void releaseCancelledSellReservations(List<AutoOrder> cancelledOrders, LocalDateTime now) {
-        Map<SellReservationKey, Long> reservedQuantityByHolding = new TreeMap<>(
-                Comparator.comparingLong(SellReservationKey::accountId)
-                        .thenComparing(SellReservationKey::symbol)
+        autoMarketWriter.lockAccountsForUpdate(
+                orders.stream().map(AutoOrder::accountId).toList()
         );
-        for (AutoOrder order : cancelledOrders) {
-            long remaining = order.quantity() - order.filledQuantity();
-            if (!SELL.equals(order.side()) || remaining <= 0) {
-                continue;
-            }
-            reservedQuantityByHolding.merge(new SellReservationKey(order.accountId(), order.symbol()), remaining, Long::sum);
-        }
-        reservedQuantityByHolding.forEach((key, quantity) ->
-                autoMarketWriter.releaseReservedSellQuantity(key.accountId(), key.symbol(), quantity, now)
-        );
+        autoMarketWriter.lockSellHoldingsForUpdate(orders);
     }
 
     boolean placeOrder(long accountId, String symbol, String side, BigDecimal price, long quantity) {
@@ -116,14 +84,90 @@ class AutoMarketOrderExecutor {
         return result.generatedOrderCount() == 1;
     }
 
+    boolean placeOrderWithOpenFenceHeld(
+            long accountId,
+            String symbol,
+            String side,
+            BigDecimal price,
+            long quantity,
+            MarketSessionFenceService.MarketSessionApproval sessionApproval
+    ) {
+        AutoParticipantOrderGenerationResult result = placeOrdersWithOpenFenceHeld(
+                List.of(new AutoMarketPlannedOrder(accountId, symbol, side, price, quantity)),
+                sessionApproval
+        );
+        return result.generatedOrderCount() == 1;
+    }
+
     AutoParticipantOrderGenerationResult placeOrders(List<AutoMarketPlannedOrder> plannedOrders) {
         if (plannedOrders.isEmpty()) {
             return AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0);
         }
-        LocalDateTime now = simulationClockService.currentMarketDateTime();
+        requireBoundedPlannedOrders(plannedOrders);
+        var sessionApproval = marketSessionFenceService.lockOpenOrderBookFences(
+                plannedOrders.stream().map(AutoMarketPlannedOrder::symbol).toList()
+        );
+        if (sessionApproval.isEmpty()) {
+            return AutoParticipantOrderGenerationResult.droppedExecution(
+                    plannedOrders.size(),
+                    AutoMarketOrderDropReason.SESSION_CLOSED
+            );
+        }
+        return placeOrdersAfterApproval(plannedOrders, sessionApproval.get());
+    }
+
+    AutoParticipantOrderGenerationResult placeOrdersWithOpenFenceHeld(
+            List<AutoMarketPlannedOrder> plannedOrders,
+            MarketSessionFenceService.MarketSessionApproval sessionApproval
+    ) {
+        if (plannedOrders.isEmpty()) {
+            return AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0);
+        }
+        requireBoundedPlannedOrders(plannedOrders);
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("An active transaction is required while reusing a market session fence");
+        }
+        boolean missingApprovedSymbol = plannedOrders.stream()
+                .map(AutoMarketPlannedOrder::symbol)
+                .distinct()
+                .anyMatch(symbol -> !sessionApproval.sessionEpochs().containsKey(symbol));
+        if (missingApprovedSymbol) {
+            throw new IllegalArgumentException("Planned order symbol is not covered by the held market session fence");
+        }
+        return placeOrdersAfterApproval(plannedOrders, sessionApproval);
+    }
+
+    private AutoParticipantOrderGenerationResult placeOrdersAfterApproval(
+            List<AutoMarketPlannedOrder> plannedOrders,
+            MarketSessionFenceService.MarketSessionApproval sessionApproval
+    ) {
+        LocalDateTime now = sessionApproval.businessEffectiveAt();
+        Map<Long, AutoMarketWriter.AccountReservationState> accountStates =
+                autoMarketWriter.lockAccountReservationStatesForUpdate(
+                plannedOrders.stream()
+                        .map(AutoMarketPlannedOrder::accountId)
+                        .distinct()
+                        .sorted()
+                        .toList()
+        );
+        Map<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> sellOrdersByHolding =
+                groupSellOrdersByHolding(plannedOrders);
+        Map<AutoMarketWriter.HoldingReservationKey, AutoMarketWriter.HoldingReservationState> holdingStates =
+                autoMarketWriter.lockHoldingReservationStatesForUpdate(
+                        sellOrdersByHolding.keySet().stream()
+                                .sorted(Comparator.comparingLong(AutoMarketWriter.HoldingReservationKey::accountId)
+                                        .thenComparing(AutoMarketWriter.HoldingReservationKey::symbol))
+                                .toList()
+                );
         Set<AutoMarketPlannedOrder> acceptedOrderSet = Collections.newSetFromMap(new IdentityHashMap<>());
-        int failedBuyReserveCount = reserveBuyOrders(plannedOrders, acceptedOrderSet, now);
-        int failedSellReserveCount = reserveSellOrders(plannedOrders, acceptedOrderSet, now);
+        int failedBuyReserveCount = reserveBuyOrders(plannedOrders, accountStates, acceptedOrderSet, now);
+        int failedSellReserveCount = reserveSellOrders(
+                sellOrdersByHolding,
+                accountStates,
+                holdingStates,
+                acceptedOrderSet,
+                now
+        );
         List<AutoMarketPlannedOrder> acceptedOrders = plannedOrders.stream()
                 .filter(acceptedOrderSet::contains)
                 .toList();
@@ -174,6 +218,7 @@ class AutoMarketOrderExecutor {
 
     private int reserveBuyOrders(
             List<AutoMarketPlannedOrder> plannedOrders,
+            Map<Long, AutoMarketWriter.AccountReservationState> accountStates,
             Set<AutoMarketPlannedOrder> acceptedOrders,
             LocalDateTime now
     ) {
@@ -184,6 +229,7 @@ class AutoMarketOrderExecutor {
             }
         }
         int failedReserveCount = 0;
+        Map<Long, BigDecimal> acceptedReservations = new LinkedHashMap<>();
         List<Map.Entry<Long, List<AutoMarketPlannedOrder>>> orderedEntries = ordersByAccount.entrySet()
                 .stream()
                 .sorted(Map.Entry.comparingByKey())
@@ -192,52 +238,86 @@ class AutoMarketOrderExecutor {
             BigDecimal totalReservedCash = entry.getValue().stream()
                     .map(AutoMarketPlannedOrder::reservedCash)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (autoMarketWriter.reserveBuyCash(entry.getKey(), totalReservedCash, now)) {
+            AutoMarketWriter.AccountReservationState accountState = accountStates.get(entry.getKey());
+            if (isActive(accountState) && accountState.cashBalance().compareTo(totalReservedCash) >= 0) {
+                acceptedReservations.put(entry.getKey(), totalReservedCash);
                 acceptedOrders.addAll(entry.getValue());
             } else {
                 failedReserveCount += entry.getValue().size();
             }
         }
+        autoMarketWriter.reserveBuyCashChunk(acceptedReservations, now);
         return failedReserveCount;
     }
 
     private int reserveSellOrders(
-            List<AutoMarketPlannedOrder> plannedOrders,
+            Map<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> ordersByHolding,
+            Map<Long, AutoMarketWriter.AccountReservationState> accountStates,
+            Map<AutoMarketWriter.HoldingReservationKey, AutoMarketWriter.HoldingReservationState> holdingStates,
             Set<AutoMarketPlannedOrder> acceptedOrders,
             LocalDateTime now
     ) {
-        Map<SellReservationKey, List<AutoMarketPlannedOrder>> ordersByHolding = new LinkedHashMap<>();
-        for (AutoMarketPlannedOrder order : plannedOrders) {
-            if (SELL.equals(order.side())) {
-                SellReservationKey key = new SellReservationKey(order.accountId(), order.symbol());
-                ordersByHolding.computeIfAbsent(key, ignored -> new ArrayList<>()).add(order);
-            }
-        }
         int failedReserveCount = 0;
-        List<Map.Entry<SellReservationKey, List<AutoMarketPlannedOrder>>> orderedEntries = ordersByHolding.entrySet()
+        Map<AutoMarketWriter.HoldingReservationKey, Long> acceptedReservations = new LinkedHashMap<>();
+        List<Map.Entry<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>>> orderedEntries =
+                ordersByHolding.entrySet()
                 .stream()
                 .sorted(Comparator
-                        .comparing((Map.Entry<SellReservationKey, List<AutoMarketPlannedOrder>> entry) -> entry.getKey().accountId())
+                        .comparing((Map.Entry<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> entry) ->
+                                entry.getKey().accountId())
                         .thenComparing(entry -> entry.getKey().symbol()))
                 .toList();
-        for (Map.Entry<SellReservationKey, List<AutoMarketPlannedOrder>> entry : orderedEntries) {
+        for (Map.Entry<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> entry : orderedEntries) {
             long totalQuantity = entry.getValue().stream()
                     .mapToLong(AutoMarketPlannedOrder::quantity)
                     .sum();
-            SellReservationKey key = entry.getKey();
-            if (autoMarketWriter.reserveSellQuantity(key.accountId(), key.symbol(), totalQuantity, now)) {
+            AutoMarketWriter.HoldingReservationKey key = entry.getKey();
+            AutoMarketWriter.HoldingReservationState holdingState = holdingStates.get(key);
+            if (isActive(accountStates.get(key.accountId()))
+                    && holdingState != null
+                    && holdingState.availableQuantity() >= totalQuantity) {
+                acceptedReservations.put(key, totalQuantity);
                 acceptedOrders.addAll(entry.getValue());
             } else {
                 failedReserveCount += entry.getValue().size();
             }
         }
+        autoMarketWriter.reserveSellQuantityChunk(acceptedReservations, now);
         return failedReserveCount;
+    }
+
+    private Map<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> groupSellOrdersByHolding(
+            List<AutoMarketPlannedOrder> plannedOrders
+    ) {
+        Map<AutoMarketWriter.HoldingReservationKey, List<AutoMarketPlannedOrder>> ordersByHolding =
+                new LinkedHashMap<>();
+        for (AutoMarketPlannedOrder order : plannedOrders) {
+            if (SELL.equals(order.side())) {
+                AutoMarketWriter.HoldingReservationKey key = new AutoMarketWriter.HoldingReservationKey(
+                        order.accountId(),
+                        order.symbol()
+                );
+                ordersByHolding.computeIfAbsent(key, ignored -> new ArrayList<>()).add(order);
+            }
+        }
+        return ordersByHolding;
+    }
+
+    private boolean isActive(AutoMarketWriter.AccountReservationState accountState) {
+        return accountState != null && "ACTIVE".equals(accountState.status());
+    }
+
+    private void requireBoundedPlannedOrders(List<AutoMarketPlannedOrder> plannedOrders) {
+        if (plannedOrders.size() > AutoMarketWriter.MAX_LIMIT_ORDER_INSERT_ROWS) {
+            throw new IllegalArgumentException(
+                    "Auto-order generation chunk exceeds the maximum planned-order count: %d > %d"
+                            .formatted(plannedOrders.size(), AutoMarketWriter.MAX_LIMIT_ORDER_INSERT_ROWS)
+            );
+        }
     }
 
     private String nextClientOrderId() {
         return "auto-" + UUID.randomUUID().toString().replace("-", "");
     }
 
-    private record SellReservationKey(long accountId, String symbol) {
-    }
 }

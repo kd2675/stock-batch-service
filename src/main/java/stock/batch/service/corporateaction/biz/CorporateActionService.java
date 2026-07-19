@@ -1,7 +1,9 @@
 package stock.batch.service.corporateaction.biz;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -18,6 +20,7 @@ import java.util.function.Supplier;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.corporateaction.model.AutoParticipantCapitalIncreaseCandidate;
 import stock.batch.service.batch.corporateaction.model.AutoParticipantEventProfilePolicy;
+import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscriptionDecision;
 import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscriptionActionRow;
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
@@ -30,6 +33,7 @@ import stock.batch.service.batch.corporateaction.reader.CorporateActionReader;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionAccountWriter;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionPriceWriter;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationMarketSession;
@@ -57,6 +61,8 @@ public class CorporateActionService {
     private static final String RIGHTS_PROVIDER = "corporate-action-rights";
     private static final String FREE_SHARE_PROVIDER = "corporate-action-free-share";
     private static final String DELISTING_PROVIDER = "corporate-action-delisting-zero";
+    private static final int MAX_ACCOUNT_CHUNK_SIZE = 1_000;
+    private static final int MAX_ACTION_BATCH_LIMIT = 200;
 
     private final CorporateActionReader corporateActionReader;
     private final CorporateActionOrderBookOrderGuard orderBookOrderGuard;
@@ -66,12 +72,27 @@ public class CorporateActionService {
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final CorporateActionTransactionExecutor transactionExecutor;
+    private final CorporateActionProcessingLedger processingLedger;
+    private final MarketSessionFenceService marketSessionFenceService;
+
+    @Value("${stock.batch.corporate-action.account-chunk-size:200}")
+    private int accountChunkSize = 200;
+
+    @Value("${stock.batch.corporate-action.action-batch-limit:25}")
+    private int actionBatchLimit = 25;
+
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        validateAccountChunkSize(accountChunkSize);
+        validateActionBatchLimit(actionBatchLimit);
+    }
 
     public int applyDueCorporateActions() {
         SimulationMarketSession session = simulationMarketSessionService.currentSession();
         if (session == SimulationMarketSession.REGULAR) {
             return 0;
         }
+        requireClosedMarket("corporate actions");
         LocalDate actionDate = simulationMarketSessionService.currentSimulationDate();
         LocalDate requiredCloseDate = requiredCloseDate(session, actionDate);
         if (requiredCloseDate == null || !corporateActionReader.existsCompletedMarketCloseRun(requiredCloseDate)) {
@@ -128,6 +149,170 @@ public class CorporateActionService {
         return processedCount;
     }
 
+    /**
+     * Spring Batch stage entry points intentionally keep unit failures local. Each action or
+     * account chunk already commits independently with a durable processing-ledger row. The
+     * final validation Step fails the Job when any due work remains, which lets unrelated
+     * overnight stages continue without putting more work on the regular-session order path.
+     */
+    public int processCashDividendPaymentStep(LocalDate effectiveBusinessDate) {
+        requireCorporateCashStage(effectiveBusinessDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "cash-dividend-payment",
+                failures,
+                () -> payDueCashDividends(effectiveBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int processCapitalIncreaseAutoSubscriptionStep(LocalDate effectiveBusinessDate) {
+        requireCorporateCashStage(effectiveBusinessDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "capital-increase-auto-subscription",
+                failures,
+                () -> subscribeAutoParticipantsToCapitalIncreases(effectiveBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int processCapitalIncreasePaymentStep(LocalDate effectiveBusinessDate) {
+        requireCorporateCashStage(effectiveBusinessDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "capital-increase-payment",
+                failures,
+                () -> markDueRightsPayments(effectiveBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int validateCorporateCashStep(LocalDate effectiveBusinessDate) {
+        requireCorporateCashStage(effectiveBusinessDate);
+        long incompleteCount = corporateActionReader.countIncompleteCorporateCashActions(effectiveBusinessDate);
+        if (incompleteCount > 0) {
+            throw new IllegalStateException(
+                    "Corporate cash phase left incomplete actions: businessDate=%s, count=%d"
+                            .formatted(effectiveBusinessDate, incompleteCount)
+            );
+        }
+        return 0;
+    }
+
+    public int processExRightsStep(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "ex-rights",
+                failures,
+                () -> applyDueExRights(preparingBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int processCapitalIncreaseListingStep(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "capital-increase-listing",
+                failures,
+                () -> listDueRightsShares(preparingBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int processFreeShareListingStep(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int bonusIssueCount = executeStage(
+                "bonus-issue-listing",
+                failures,
+                () -> listDueFreeShareDistributions(preparingBusinessDate, BONUS_ISSUE, failures)
+        );
+        int stockDividendCount = executeStage(
+                "stock-dividend-listing",
+                failures,
+                () -> listDueFreeShareDistributions(preparingBusinessDate, STOCK_DIVIDEND, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return bonusIssueCount + stockDividendCount;
+    }
+
+    public int processStockSplitStep(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "stock-split",
+                failures,
+                () -> applyDueStockSplits(preparingBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int processDelistingStep(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        List<RuntimeException> failures = new ArrayList<>();
+        int processedCount = executeStage(
+                "delisting",
+                failures,
+                () -> applyDueDelistings(preparingBusinessDate, failures)
+        );
+        throwIfAnyActionFailed(failures);
+        return processedCount;
+    }
+
+    public int validatePreOpenSecurityTransformsStep(
+            LocalDate preparingBusinessDate,
+            LocalDate requiredCloseDate
+    ) {
+        requirePreOpenStage(preparingBusinessDate, requiredCloseDate);
+        long incompleteCount = corporateActionReader.countIncompletePreOpenSecurityTransforms(preparingBusinessDate);
+        if (incompleteCount > 0) {
+            throw new IllegalStateException(
+                    "Pre-open corporate action phase left incomplete transforms: businessDate=%s, count=%d"
+                            .formatted(preparingBusinessDate, incompleteCount)
+            );
+        }
+        return 0;
+    }
+
+    private void requireCorporateCashStage(LocalDate effectiveBusinessDate) {
+        requireClosedMarket("corporate cash actions");
+        if (effectiveBusinessDate == null
+                || !corporateActionReader.existsCompletedMarketCloseRun(effectiveBusinessDate)) {
+            throw new IllegalStateException(
+                    "Corporate cash stage requires a completed full-market close: businessDate="
+                            + effectiveBusinessDate
+            );
+        }
+    }
+
+    private void requirePreOpenStage(LocalDate preparingBusinessDate, LocalDate requiredCloseDate) {
+        requireClosedMarket("pre-open security transforms");
+        if (preparingBusinessDate == null
+                || requiredCloseDate == null
+                || !corporateActionReader.existsCompletedMarketCloseRun(requiredCloseDate)) {
+            throw new IllegalStateException(
+                    "Pre-open corporate action stage requires a completed prior close: preparingBusinessDate=%s, requiredCloseDate=%s"
+                            .formatted(preparingBusinessDate, requiredCloseDate)
+            );
+        }
+    }
+
+    private void requireClosedMarket(String operation) {
+        if (marketSessionFenceService.hasOpenMarket()) {
+            throw new IllegalStateException("Cannot run " + operation + " while any market is open");
+        }
+        marketSessionFenceService.assertMarketLedgerMutationAllowed(operation);
+    }
+
     private LocalDate requiredCloseDate(SimulationMarketSession session, LocalDate actionDate) {
         if (session == SimulationMarketSession.AFTER_CLOSE) {
             return actionDate;
@@ -143,7 +328,8 @@ public class CorporateActionService {
         List<ExRightsActionRow> rows = corporateActionReader.findDueExRights(
                 today,
                 ANNOUNCED,
-                List.of(PAID_IN_CAPITAL_INCREASE, CASH_DIVIDEND, BONUS_ISSUE, STOCK_DIVIDEND)
+                List.of(PAID_IN_CAPITAL_INCREASE, CASH_DIVIDEND, BONUS_ISSUE, STOCK_DIVIDEND),
+                normalizedActionBatchLimit()
         );
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, ExRightsActionRow::symbol);
 
@@ -152,17 +338,59 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "ex-rights",
                     row.id(),
                     failures,
-                    () -> applyDueExRights(row, today)
+                    () -> applyDueExRightsInChunks(row, today, failures)
             );
         }
         return processed;
     }
 
-    private int applyDueExRights(ExRightsActionRow row, LocalDate today) {
+    private int applyDueExRightsInChunks(
+            ExRightsActionRow row,
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
+        String operation = "ex-rights";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
+        if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row)) {
+            return 0;
+        }
+        int chunkSize = normalizedAccountChunkSize();
+        while (holdingSnapshotRunId != null) {
+            Integer insertedCount = transactionExecutor.executeValue(
+                    () -> createExRightsEntitlementChunk(
+                            row,
+                            today,
+                            holdingSnapshotRunId,
+                            chunkSize
+                    )
+            );
+            if (insertedCount == null || insertedCount == 0) {
+                break;
+            }
+        }
+        Long frozenHoldingSnapshotRunId = holdingSnapshotRunId;
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> finalizeDueExRights(row, today, frozenHoldingSnapshotRunId)
+        );
+    }
+
+    private int createExRightsEntitlementChunk(
+            ExRightsActionRow row,
+            LocalDate today,
+            long holdingSnapshotRunId,
+            int chunkSize
+    ) {
         if (!corporateActionReader.lockDueActionForUpdate(
                 row.id(), today, row.actionType(), ANNOUNCED, "ex_rights_date")) {
             return 0;
@@ -170,8 +398,35 @@ public class CorporateActionService {
         if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), ExRightsActionRow::symbol).isEmpty()) {
             return 0;
         }
-        Long holdingSnapshotRunId = resolveRequiredHoldingSnapshotRunId(row);
-        if (holdingSnapshotRunId == null && requiresHoldingSnapshot(row)) {
+        LocalDateTime now = currentDateTime();
+        if (CASH_DIVIDEND.equals(row.actionType())) {
+            return corporateActionAccountWriter.createDividendEntitlementChunk(
+                    row, holdingSnapshotRunId, ANNOUNCED, now, chunkSize
+            );
+        }
+        if (PAID_IN_CAPITAL_INCREASE.equals(row.actionType())) {
+            return corporateActionAccountWriter.createPaidInRightsEntitlementChunk(
+                    row, holdingSnapshotRunId, ANNOUNCED, now, chunkSize
+            );
+        }
+        if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
+            return corporateActionAccountWriter.createShareEntitlementChunk(
+                    row, holdingSnapshotRunId, ANNOUNCED, now, chunkSize
+            );
+        }
+        return 0;
+    }
+
+    private int finalizeDueExRights(
+            ExRightsActionRow row,
+            LocalDate today,
+            Long holdingSnapshotRunId
+    ) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, row.actionType(), ANNOUNCED, "ex_rights_date")) {
+            return 0;
+        }
+        if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), ExRightsActionRow::symbol).isEmpty()) {
             return 0;
         }
         ExRightsPriceAdjustment priceAdjustment = resolveExRightsPriceAdjustment(row, holdingSnapshotRunId);
@@ -206,15 +461,6 @@ public class CorporateActionService {
                     provider,
                     now
             );
-        }
-        if (CASH_DIVIDEND.equals(row.actionType())) {
-            createDividendEntitlements(row, holdingSnapshotRunId, now);
-        }
-        if (PAID_IN_CAPITAL_INCREASE.equals(row.actionType()) && holdingSnapshotRunId != null) {
-            createPaidInRightsEntitlements(row, holdingSnapshotRunId, now);
-        }
-        if (BONUS_ISSUE.equals(row.actionType()) || STOCK_DIVIDEND.equals(row.actionType())) {
-            createShareEntitlements(row, holdingSnapshotRunId, now);
         }
         return updatedAction;
     }
@@ -295,18 +541,93 @@ public class CorporateActionService {
                 today,
                 PAID_IN_CAPITAL_INCREASE,
                 EX_RIGHTS_APPLIED,
-                ANNOUNCED
+                ANNOUNCED,
+                normalizedActionBatchLimit()
         );
         int processed = 0;
         for (CapitalIncreaseSubscriptionActionRow row : rows) {
-            processed += executeActionInTransaction(
-                    "capital-increase-payment",
-                    row.id(),
-                    failures,
-                    () -> markDueRightsPayment(row, today)
-            );
+            if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
+                processed += executeChunkedAction(
+                        "capital-increase-payment",
+                        row.id(),
+                        failures,
+                        () -> markDueRightsPaymentInChunks(row, today, failures)
+                );
+            } else {
+                processed += executeActionInTransaction(
+                        "capital-increase-payment",
+                        row.id(),
+                        today,
+                        failures,
+                        () -> markDueRightsPayment(row, today)
+                );
+            }
         }
         return processed;
+    }
+
+    private int markDueRightsPaymentInChunks(
+            CapitalIncreaseSubscriptionActionRow row,
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
+        String operation = "capital-increase-payment";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(
+                    () -> expireRightsEntitlementChunk(row, today, chunkSize)
+            );
+            if (selectedCount == null || selectedCount == 0) {
+                break;
+            }
+        }
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> markDueRightsPayment(row, today)
+        );
+    }
+
+    private int expireRightsEntitlementChunk(
+            CapitalIncreaseSubscriptionActionRow row,
+            LocalDate today,
+            int chunkSize
+    ) {
+        String sourceStatus = SHAREHOLDER_ALLOCATION.equals(row.offeringType())
+                ? EX_RIGHTS_APPLIED
+                : ANNOUNCED;
+        CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
+                .findDueCapitalIncreasePaymentForUpdate(
+                        row.id(),
+                        today,
+                        PAID_IN_CAPITAL_INCREASE,
+                        sourceStatus,
+                        row.offeringType()
+                )
+                .orElse(null);
+        if (lockedRow == null) {
+            return 0;
+        }
+        List<Long> entitlementIds = corporateActionReader.findEntitlementIdChunk(
+                row.id(),
+                ANNOUNCED,
+                chunkSize
+        );
+        int updated = corporateActionAccountWriter.expireEntitlementChunk(
+                entitlementIds,
+                EXPIRED,
+                ANNOUNCED,
+                currentDateTime()
+        );
+        if (updated != entitlementIds.size()) {
+            throw new IllegalStateException("Rights entitlement expiration count mismatch: " + row.id());
+        }
+        return entitlementIds.size();
     }
 
     private int markDueRightsPayment(CapitalIncreaseSubscriptionActionRow row, LocalDate today) {
@@ -326,10 +647,11 @@ public class CorporateActionService {
             return 0;
         }
         LocalDateTime now = currentDateTime();
-        int updatedAction = corporateActionWriter.markActionPaid(row.id(), PAID, sourceStatus, now);
-        if (updatedAction > 0 && SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
-            corporateActionAccountWriter.expireEntitlements(row.id(), EXPIRED, ANNOUNCED, now);
+        if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())
+                && corporateActionReader.existsEntitlementWithStatus(row.id(), ANNOUNCED)) {
+            throw new IllegalStateException("Unsubscribed rights remain before payment completion: " + row.id());
         }
+        int updatedAction = corporateActionWriter.markActionPaid(row.id(), PAID, sourceStatus, now);
         return updatedAction;
     }
 
@@ -340,7 +662,8 @@ public class CorporateActionService {
         List<CapitalIncreaseSubscriptionActionRow> rows = corporateActionReader.findOpenCapitalIncreaseSubscriptions(
                 today,
                 PAID_IN_CAPITAL_INCREASE,
-                List.of(ANNOUNCED, EX_RIGHTS_APPLIED)
+                List.of(ANNOUNCED, EX_RIGHTS_APPLIED),
+                normalizedActionBatchLimit()
         );
         if (rows.isEmpty()) {
             return 0;
@@ -349,29 +672,67 @@ public class CorporateActionService {
         int processed = 0;
         for (CapitalIncreaseSubscriptionActionRow row : rows) {
             if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())) {
-                processed += executeActionInTransaction(
+                processed += executeChunkedAction(
                         "shareholder-allocation-auto-subscription",
                         row.id(),
                         failures,
-                        () -> subscribeShareholderAllocation(row.id(), today, policies)
+                        () -> subscribeShareholderAllocationInChunks(row.id(), today, policies)
                 );
             }
             if (PUBLIC_OFFERING.equals(row.offeringType())) {
-                processed += executeActionInTransaction(
+                processed += executeChunkedAction(
                         "public-offering-auto-subscription",
                         row.id(),
                         failures,
-                        () -> subscribePublicOffering(row.id(), today, policies)
+                        () -> subscribePublicOfferingInChunks(row.id(), today, policies)
                 );
             }
         }
         return processed;
     }
 
-    private int subscribeShareholderAllocation(
+    private int subscribeShareholderAllocationInChunks(
             long actionId,
             LocalDate today,
             Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
+    ) {
+        String operation = "shareholder-allocation-auto-subscription";
+        if (isOperationCompleted(actionId, operation, today)) {
+            return 0;
+        }
+        int processed = 0;
+        long afterAccountId = 0L;
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            long cursor = afterAccountId;
+            AccountChunkResult chunk = transactionExecutor.executeValue(() -> subscribeShareholderAllocationChunk(
+                    actionId,
+                    today,
+                    operation,
+                    policies,
+                    cursor,
+                    chunkSize
+            ));
+            if (chunk == null || chunk.selectedCount() == 0) {
+                break;
+            }
+            processed += chunk.processedCount();
+            afterAccountId = chunk.lastAccountId();
+            if (chunk.selectedCount() < chunkSize) {
+                break;
+            }
+        }
+        completeOperation(actionId, operation, today, processed);
+        return processed;
+    }
+
+    private AccountChunkResult subscribeShareholderAllocationChunk(
+            long actionId,
+            LocalDate today,
+            String operation,
+            Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies,
+            long afterAccountId,
+            int chunkSize
     ) {
         CapitalIncreaseSubscriptionActionRow row = corporateActionReader
                 .findCapitalIncreaseSubscriptionForUpdate(
@@ -383,29 +744,53 @@ public class CorporateActionService {
                 )
                 .orElse(null);
         if (row == null) {
-            return 0;
+            return AccountChunkResult.empty(afterAccountId);
         }
         int processed = 0;
         List<AutoParticipantCapitalIncreaseCandidate> candidates =
-                corporateActionReader.findShareholderAllocationAutoCandidates(row.id(), ANNOUNCED);
+                corporateActionReader.findShareholderAllocationAutoCandidateChunk(
+                        row.id(),
+                        ANNOUNCED,
+                        operation,
+                        today,
+                        afterAccountId,
+                        chunkSize
+                );
+        if (candidates.isEmpty()) {
+            return AccountChunkResult.empty(afterAccountId);
+        }
+        Map<Long, BigDecimal> cashByAccountId = corporateActionReader.findActiveAccountCashForUpdate(
+                candidates.stream().map(AutoParticipantCapitalIncreaseCandidate::accountId).toList()
+        );
+        Map<Long, Long> sharesByEntitlementId = corporateActionReader.findAnnouncedEntitlementShareQuantityForUpdate(
+                candidates.stream()
+                        .map(AutoParticipantCapitalIncreaseCandidate::entitlementId)
+                        .filter(java.util.Objects::nonNull)
+                        .toList(),
+                row.id(),
+                ANNOUNCED
+        );
+        LocalDateTime now = currentDateTime();
+        List<CapitalIncreaseSubscriptionDecision> decisions = new ArrayList<>();
+        List<CorporateActionProcessingLedger.AccountCompletion> completions = new ArrayList<>(candidates.size());
         for (AutoParticipantCapitalIncreaseCandidate candidate : candidates) {
             if (candidate.entitlementId() == null) {
+                completions.add(accountDecision(candidate.accountId(), 0, BigDecimal.ZERO, 0L, null));
                 continue;
             }
-            BigDecimal cashBalance = corporateActionReader
-                    .findActiveAccountCashForUpdate(candidate.accountId())
-                    .orElse(null);
+            String ledgerReferenceId = "entitlement:" + candidate.entitlementId();
+            BigDecimal cashBalance = cashByAccountId.get(candidate.accountId());
             if (cashBalance == null) {
+                completions.add(accountDecision(
+                        candidate.accountId(), 0, BigDecimal.ZERO, 0L, ledgerReferenceId
+                ));
                 continue;
             }
-            Long availableShareQuantity = corporateActionReader
-                    .findAnnouncedEntitlementShareQuantityForUpdate(
-                            candidate.entitlementId(),
-                            row.id(),
-                            ANNOUNCED
-                    )
-                    .orElse(null);
+            Long availableShareQuantity = sharesByEntitlementId.get(candidate.entitlementId());
             if (availableShareQuantity == null) {
+                completions.add(accountDecision(
+                        candidate.accountId(), 0, BigDecimal.ZERO, 0L, ledgerReferenceId
+                ));
                 continue;
             }
             AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
@@ -417,34 +802,96 @@ public class CorporateActionService {
                     policy.maxCashAllocationRate()
             );
             if (shareQuantity <= 0) {
+                completions.add(accountDecision(
+                        candidate.accountId(), 0, BigDecimal.ZERO, 0L, ledgerReferenceId
+                ));
                 continue;
             }
             BigDecimal cashAmount = row.issuePrice().multiply(BigDecimal.valueOf(shareQuantity));
-            LocalDateTime now = currentDateTime();
-            if (!corporateActionAccountWriter.withdrawCashForSubscription(candidate.accountId(), cashAmount, now)) {
-                continue;
-            }
-            int updatedEntitlement = corporateActionAccountWriter.subscribeAllocatedRights(
+            decisions.add(new CapitalIncreaseSubscriptionDecision(
                     candidate.entitlementId(),
+                    candidate.accountId(),
                     shareQuantity,
-                    cashAmount,
-                    SUBSCRIBED,
-                    ANNOUNCED,
-                    now
-            );
-            if (updatedEntitlement == 0) {
-                throw new IllegalStateException("Corporate action entitlement subscription failed: " + candidate.entitlementId());
-            }
-            corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlow(candidate.accountId(), cashAmount, now);
+                    cashAmount
+            ));
+            completions.add(accountDecision(
+                    candidate.accountId(), 1, cashAmount, shareQuantity, ledgerReferenceId
+            ));
             processed++;
         }
-        return processed;
+        if (!decisions.isEmpty()) {
+            requireChunkCount(
+                    "shareholder subscription cash withdrawal",
+                    decisions.size(),
+                    corporateActionAccountWriter.withdrawCashForSubscriptionChunk(decisions, now)
+            );
+            requireChunkCount(
+                    "shareholder subscription entitlement update",
+                    decisions.size(),
+                    corporateActionAccountWriter.subscribeAllocatedRightsChunk(
+                            row.id(),
+                            decisions,
+                            SUBSCRIBED,
+                            ANNOUNCED,
+                            now
+                    )
+            );
+            requireChunkCount(
+                    "shareholder subscription cash-flow insert",
+                    decisions.size(),
+                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(decisions, now)
+            );
+        }
+        requireChunkCount(
+                "shareholder subscription processing-ledger insert",
+                completions.size(),
+                processingLedger.completeAccounts(row.id(), operation, today, completions, now)
+        );
+        return AccountChunkResult.of(candidates, processed, afterAccountId, false);
     }
 
-    private int subscribePublicOffering(
+    private int subscribePublicOfferingInChunks(
             long actionId,
             LocalDate today,
             Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies
+    ) {
+        String operation = "public-offering-auto-subscription";
+        if (isOperationCompleted(actionId, operation, today)) {
+            return 0;
+        }
+        int processed = 0;
+        long afterAccountId = 0L;
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            long cursor = afterAccountId;
+            AccountChunkResult chunk = transactionExecutor.executeValue(() -> subscribePublicOfferingChunk(
+                    actionId,
+                    today,
+                    operation,
+                    policies,
+                    cursor,
+                    chunkSize
+            ));
+            if (chunk == null || chunk.selectedCount() == 0) {
+                break;
+            }
+            processed += chunk.processedCount();
+            afterAccountId = chunk.lastAccountId();
+            if (chunk.exhausted() || chunk.selectedCount() < chunkSize) {
+                break;
+            }
+        }
+        completeOperation(actionId, operation, today, processed);
+        return processed;
+    }
+
+    private AccountChunkResult subscribePublicOfferingChunk(
+            long actionId,
+            LocalDate today,
+            String operation,
+            Map<AutoParticipantProfileType, AutoParticipantEventProfilePolicy> policies,
+            long afterAccountId,
+            int chunkSize
     ) {
         CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
                 .findCapitalIncreaseSubscriptionForUpdate(
@@ -456,22 +903,36 @@ public class CorporateActionService {
                 )
                 .orElse(null);
         if (lockedRow == null) {
-            return 0;
+            return AccountChunkResult.empty(afterAccountId);
         }
         long remainingShares = lockedRow.shareQuantity() - corporateActionReader.sumSubscribedShareQuantity(lockedRow.id());
         if (remainingShares <= 0) {
-            return 0;
+            return AccountChunkResult.exhausted(afterAccountId);
         }
         int processed = 0;
-        List<AutoParticipantCapitalIncreaseCandidate> candidates = corporateActionReader.findPublicOfferingAutoCandidates(lockedRow.id());
+        List<AutoParticipantCapitalIncreaseCandidate> candidates = corporateActionReader.findPublicOfferingAutoCandidateChunk(
+                lockedRow.id(),
+                operation,
+                today,
+                afterAccountId,
+                chunkSize
+        );
+        if (candidates.isEmpty()) {
+            return AccountChunkResult.empty(afterAccountId);
+        }
+        Map<Long, BigDecimal> cashByAccountId = corporateActionReader.findActiveAccountCashForUpdate(
+                candidates.stream().map(AutoParticipantCapitalIncreaseCandidate::accountId).toList()
+        );
+        LocalDateTime now = currentDateTime();
+        List<CapitalIncreaseSubscriptionDecision> decisions = new ArrayList<>();
+        List<CorporateActionProcessingLedger.AccountCompletion> completions = new ArrayList<>(candidates.size());
         for (AutoParticipantCapitalIncreaseCandidate candidate : candidates) {
             if (remainingShares <= 0) {
                 break;
             }
-            BigDecimal cashBalance = corporateActionReader
-                    .findActiveAccountCashForUpdate(candidate.accountId())
-                    .orElse(null);
+            BigDecimal cashBalance = cashByAccountId.get(candidate.accountId());
             if (cashBalance == null) {
+                completions.add(accountDecision(candidate.accountId(), 0, BigDecimal.ZERO, 0L, null));
                 continue;
             }
             AutoParticipantEventProfilePolicy policy = eventPolicy(policies, candidate.profileType());
@@ -484,30 +945,55 @@ public class CorporateActionService {
             );
             long shareQuantity = Math.min(remainingShares, desiredShareQuantity);
             if (shareQuantity <= 0) {
+                completions.add(accountDecision(candidate.accountId(), 0, BigDecimal.ZERO, 0L, null));
                 continue;
             }
             BigDecimal cashAmount = lockedRow.issuePrice().multiply(BigDecimal.valueOf(shareQuantity));
-            LocalDateTime now = currentDateTime();
-            if (!corporateActionAccountWriter.withdrawCashForSubscription(candidate.accountId(), cashAmount, now)) {
-                continue;
-            }
-            int insertedEntitlement = corporateActionAccountWriter.createPublicOfferingSubscription(
-                    lockedRow.id(),
+            decisions.add(new CapitalIncreaseSubscriptionDecision(
+                    null,
                     candidate.accountId(),
-                    lockedRow.symbol(),
                     shareQuantity,
+                    cashAmount
+            ));
+            completions.add(accountDecision(
+                    candidate.accountId(),
+                    1,
                     cashAmount,
-                    SUBSCRIBED,
-                    now
-            );
-            if (insertedEntitlement == 0) {
-                throw new IllegalStateException("Corporate action public offering subscription failed: " + lockedRow.id() + "/" + candidate.accountId());
-            }
-            corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlow(candidate.accountId(), cashAmount, now);
+                    shareQuantity,
+                    "account:" + candidate.accountId()
+            ));
             remainingShares -= shareQuantity;
             processed++;
         }
-        return processed;
+        if (!decisions.isEmpty()) {
+            requireChunkCount(
+                    "public offering subscription cash withdrawal",
+                    decisions.size(),
+                    corporateActionAccountWriter.withdrawCashForSubscriptionChunk(decisions, now)
+            );
+            requireChunkCount(
+                    "public offering entitlement insert",
+                    decisions.size(),
+                    corporateActionAccountWriter.createPublicOfferingSubscriptionChunk(
+                            lockedRow.id(),
+                            lockedRow.symbol(),
+                            decisions,
+                            SUBSCRIBED,
+                            now
+                    )
+            );
+            requireChunkCount(
+                    "public offering subscription cash-flow insert",
+                    decisions.size(),
+                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(decisions, now)
+            );
+        }
+        requireChunkCount(
+                "public offering subscription processing-ledger insert",
+                completions.size(),
+                processingLedger.completeAccounts(lockedRow.id(), operation, today, completions, now)
+        );
+        return AccountChunkResult.of(candidates, processed, afterAccountId, remainingShares <= 0);
     }
 
     private long desiredShareQuantity(
@@ -586,36 +1072,114 @@ public class CorporateActionService {
     }
 
     private int payDueCashDividends(LocalDate today, List<RuntimeException> failures) {
-        List<Long> actionIds = corporateActionReader.findDueCashDividendActionIds(today, CASH_DIVIDEND, EX_RIGHTS_APPLIED);
+        List<Long> actionIds = corporateActionReader.findDueCashDividendActionIds(
+                today,
+                CASH_DIVIDEND,
+                EX_RIGHTS_APPLIED,
+                normalizedActionBatchLimit()
+        );
 
         int processed = 0;
         for (Long actionId : actionIds) {
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "cash-dividend-payment",
                     actionId,
                     failures,
-                    () -> payDueCashDividend(actionId, today)
+                    () -> payDueCashDividendInChunks(actionId, today, failures)
             );
         }
         return processed;
     }
 
-    private int payDueCashDividend(long actionId, LocalDate today) {
+    private int payDueCashDividendInChunks(
+            long actionId,
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
+        String operation = "cash-dividend-payment";
+        if (isOperationCompleted(actionId, operation, today)) {
+            return 0;
+        }
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(
+                    () -> payDueCashDividendChunk(actionId, today, operation, chunkSize)
+            );
+            if (selectedCount == null || selectedCount == 0) {
+                break;
+            }
+        }
+        return executeActionInTransaction(
+                operation,
+                actionId,
+                today,
+                failures,
+                () -> finalizeCashDividend(actionId, today)
+        );
+    }
+
+    private int payDueCashDividendChunk(long actionId, LocalDate today, String operation, int chunkSize) {
         if (!corporateActionReader.lockDueActionForUpdate(
                 actionId, today, CASH_DIVIDEND, EX_RIGHTS_APPLIED, "payment_date")) {
             return 0;
         }
         LocalDateTime now = currentDateTime();
         List<DividendEntitlementRow> entitlements =
-                corporateActionReader.findAnnouncedDividendEntitlements(actionId, ANNOUNCED);
-        for (DividendEntitlementRow entitlement : entitlements) {
-            int updatedAccount = corporateActionAccountWriter.creditCash(entitlement.accountId(), entitlement.cashAmount(), now);
-            if (updatedAccount == 0) {
-                throw new IllegalStateException("Stock account not found for dividend entitlement: " + entitlement.accountId());
-            }
-            corporateActionAccountWriter.recordDividendPaymentCashFlow(entitlement.accountId(), entitlement.cashAmount(), now);
-            corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
+                corporateActionReader.findDividendEntitlementChunk(actionId, ANNOUNCED, chunkSize);
+        if (entitlements.isEmpty()) {
+            return 0;
         }
+        requireChunkCount(
+                "dividend account lock",
+                entitlements.size(),
+                corporateActionAccountWriter.lockDividendAccountsForUpdate(entitlements)
+        );
+        requireChunkCount(
+                "dividend cash credit",
+                entitlements.size(),
+                corporateActionAccountWriter.creditDividendCashChunk(entitlements, now)
+        );
+        requireChunkCount(
+                "dividend cash-flow insert",
+                entitlements.size(),
+                corporateActionAccountWriter.recordDividendPaymentCashFlowChunk(entitlements, now)
+        );
+        requireChunkCount(
+                "dividend entitlement completion",
+                entitlements.size(),
+                corporateActionAccountWriter.markDividendEntitlementChunkPaid(
+                        entitlements,
+                        PAID,
+                        ANNOUNCED,
+                        now
+                )
+        );
+        List<CorporateActionProcessingLedger.AccountCompletion> completions = entitlements.stream()
+                .map(entitlement -> new CorporateActionProcessingLedger.AccountCompletion(
+                        entitlement.accountId(),
+                        1,
+                        entitlement.cashAmount(),
+                        0L,
+                        "entitlement:" + entitlement.id()
+                ))
+                .toList();
+        requireChunkCount(
+                "dividend processing-ledger insert",
+                entitlements.size(),
+                processingLedger.completeAccounts(actionId, operation, today, completions, now)
+        );
+        return entitlements.size();
+    }
+
+    private int finalizeCashDividend(long actionId, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                actionId, today, CASH_DIVIDEND, EX_RIGHTS_APPLIED, "payment_date")) {
+            return 0;
+        }
+        if (corporateActionReader.existsEntitlementWithStatus(actionId, ANNOUNCED)) {
+            throw new IllegalStateException("Dividend entitlements remain before action completion: " + actionId);
+        }
+        LocalDateTime now = currentDateTime();
         return corporateActionWriter.markActionPaid(actionId, PAID, EX_RIGHTS_APPLIED, now);
     }
 
@@ -628,7 +1192,12 @@ public class CorporateActionService {
             String actionType,
             List<RuntimeException> failures
     ) {
-        List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, EX_RIGHTS_APPLIED);
+        List<ListingActionRow> rows = corporateActionReader.findDueListings(
+                today,
+                actionType,
+                EX_RIGHTS_APPLIED,
+                normalizedActionBatchLimit()
+        );
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, ListingActionRow::symbol);
 
         int processed = 0;
@@ -636,17 +1205,45 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "free-share-listing",
                     row.id(),
                     failures,
-                    () -> listDueFreeShareDistribution(row, today, actionType)
+                    () -> listDueFreeShareDistributionInChunks(row, today, actionType, failures)
             );
         }
         return processed;
     }
 
-    private int listDueFreeShareDistribution(ListingActionRow row, LocalDate today, String actionType) {
+    private int listDueFreeShareDistributionInChunks(
+            ListingActionRow row,
+            LocalDate today,
+            String actionType,
+            List<RuntimeException> failures
+    ) {
+        String operation = "free-share-listing";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        processShareEntitlementChunks(
+                row.id(),
+                today,
+                actionType,
+                EX_RIGHTS_APPLIED,
+                ANNOUNCED,
+                operation,
+                false
+        );
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> finalizeFreeShareDistribution(row, today, actionType)
+        );
+    }
+
+    private int finalizeFreeShareDistribution(ListingActionRow row, LocalDate today, String actionType) {
         ListingActionRow lockedRow = corporateActionReader
                 .findDueListingForUpdate(row.id(), today, actionType, EX_RIGHTS_APPLIED)
                 .orElse(null);
@@ -660,7 +1257,6 @@ public class CorporateActionService {
             return 0;
         }
         addIssuedAndTradableSharesOrThrow(lockedRow, now, "free share distribution");
-        creditShareEntitlements(lockedRow.id(), now);
         return updatedAction;
     }
 
@@ -670,7 +1266,12 @@ public class CorporateActionService {
             String sourceStatus,
             List<RuntimeException> failures
     ) {
-        List<ListingActionRow> rows = corporateActionReader.findDueListings(today, actionType, sourceStatus);
+        List<ListingActionRow> rows = corporateActionReader.findDueListings(
+                today,
+                actionType,
+                sourceStatus,
+                normalizedActionBatchLimit()
+        );
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, ListingActionRow::symbol);
 
         int processed = 0;
@@ -678,17 +1279,49 @@ public class CorporateActionService {
             if (symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "share-issue-listing",
                     row.id(),
                     failures,
-                    () -> listDueShareIssue(row, today, actionType, sourceStatus)
+                    () -> listDueShareIssueInChunks(row, today, actionType, sourceStatus, failures)
             );
         }
         return processed;
     }
 
-    private int listDueShareIssue(
+    private int listDueShareIssueInChunks(
+            ListingActionRow row,
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            List<RuntimeException> failures
+    ) {
+        String operation = "share-issue-listing";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        if (PAID_IN_CAPITAL_INCREASE.equals(actionType)) {
+            processShareEntitlementChunks(
+                    row.id(),
+                    today,
+                    actionType,
+                    sourceStatus,
+                    SUBSCRIBED,
+                    operation,
+                    true
+            );
+            expireListingEntitlementChunks(row.id(), today, actionType, sourceStatus);
+        }
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> finalizeShareIssue(row, today, actionType, sourceStatus)
+        );
+    }
+
+    private int finalizeShareIssue(
             ListingActionRow row,
             LocalDate today,
             String actionType,
@@ -700,6 +1333,11 @@ public class CorporateActionService {
         if (lockedRow == null
                 || !orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(lockedRow), ListingActionRow::symbol).isEmpty()) {
             return 0;
+        }
+        if (PAID_IN_CAPITAL_INCREASE.equals(actionType)
+                && (corporateActionReader.existsEntitlementWithStatus(lockedRow.id(), SUBSCRIBED)
+                || corporateActionReader.existsEntitlementWithStatus(lockedRow.id(), ANNOUNCED))) {
+            throw new IllegalStateException("Capital increase entitlements remain before listing: " + lockedRow.id());
         }
         long shareQuantity = PAID_IN_CAPITAL_INCREASE.equals(actionType)
                 ? corporateActionReader.sumSubscribedShareQuantity(lockedRow.id())
@@ -713,15 +1351,146 @@ public class CorporateActionService {
         if (issuanceRow.shareQuantity() > 0) {
             addIssuedAndTradableSharesOrThrow(issuanceRow, now, "corporate action");
         }
-        if (PAID_IN_CAPITAL_INCREASE.equals(actionType)) {
-            creditSubscribedShareEntitlements(lockedRow.id(), now);
-            corporateActionAccountWriter.expireEntitlements(lockedRow.id(), EXPIRED, ANNOUNCED, now);
-        }
         return updatedAction;
     }
 
+    private void expireListingEntitlementChunks(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String sourceStatus
+    ) {
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(() -> {
+                ListingActionRow lockedRow = corporateActionReader
+                        .findDueListingForUpdate(actionId, today, actionType, sourceStatus)
+                        .orElse(null);
+                if (lockedRow == null) {
+                    return 0;
+                }
+                List<Long> entitlementIds = corporateActionReader.findEntitlementIdChunk(
+                        actionId,
+                        ANNOUNCED,
+                        chunkSize
+                );
+                int updated = corporateActionAccountWriter.expireEntitlementChunk(
+                        entitlementIds,
+                        EXPIRED,
+                        ANNOUNCED,
+                        currentDateTime()
+                );
+                if (updated != entitlementIds.size()) {
+                    throw new IllegalStateException("Listing entitlement expiration count mismatch: " + actionId);
+                }
+                return entitlementIds.size();
+            });
+            if (selectedCount == null || selectedCount == 0) {
+                return;
+            }
+        }
+    }
+
+    private void processShareEntitlementChunks(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            String entitlementStatus,
+            String operation,
+            boolean paidInSubscription
+    ) {
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(() -> processShareEntitlementChunk(
+                    actionId,
+                    today,
+                    actionType,
+                    sourceStatus,
+                    entitlementStatus,
+                    operation,
+                    paidInSubscription,
+                    chunkSize
+            ));
+            if (selectedCount == null || selectedCount == 0) {
+                return;
+            }
+        }
+    }
+
+    private int processShareEntitlementChunk(
+            long actionId,
+            LocalDate today,
+            String actionType,
+            String sourceStatus,
+            String entitlementStatus,
+            String operation,
+            boolean paidInSubscription,
+            int chunkSize
+    ) {
+        ListingActionRow lockedRow = corporateActionReader
+                .findDueListingForUpdate(actionId, today, actionType, sourceStatus)
+                .orElse(null);
+        if (lockedRow == null
+                || !orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(lockedRow), ListingActionRow::symbol).isEmpty()) {
+            return 0;
+        }
+        List<ShareEntitlementRow> entitlements = corporateActionReader.findShareEntitlementChunk(
+                actionId,
+                entitlementStatus,
+                chunkSize
+        );
+        if (entitlements.isEmpty()) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        int lockedHoldingCount = corporateActionAccountWriter.lockShareHoldingsForUpdate(entitlements);
+        if (!paidInSubscription) {
+            requireChunkCount("share entitlement holding lock", entitlements.size(), lockedHoldingCount);
+        }
+        requireChunkCount(
+                "share entitlement holding credit",
+                entitlements.size(),
+                corporateActionAccountWriter.creditShareHoldingChunk(
+                        entitlements,
+                        paidInSubscription,
+                        now
+                )
+        );
+        requireChunkCount(
+                "share entitlement completion",
+                entitlements.size(),
+                corporateActionAccountWriter.markShareEntitlementChunkPaid(
+                        entitlements,
+                        PAID,
+                        entitlementStatus,
+                        now
+                )
+        );
+        List<CorporateActionProcessingLedger.AccountCompletion> completions = entitlements.stream()
+                .map(entitlement -> new CorporateActionProcessingLedger.AccountCompletion(
+                        entitlement.accountId(),
+                        1,
+                        entitlement.cashAmount() == null ? BigDecimal.ZERO : entitlement.cashAmount(),
+                        entitlement.shareQuantity(),
+                        "entitlement:" + entitlement.id()
+                ))
+                .toList();
+        requireChunkCount(
+                "share entitlement processing-ledger insert",
+                entitlements.size(),
+                processingLedger.completeAccounts(actionId, operation, today, completions, now)
+        );
+        return entitlements.size();
+    }
+
     private int applyDueStockSplits(LocalDate today, List<RuntimeException> failures) {
-        List<StockSplitActionRow> rows = corporateActionReader.findDueStockSplits(today, STOCK_SPLIT, ANNOUNCED);
+        List<StockSplitActionRow> rows = corporateActionReader.findDueStockSplits(
+                today,
+                STOCK_SPLIT,
+                ANNOUNCED,
+                normalizedActionBatchLimit()
+        );
         Set<String> symbolsWithOpenOrders = orderBookOrderGuard.findSymbolsWithOpenOrders(rows, StockSplitActionRow::symbol);
 
         int processed = 0;
@@ -729,17 +1498,111 @@ public class CorporateActionService {
             if (row.splitTo() % row.splitFrom() != 0 || symbolsWithOpenOrders.contains(row.symbol())) {
                 continue;
             }
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "stock-split",
                     row.id(),
                     failures,
-                    () -> applyDueStockSplit(row, today)
+                    () -> applyDueStockSplitInChunks(row, today, failures)
             );
         }
         return processed;
     }
 
-    private int applyDueStockSplit(StockSplitActionRow row, LocalDate today) {
+    private int applyDueStockSplitInChunks(
+            StockSplitActionRow row,
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
+        String operation = "stock-split";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        long afterAccountId = 0L;
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            long cursor = afterAccountId;
+            AccountIdChunkResult chunk = transactionExecutor.executeValue(
+                    () -> applyStockSplitHoldingChunk(row, today, operation, cursor, chunkSize)
+            );
+            if (chunk == null || chunk.selectedCount() == 0) {
+                break;
+            }
+            afterAccountId = chunk.lastAccountId();
+            if (chunk.selectedCount() < chunkSize) {
+                break;
+            }
+        }
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> finalizeStockSplit(row, today)
+        );
+    }
+
+    private AccountIdChunkResult applyStockSplitHoldingChunk(
+            StockSplitActionRow row,
+            LocalDate today,
+            String operation,
+            long afterAccountId,
+            int chunkSize
+    ) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, STOCK_SPLIT, ANNOUNCED, "listing_date")) {
+            return AccountIdChunkResult.empty(afterAccountId);
+        }
+        if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), StockSplitActionRow::symbol).isEmpty()) {
+            return AccountIdChunkResult.empty(afterAccountId);
+        }
+        List<Long> accountIds = corporateActionReader.findHoldingAccountChunkForSplit(
+                row.id(),
+                row.symbol(),
+                operation,
+                today,
+                afterAccountId,
+                chunkSize
+        );
+        int multiplier = row.splitTo() / row.splitFrom();
+        BigDecimal priceDivisor = BigDecimal.valueOf(multiplier);
+        LocalDateTime now = currentDateTime();
+        if (accountIds.isEmpty()) {
+            return AccountIdChunkResult.empty(afterAccountId);
+        }
+        requireChunkCount(
+                "stock split holding lock",
+                accountIds.size(),
+                corporateActionWriter.lockHoldingChunkForSplit(row.symbol(), accountIds)
+        );
+        requireChunkCount(
+                "stock split holding update",
+                accountIds.size(),
+                corporateActionWriter.multiplyHoldingChunkForSplit(
+                        row.symbol(),
+                        accountIds,
+                        multiplier,
+                        priceDivisor,
+                        now
+                )
+        );
+        List<CorporateActionProcessingLedger.AccountCompletion> completions = accountIds.stream()
+                .map(accountId -> new CorporateActionProcessingLedger.AccountCompletion(
+                        accountId,
+                        1,
+                        BigDecimal.ZERO,
+                        0L,
+                        "holding:" + accountId + ":" + row.symbol()
+                ))
+                .toList();
+        requireChunkCount(
+                "stock split processing-ledger insert",
+                accountIds.size(),
+                processingLedger.completeAccounts(row.id(), operation, today, completions, now)
+        );
+        return AccountIdChunkResult.of(accountIds, afterAccountId);
+    }
+
+    private int finalizeStockSplit(StockSplitActionRow row, LocalDate today) {
         if (!corporateActionReader.lockDueActionForUpdate(
                 row.id(), today, STOCK_SPLIT, ANNOUNCED, "listing_date")) {
             return 0;
@@ -759,30 +1622,73 @@ public class CorporateActionService {
         if (updatedInstrument == 0) {
             throw new IllegalStateException("Order book instrument not found for stock split: " + row.symbol());
         }
-        corporateActionWriter.multiplyHoldingsForSplit(row.symbol(), multiplier, priceDivisor, now);
         corporateActionWriter.adjustPriceForSplit(row.symbol(), priceDivisor, now);
         corporateActionPriceWriter.insertCurrentPriceTick(row.symbol(), "corporate-action-split", now);
         return updatedAction;
     }
 
     private int applyDueDelistings(LocalDate today, List<RuntimeException> failures) {
-        List<DelistingActionRow> rows = corporateActionReader.findDueDelistings(today, DELISTING, ANNOUNCED);
+        List<DelistingActionRow> rows = corporateActionReader.findDueDelistings(
+                today,
+                DELISTING,
+                ANNOUNCED,
+                normalizedActionBatchLimit()
+        );
 
         int processed = 0;
         for (DelistingActionRow row : rows) {
-            processed += executeActionInTransaction(
+            processed += executeChunkedAction(
                     "delisting",
                     row.id(),
                     failures,
-                    () -> applyDueDelisting(row, today)
+                    () -> applyDueDelistingInChunks(row, today, failures)
             );
         }
         return processed;
     }
 
-    private int applyDueDelisting(DelistingActionRow row, LocalDate today) {
+    private int applyDueDelistingInChunks(
+            DelistingActionRow row,
+            LocalDate today,
+            List<RuntimeException> failures
+    ) {
+        String operation = "delisting";
+        if (isOperationCompleted(row.id(), operation, today)) {
+            return 0;
+        }
+        int chunkSize = normalizedAccountChunkSize();
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(
+                    () -> cancelDelistingOrderChunk(row, today, chunkSize)
+            );
+            if (selectedCount == null || selectedCount == 0) {
+                break;
+            }
+        }
+        return executeActionInTransaction(
+                operation,
+                row.id(),
+                today,
+                failures,
+                () -> finalizeDelisting(row, today)
+        );
+    }
+
+    private int cancelDelistingOrderChunk(DelistingActionRow row, LocalDate today, int chunkSize) {
         if (!corporateActionReader.lockDueActionForUpdate(
                 row.id(), today, DELISTING, ANNOUNCED, "delisting_date")) {
+            return 0;
+        }
+        LocalDateTime now = currentDateTime();
+        return orderBookOrderGuard.cancelOpenOrderBookOrderChunk(row.symbol(), now, chunkSize);
+    }
+
+    private int finalizeDelisting(DelistingActionRow row, LocalDate today) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), today, DELISTING, ANNOUNCED, "delisting_date")) {
+            return 0;
+        }
+        if (!orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(row), DelistingActionRow::symbol).isEmpty()) {
             return 0;
         }
         LocalDateTime now = currentDateTime();
@@ -790,7 +1696,6 @@ public class CorporateActionService {
         if (updatedAction == 0) {
             return 0;
         }
-        orderBookOrderGuard.cancelOpenOrderBookOrders(row.symbol(), now);
         int updatedInstrument = corporateActionWriter.delistInstrument(row.symbol(), now);
         if (updatedInstrument == 0) {
             throw new IllegalStateException("Order book instrument not found for delisting: " + row.symbol());
@@ -811,47 +1716,30 @@ public class CorporateActionService {
         }
     }
 
-    private void createDividendEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
-        corporateActionAccountWriter.createDividendEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
-    }
-
-    private void createShareEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
-        corporateActionAccountWriter.createShareEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
-    }
-
-    private void createPaidInRightsEntitlements(ExRightsActionRow row, long holdingSnapshotRunId, LocalDateTime now) {
-        corporateActionAccountWriter.createPaidInRightsEntitlements(row, holdingSnapshotRunId, ANNOUNCED, now);
-    }
-
-    private void creditShareEntitlements(long actionId, LocalDateTime now) {
-        List<ShareEntitlementRow> entitlements =
-                corporateActionReader.findAnnouncedShareEntitlements(actionId, ANNOUNCED);
-        for (ShareEntitlementRow entitlement : entitlements) {
-            int updatedHolding = corporateActionAccountWriter.creditShareHolding(entitlement, now);
-            if (updatedHolding == 0) {
-                throw new IllegalStateException("Stock holding not found for share entitlement: " + entitlement.accountId());
-            }
-            corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, ANNOUNCED, now);
-        }
-    }
-
-    private void creditSubscribedShareEntitlements(long actionId, LocalDateTime now) {
-        List<ShareEntitlementRow> entitlements =
-                corporateActionReader.findAnnouncedShareEntitlements(actionId, SUBSCRIBED);
-        for (ShareEntitlementRow entitlement : entitlements) {
-            corporateActionAccountWriter.creditPaidInSubscribedShareHolding(entitlement, now);
-            corporateActionAccountWriter.markEntitlementPaid(entitlement.id(), PAID, SUBSCRIBED, now);
-        }
-    }
-
     private int executeActionInTransaction(
             String operation,
             long actionId,
+            LocalDate effectiveBusinessDate,
             List<RuntimeException> failures,
             Supplier<Integer> action
     ) {
         try {
-            return transactionExecutor.execute(action);
+            return transactionExecutor.execute(() -> {
+                if (processingLedger.isCompleted(actionId, operation, effectiveBusinessDate)) {
+                    return 0;
+                }
+                int processedCount = action.get();
+                if (processedCount > 0) {
+                    processingLedger.complete(
+                            actionId,
+                            operation,
+                            effectiveBusinessDate,
+                            processedCount,
+                            currentDateTime()
+                    );
+                }
+                return processedCount;
+            });
         } catch (RuntimeException ex) {
             log.error(
                     "Corporate action unit failed and was rolled back: operation={}, actionId={}, reason={}",
@@ -866,6 +1754,115 @@ public class CorporateActionService {
             ));
             return 0;
         }
+    }
+
+    private int executeChunkedAction(
+            String operation,
+            long actionId,
+            List<RuntimeException> failures,
+            Supplier<Integer> action
+    ) {
+        try {
+            return action.get();
+        } catch (RuntimeException ex) {
+            log.error(
+                    "Corporate action chunks failed after prior chunks may have committed: operation={}, actionId={}, reason={}",
+                    operation,
+                    actionId,
+                    ex.getMessage(),
+                    ex
+            );
+            failures.add(new IllegalStateException(
+                    "Corporate action " + operation + " failed: " + actionId,
+                    ex
+            ));
+            return 0;
+        }
+    }
+
+    private boolean isOperationCompleted(long actionId, String operation, LocalDate effectiveBusinessDate) {
+        Boolean completed = transactionExecutor.executeValue(
+                () -> processingLedger.isCompleted(actionId, operation, effectiveBusinessDate)
+        );
+        return Boolean.TRUE.equals(completed);
+    }
+
+    private void completeOperation(
+            long actionId,
+            String operation,
+            LocalDate effectiveBusinessDate,
+            int currentAttemptProcessedCount
+    ) {
+        transactionExecutor.execute(() -> {
+            if (!processingLedger.isCompleted(actionId, operation, effectiveBusinessDate)) {
+                int cumulativeProcessedCount = processingLedger.sumCompletedAccountProcessedCount(
+                        actionId,
+                        operation,
+                        effectiveBusinessDate
+                );
+                processingLedger.complete(
+                        actionId,
+                        operation,
+                        effectiveBusinessDate,
+                        Math.max(cumulativeProcessedCount, currentAttemptProcessedCount),
+                        currentDateTime()
+                );
+            }
+            return 0;
+        });
+    }
+
+    private CorporateActionProcessingLedger.AccountCompletion accountDecision(
+            long accountId,
+            int processedCount,
+            BigDecimal amount,
+            long quantity,
+            String ledgerReferenceId
+    ) {
+        return new CorporateActionProcessingLedger.AccountCompletion(
+                accountId,
+                processedCount,
+                amount,
+                quantity,
+                ledgerReferenceId
+        );
+    }
+
+    private void requireChunkCount(String operation, int expectedCount, int actualCount) {
+        if (actualCount != expectedCount) {
+            throw new IllegalStateException(
+                    "%s count mismatch: expected=%d, actual=%d"
+                            .formatted(operation, expectedCount, actualCount)
+            );
+        }
+    }
+
+    private int normalizedAccountChunkSize() {
+        return validateAccountChunkSize(accountChunkSize);
+    }
+
+    private int normalizedActionBatchLimit() {
+        return validateActionBatchLimit(actionBatchLimit);
+    }
+
+    static int validateAccountChunkSize(int chunkSize) {
+        if (chunkSize < 1 || chunkSize > MAX_ACCOUNT_CHUNK_SIZE) {
+            throw new IllegalStateException(
+                    "stock.batch.corporate-action.account-chunk-size must be between 1 and %d: %d"
+                            .formatted(MAX_ACCOUNT_CHUNK_SIZE, chunkSize)
+            );
+        }
+        return chunkSize;
+    }
+
+    static int validateActionBatchLimit(int limit) {
+        if (limit < 1 || limit > MAX_ACTION_BATCH_LIMIT) {
+            throw new IllegalStateException(
+                    "stock.batch.corporate-action.action-batch-limit must be between 1 and %d: %d"
+                            .formatted(MAX_ACTION_BATCH_LIMIT, limit)
+            );
+        }
+        return limit;
     }
 
     private int executeStage(
@@ -909,6 +1906,48 @@ public class CorporateActionService {
             BigDecimal basePrice,
             BigDecimal theoreticalExRightsPrice
     ) {
+    }
+
+    private record AccountChunkResult(
+            int selectedCount,
+            int processedCount,
+            long lastAccountId,
+            boolean exhausted
+    ) {
+
+        private static AccountChunkResult empty(long lastAccountId) {
+            return new AccountChunkResult(0, 0, lastAccountId, false);
+        }
+
+        private static AccountChunkResult exhausted(long lastAccountId) {
+            return new AccountChunkResult(0, 0, lastAccountId, true);
+        }
+
+        private static AccountChunkResult of(
+                List<AutoParticipantCapitalIncreaseCandidate> candidates,
+                int processedCount,
+                long fallbackAccountId,
+                boolean exhausted
+        ) {
+            long lastAccountId = candidates.isEmpty()
+                    ? fallbackAccountId
+                    : candidates.get(candidates.size() - 1).accountId();
+            return new AccountChunkResult(candidates.size(), processedCount, lastAccountId, exhausted);
+        }
+    }
+
+    private record AccountIdChunkResult(int selectedCount, long lastAccountId) {
+
+        private static AccountIdChunkResult empty(long lastAccountId) {
+            return new AccountIdChunkResult(0, lastAccountId);
+        }
+
+        private static AccountIdChunkResult of(List<Long> accountIds, long fallbackAccountId) {
+            long lastAccountId = accountIds.isEmpty()
+                    ? fallbackAccountId
+                    : accountIds.get(accountIds.size() - 1);
+            return new AccountIdChunkResult(accountIds.size(), lastAccountId);
+        }
     }
 
 }

@@ -9,13 +9,16 @@ public final class StockBatchJobParameters {
 
     public static final String BUSINESS_DATE = "businessDate";
     public static final String CLOSED_AT = "closedAt";
-    public static final String ENFORCE_CLOSE = "enforceClose";
+    public static final String CYCLE_ID = "cycleId";
     public static final String JOB_MODE = "jobMode";
     public static final String OPERATION = "operation";
     public static final String REQUEST_ID = "requestId";
-    public static final String RUN_VERSION = "runVersion";
+    public static final String REQUIRED_CLOSE_DATE = "requiredCloseDate";
+    public static final String PHASE_REVISION = "phaseRevision";
     public static final String SESSION = "session";
     public static final String SIGNAL_ID = "signalId";
+    public static final String SESSION_EPOCH = "sessionEpoch";
+    public static final String SCOPE_KEY = "scopeKey";
     public static final String SNAPSHOT_AT = "snapshotAt";
     public static final String SWEEP_AT = "sweepAt";
     public static final String SYMBOL = "symbol";

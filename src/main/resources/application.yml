@@ -53,6 +53,8 @@ stock:
     open-time: ${STOCK_MARKET_SESSION_OPEN_TIME:06:00}
     close-time: ${STOCK_MARKET_SESSION_CLOSE_TIME:18:00}
   batch:
+    schema-readiness:
+      enabled: ${STOCK_BATCH_SCHEMA_READINESS_ENABLED:true}
     shutdown:
       await-running-jobs-seconds: ${STOCK_BATCH_SHUTDOWN_AWAIT_RUNNING_JOBS_SECONDS:120}
     internal:
@@ -66,16 +68,23 @@ stock:
       execution:
         pool-size: ${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}
       auto-market:
-        pool-size: ${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:2}
+        pool-size: ${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:1}
       maintenance:
-        pool-size: ${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}
+        pool-size: ${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:1}
+      post-close:
+        pool-size: ${STOCK_BATCH_POST_CLOSE_SCHEDULER_POOL_SIZE:1}
       simulation-clock:
         pool-size: ${STOCK_BATCH_SIMULATION_CLOCK_SCHEDULER_POOL_SIZE:1}
     signal:
       initial-delay-ms: ${STOCK_BATCH_SIGNAL_INITIAL_DELAY_MS:3000}
       fixed-delay-ms: ${STOCK_BATCH_SIGNAL_FIXED_DELAY_MS:5000}
       chunk-limit: ${STOCK_BATCH_SIGNAL_CHUNK_LIMIT:20}
-      processing-timeout-seconds: ${STOCK_BATCH_SIGNAL_PROCESSING_TIMEOUT_SECONDS:1800}
+      lease-seconds: ${STOCK_BATCH_SIGNAL_LEASE_SECONDS:180}
+      heartbeat-interval-seconds: ${STOCK_BATCH_SIGNAL_HEARTBEAT_INTERVAL_SECONDS:30}
+      retry-base-seconds: ${STOCK_BATCH_SIGNAL_RETRY_BASE_SECONDS:2}
+      retry-max-seconds: ${STOCK_BATCH_SIGNAL_RETRY_MAX_SECONDS:300}
+      dead-letter-initial-delay-ms: ${STOCK_BATCH_SIGNAL_DEAD_LETTER_INITIAL_DELAY_MS:30000}
+      dead-letter-fixed-delay-ms: ${STOCK_BATCH_SIGNAL_DEAD_LETTER_FIXED_DELAY_MS:60000}
     jdbc:
       query-timeout-seconds: ${STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS:30}
     repository:
@@ -96,6 +105,14 @@ stock:
           idle-timeout: 240000
           max-lifetime: 300000
           keepalive-time: 30000
+    metadata-retention:
+      enabled: ${STOCK_BATCH_METADATA_RETENTION_ENABLED:false}
+      retention-real-days: ${STOCK_BATCH_METADATA_RETENTION_REAL_DAYS:30}
+      instance-limit: ${STOCK_BATCH_METADATA_RETENTION_INSTANCE_LIMIT:25}
+      max-executions-per-instance: ${STOCK_BATCH_METADATA_RETENTION_MAX_EXECUTIONS_PER_INSTANCE:20}
+      max-steps-per-instance: ${STOCK_BATCH_METADATA_RETENTION_MAX_STEPS_PER_INSTANCE:200}
+      purge-enabled: ${STOCK_BATCH_METADATA_RETENTION_PURGE_ENABLED:false}
+      purge-job-names: ${STOCK_BATCH_METADATA_RETENTION_PURGE_JOB_NAMES:}
     market-data:
       enabled: ${STOCK_BATCH_MARKET_DATA_ENABLED:true}
       provider: ${STOCK_BATCH_MARKET_DATA_PROVIDER:mock}
@@ -129,13 +146,19 @@ stock:
     order-book-execution:
       enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_INITIAL_DELAY_MS:36000}
-      fixed-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:5000}
+      fixed-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:30000}
       worker:
         enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_ENABLED:true}
         count: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_COUNT:2}
         idle-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_IDLE_DELAY_MS:100}
         match-yield-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_MATCH_YIELD_MS:5}
         gate-refresh-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_GATE_REFRESH_MS:1000}
+    execution-account-summary:
+      enabled: ${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_ENABLED:true}
+      initial-delay-ms: ${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_INITIAL_DELAY_MS:30000}
+      flush-fixed-delay-ms: ${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_FLUSH_FIXED_DELAY_MS:30000}
+      flush-batch-size: ${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_FLUSH_BATCH_SIZE:5000}
+      max-pending-deltas: ${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_MAX_PENDING_DELTAS:100000}
     corporate-actions:
       enabled: ${STOCK_BATCH_CORPORATE_ACTIONS_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_CORPORATE_ACTIONS_INITIAL_DELAY_MS:20000}
@@ -143,7 +166,6 @@ stock:
     auto-market:
       enabled: ${STOCK_BATCH_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_INITIAL_DELAY_MS:5000}
-      fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:3000}
       fixed-rate-ms: ${STOCK_BATCH_AUTO_MARKET_FIXED_RATE_MS:5000}
       daily-regime:
         enabled: ${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_ENABLED:true}
@@ -159,6 +181,7 @@ stock:
       generation-spread-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_SPREAD_SECONDS:10}
       generation-lease-seconds: ${STOCK_BATCH_AUTO_MARKET_GENERATION_LEASE_SECONDS:120}
       generation-due-limit-per-symbol: ${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}
+      generation-candidate-row-limit: ${STOCK_BATCH_AUTO_MARKET_GENERATION_CANDIDATE_ROW_LIMIT:2000}
       deadlock-retry-max-attempts: ${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}
       slow-symbol-log-threshold-ms: ${STOCK_BATCH_AUTO_MARKET_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
@@ -192,21 +215,49 @@ stock:
       initial-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_INITIAL_DELAY_MS:7000}
       fixed-delay-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_FIXED_DELAY_MS:10000}
       expiry-chunk-limit: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_CHUNK_LIMIT:100}
+      symbol-limit-per-run: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_SYMBOL_LIMIT_PER_RUN:100}
       deadlock-retry-max-attempts: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_DEADLOCK_RETRY_MAX_ATTEMPTS:5}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_AUTO_MARKET_ORDER_EXPIRY_DEADLOCK_RETRY_BACKOFF_MS:50}
     listing-auto-market:
       enabled: ${STOCK_BATCH_LISTING_AUTO_MARKET_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_INITIAL_DELAY_MS:8000}
       fixed-delay-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}
+      symbol-limit-per-run: ${STOCK_BATCH_LISTING_AUTO_MARKET_SYMBOL_LIMIT_PER_RUN:100}
       deadlock-retry-max-attempts: ${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}
     auto-participant-cash-flow:
       enabled: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_INITIAL_DELAY_MS:5000}
       fixed-delay-ms: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_FIXED_DELAY_MS:300000}
+      account-chunk-size: ${STOCK_BATCH_AUTO_PARTICIPANT_CASH_FLOW_ACCOUNT_CHUNK_SIZE:200}
+    corporate-action:
+      account-chunk-size: ${STOCK_BATCH_CORPORATE_ACTION_ACCOUNT_CHUNK_SIZE:200}
+      action-batch-limit: ${STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT:25}
     market-close:
       enabled: ${STOCK_BATCH_MARKET_CLOSE_ENABLED:true}
       poll-fixed-delay-ms: ${STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS:10000}
+      order-capture-chunk-size: ${STOCK_BATCH_MARKET_CLOSE_ORDER_CAPTURE_CHUNK_SIZE:1000}
+      order-cancel-chunk-size: ${STOCK_BATCH_MARKET_CLOSE_ORDER_CANCEL_CHUNK_SIZE:500}
+      holding-snapshot-account-chunk-size: ${STOCK_BATCH_MARKET_CLOSE_HOLDING_SNAPSHOT_ACCOUNT_CHUNK_SIZE:500}
+      account-snapshot-chunk-size: ${STOCK_BATCH_MARKET_CLOSE_ACCOUNT_SNAPSHOT_CHUNK_SIZE:500}
+      reconciliation-account-chunk-size: ${STOCK_BATCH_MARKET_CLOSE_RECONCILIATION_ACCOUNT_CHUNK_SIZE:500}
+      settlement-delay-simulation-minutes: ${STOCK_BATCH_MARKET_CLOSE_SETTLEMENT_DELAY_SIMULATION_MINUTES:10}
+    post-close:
+      lease-seconds: ${STOCK_BATCH_POST_CLOSE_LEASE_SECONDS:180}
+      retry-base-seconds: ${STOCK_BATCH_POST_CLOSE_RETRY_BASE_SECONDS:30}
+      retry-max-seconds: ${STOCK_BATCH_POST_CLOSE_RETRY_MAX_SECONDS:900}
+      deferred-retry-seconds: ${STOCK_BATCH_POST_CLOSE_DEFERRED_RETRY_SECONDS:60}
+      preopen-transform-time: ${STOCK_BATCH_POST_CLOSE_PREOPEN_TRANSFORM_TIME:04:30}
+      auto-market-preparation-time: ${STOCK_BATCH_POST_CLOSE_AUTO_MARKET_PREPARATION_TIME:05:30}
+      readiness-time: ${STOCK_BATCH_POST_CLOSE_READINESS_TIME:05:30}
+      coordinator:
+        enabled: ${STOCK_BATCH_POST_CLOSE_COORDINATOR_ENABLED:true}
+        poll-fixed-delay-ms: ${STOCK_BATCH_POST_CLOSE_COORDINATOR_POLL_FIXED_DELAY_MS:10000}
+      report-aggregation:
+        enabled: ${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_ENABLED:true}
+        symbol-chunk-size: ${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE:25}
+      readiness:
+        enabled: ${STOCK_BATCH_POST_CLOSE_READINESS_ENABLED:true}
     settlement:
       enabled: ${STOCK_BATCH_SETTLEMENT_ENABLED:true}
       chunk-size: ${STOCK_BATCH_SETTLEMENT_CHUNK_SIZE:200}

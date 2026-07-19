@@ -9,10 +9,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import stock.batch.service.batch.holdingcleanup.writer.HoldingCleanupWriter;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -24,9 +27,11 @@ class HoldingCleanupServiceTest {
             BatchTestDatabaseFactory.createDataSource("holding_cleanup_service_test")
     );
     private final SimulationClockService simulationClockService = mock(SimulationClockService.class);
+    private final MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
     private final HoldingCleanupService holdingCleanupService = new HoldingCleanupService(
             new HoldingCleanupWriter(jdbcTemplate),
-            simulationClockService
+            simulationClockService,
+            marketSessionFenceService
     );
 
     @BeforeEach
@@ -80,6 +85,28 @@ class HoldingCleanupServiceTest {
 
         assertThat(deletedCount).isEqualTo(1);
         assertThat(countAll()).isEqualTo(1);
+    }
+
+    @Test
+    void validateVolumeConfiguration_deleteLimitAboveSafeMaximum_rejectsStartup() {
+        ReflectionTestUtils.setField(holdingCleanupService, "deleteLimit", 5_001);
+
+        assertThatThrownBy(holdingCleanupService::validateVolumeConfiguration)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("delete-limit must be between 1 and 5000");
+    }
+
+    @Test
+    void cleanupEmptyHoldings_closeFreezePending_rejectsBeforeDelete() {
+        insertHolding(1L, "OLD_EMPTY", 0, 0, NOW.minusDays(2));
+        doThrow(new IllegalStateException("ledger freeze is in progress"))
+                .when(marketSessionFenceService)
+                .acquireMarketLedgerMutationPermit("empty holding cleanup");
+
+        assertThatThrownBy(holdingCleanupService::cleanupEmptyHoldings)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ledger freeze is in progress");
+        assertThat(countBySymbol("OLD_EMPTY")).isEqualTo(1);
     }
 
     private void insertHolding(long accountId, String symbol, long quantity, long reservedQuantity, LocalDateTime updatedAt) {

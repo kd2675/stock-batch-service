@@ -15,6 +15,57 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AutoParticipantCashFlowReaderTest {
 
     @Test
+    void findRecurringCashTargetChunk_pagesByAccountPrimaryKey() {
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(
+                BatchTestDatabaseFactory.createDataSource("auto_participant_cash_target_chunk_test")
+        );
+        jdbcTemplate.execute("""
+                create table stock_account (
+                    id bigint primary key,
+                    user_key varchar(64) not null,
+                    status varchar(20) not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create table stock_auto_participant (
+                    user_key varchar(64) primary key,
+                    profile_type varchar(40) not null,
+                    enabled boolean not null,
+                    recurring_cash_amount decimal(19,2),
+                    recurring_cash_interval_value decimal(19,4),
+                    recurring_cash_interval_unit varchar(20),
+                    withdrawn_at timestamp
+                )
+                """);
+        for (long accountId : List.of(30L, 10L, 20L)) {
+            jdbcTemplate.update(
+                    "insert into stock_account(id, user_key, status) values (?, ?, 'ACTIVE')",
+                    accountId,
+                    "user-" + accountId
+            );
+            jdbcTemplate.update(
+                    """
+                    insert into stock_auto_participant(
+                        user_key, profile_type, enabled, recurring_cash_amount,
+                        recurring_cash_interval_value, recurring_cash_interval_unit, withdrawn_at
+                    ) values (?, 'PAYDAY_ACCUMULATOR', true, 1000, 1, 'DAY', null)
+                    """,
+                    "user-" + accountId
+            );
+        }
+        AutoParticipantCashFlowReader reader = new AutoParticipantCashFlowReader(jdbcTemplate);
+
+        List<Long> firstPage = reader.findRecurringCashTargetChunk(0L, 2).stream()
+                .map(target -> target.accountId())
+                .toList();
+        List<Long> secondPage = reader.findRecurringCashTargetChunk(20L, 2).stream()
+                .map(target -> target.accountId())
+                .toList();
+
+        assertThat(firstPage + ":" + secondPage).isEqualTo("[10, 20]:[30]");
+    }
+
+    @Test
     void findRecentCashFlows_readsMultipleAccountsAndReasonsWithSingleQuery() {
         JdbcTemplate jdbcTemplate = new JdbcTemplate(
                 BatchTestDatabaseFactory.createDataSource("auto_participant_cash_flow_reader_test")
@@ -37,6 +88,14 @@ class AutoParticipantCashFlowReaderTest {
                 "AUTO_PROFILE_RECURRING_DEPOSIT",
                 "AUTO_MARKET",
                 createdAt
+        );
+        LocalDateTime latestCreatedAt = createdAt.plusMinutes(10);
+        jdbcTemplate.update(
+                "insert into stock_account_cash_flow(account_id, reason, created_by, created_at) values (?, ?, ?, ?)",
+                10L,
+                "AUTO_PROFILE_RECURRING_DEPOSIT",
+                "AUTO_MARKET_MANUAL",
+                latestCreatedAt
         );
         jdbcTemplate.update(
                 "insert into stock_account_cash_flow(account_id, reason, created_by, created_at) values (?, ?, ?, ?)",
@@ -67,10 +126,18 @@ class AutoParticipantCashFlowReaderTest {
                 since
         );
 
-        assertThat(cashFlows).hasSize(2);
-        AutoParticipantRecentCashFlow cashFlow = cashFlows.getFirst();
-        assertThat(cashFlow.accountId()).isEqualTo(10L);
-        assertThat(cashFlow.reason()).isEqualTo("AUTO_PROFILE_RECURRING_DEPOSIT");
-        assertThat(cashFlow.createdAt()).isEqualTo(createdAt);
+        assertThat(cashFlows)
+                .containsExactly(
+                        new AutoParticipantRecentCashFlow(
+                                10L,
+                                "AUTO_PROFILE_RECURRING_DEPOSIT",
+                                latestCreatedAt
+                        ),
+                        new AutoParticipantRecentCashFlow(
+                                20L,
+                                "AUTO_PARTICIPANT_RECURRING_DEPOSIT",
+                                createdAt
+                        )
+                );
     }
 }

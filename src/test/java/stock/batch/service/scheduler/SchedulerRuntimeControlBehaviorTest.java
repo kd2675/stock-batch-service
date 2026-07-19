@@ -2,6 +2,7 @@ package stock.batch.service.scheduler;
 
 import java.time.LocalDateTime;
 import java.util.ArrayDeque;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import stock.batch.service.automarket.biz.AutoMarketDailyRegimePreCreateService;
+import stock.batch.service.automarket.biz.AutoMarketProfileQueueReconcileService;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
@@ -26,11 +28,20 @@ import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
 import stock.batch.service.marketclose.biz.MarketClosePostProcessingCompletionService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
+import stock.batch.service.marketclose.biz.PostCloseCycleService;
+import stock.batch.service.marketclose.model.PostCloseCycle;
+import stock.batch.service.marketclose.model.PostCloseCycleStatus;
+import stock.batch.service.marketclose.model.PostClosePhase;
+import stock.batch.service.marketclose.model.PostCloseScopeType;
+import stock.batch.service.batch.settlement.biz.PortfolioSettlementLifecycleService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationMarketSession;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -44,10 +55,14 @@ class SchedulerRuntimeControlBehaviorTest {
     private BatchJobRuntimeControl batchJobRuntimeControl;
     private StockBatchScheduledJobGuard scheduledJobGuard;
     private SimulationMarketSessionService simulationMarketSessionService;
+    private MarketSessionFenceService marketSessionFenceService;
     private AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
+    private AutoMarketProfileQueueReconcileService autoMarketProfileQueueReconcileService;
     private OrderBookMarketSessionStateService orderBookMarketSessionStateService;
     private MarketCloseRolloverService marketCloseRolloverService;
     private MarketClosePostProcessingCompletionService postProcessingCompletionService;
+    private PostCloseCycleService postCloseCycleService;
+    private PortfolioSettlementLifecycleService portfolioSettlementLifecycleService;
 
     @BeforeEach
     void setUp() {
@@ -55,11 +70,16 @@ class SchedulerRuntimeControlBehaviorTest {
         batchJobRuntimeControl = mock(BatchJobRuntimeControl.class);
         scheduledJobGuard = new StockBatchScheduledJobGuard(batchJobRuntimeControl);
         simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        marketSessionFenceService = mock(MarketSessionFenceService.class);
         autoMarketDailyRegimePreCreateService = mock(AutoMarketDailyRegimePreCreateService.class);
+        autoMarketProfileQueueReconcileService = mock(AutoMarketProfileQueueReconcileService.class);
         orderBookMarketSessionStateService = mock(OrderBookMarketSessionStateService.class);
         marketCloseRolloverService = mock(MarketCloseRolloverService.class);
         postProcessingCompletionService = mock(MarketClosePostProcessingCompletionService.class);
+        postCloseCycleService = mock(PostCloseCycleService.class);
+        portfolioSettlementLifecycleService = mock(PortfolioSettlementLifecycleService.class);
         when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(true);
         when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(true);
         when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.AFTER_CLOSE);
         when(simulationMarketSessionService.currentSimulationDate())
@@ -71,6 +91,13 @@ class SchedulerRuntimeControlBehaviorTest {
         when(simulationMarketSessionService.closeTime())
                 .thenReturn(java.time.LocalTime.of(18, 0));
         when(autoMarketDailyRegimePreCreateService.shouldPreCreateDailyRegimes()).thenReturn(true);
+        when(postCloseCycleService.findOldestUnsettledFullMarketCycle()).thenReturn(Optional.empty());
+        when(postCloseCycleService.findFullMarketCycle(any())).thenAnswer(invocation -> {
+            java.time.LocalDate businessDate = invocation.getArgument(0);
+            return Optional.of(frozenCycle(businessDate));
+        });
+        when(postCloseCycleService.isPhaseClaimEligible(any(), any())).thenReturn(true);
+        when(portfolioSettlementLifecycleService.isSettlementEligible(anyLong(), any())).thenReturn(true);
     }
 
     @Test
@@ -121,6 +148,18 @@ class SchedulerRuntimeControlBehaviorTest {
     void autoMarketScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
         when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        scheduler.runAutoMarket();
+        scheduler.expireAutoMarketOrders();
+        scheduler.runListingAutoMarket();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
+    void autoMarketScheduler_databaseMarketClosed_skipsTradingJobsBeforeRuntimeControl() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+        when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(false);
 
         scheduler.runAutoMarket();
         scheduler.expireAutoMarketOrders();
@@ -210,8 +249,10 @@ class SchedulerRuntimeControlBehaviorTest {
     void autoParticipantCashFlowScheduler_checksRuntimeControlBeforeLaunching() {
         AutoParticipantCashFlowScheduler scheduler = new AutoParticipantCashFlowScheduler(
                 stockBatchJobLauncher,
-                scheduledJobGuard
+                scheduledJobGuard,
+                simulationMarketSessionService
         );
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
 
         assertSimpleSchedulerGate(
                 AutoParticipantCashFlowJob.JOB_NAME,
@@ -265,6 +306,64 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void postCloseCoordinatorEnabled_disablesLegacyOverlappingMaintenanceSchedulers() {
+        AutoParticipantCashFlowScheduler cashFlowScheduler = new AutoParticipantCashFlowScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService
+        );
+        CorporateActionScheduler corporateActionScheduler = new CorporateActionScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService
+        );
+        MarketDataRefreshScheduler marketDataScheduler = new MarketDataRefreshScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard
+        );
+        HoldingCleanupScheduler holdingCleanupScheduler = new HoldingCleanupScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService
+        );
+        AutoMarketScheduler autoMarketScheduler = newAutoMarketScheduler(command -> command.run());
+        for (Object scheduler : java.util.List.of(
+                cashFlowScheduler,
+                corporateActionScheduler,
+                marketDataScheduler,
+                holdingCleanupScheduler,
+                autoMarketScheduler
+        )) {
+            ReflectionTestUtils.setField(scheduler, "postCloseCoordinatorEnabled", true);
+        }
+        when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        cashFlowScheduler.fundAutoParticipants();
+        corporateActionScheduler.applyCorporateActions();
+        marketDataScheduler.refreshMarketData();
+        holdingCleanupScheduler.cleanupEmptyHoldings();
+        autoMarketScheduler.preCreateDailyRegimes();
+        autoMarketScheduler.reconcileProfileQueue();
+        autoMarketScheduler.reconcileProfileQueueOnStartup();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+        verifyNoInteractions(autoMarketProfileQueueReconcileService);
+    }
+
+    @Test
+    void postCloseCoordinatorEnabled_regularSession_recoversProfileQueueWithoutBatchMetadata() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+        ReflectionTestUtils.setField(scheduler, "postCloseCoordinatorEnabled", true);
+        when(batchJobRuntimeControl.shouldRunScheduledJob(AutoMarketProfileQueueReconcileJob.JOB_NAME, true))
+                .thenReturn(true);
+
+        scheduler.reconcileProfileQueueOnStartup();
+
+        verify(autoMarketProfileQueueReconcileService).reconcileReadyProfiles();
+        verify(stockBatchJobLauncher, never()).reconcileAutoMarketProfileQueue();
+    }
+
+    @Test
     void orderBookExecutionScheduler_checksRuntimeControlBeforeLaunching() {
         OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
 
@@ -279,6 +378,16 @@ class SchedulerRuntimeControlBehaviorTest {
     void orderBookExecutionScheduler_outsideRegularSession_skipsBeforeRuntimeControl() {
         OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
         when(simulationMarketSessionService.isRegularSession()).thenReturn(false);
+
+        scheduler.executeOrderBookOrders();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
+    void orderBookExecutionScheduler_databaseMarketClosed_skipsBeforeRuntimeControl() {
+        OrderBookExecutionScheduler scheduler = newOrderBookExecutionScheduler();
+        when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(false);
 
         scheduler.executeOrderBookOrders();
 
@@ -301,14 +410,7 @@ class SchedulerRuntimeControlBehaviorTest {
 
     @Test
     void portfolioSettlementScheduler_checksRuntimeControlForEachJobBeforeLaunching() {
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
 
@@ -346,34 +448,50 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void portfolioSettlementScheduler_marketOpen_defersBeforeCloseOrSettlementJobs() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        when(marketSessionFenceService.hasOpenMarket()).thenReturn(true);
+
+        boolean completed = scheduler.settlePortfolios(java.time.LocalDate.of(2026, 7, 3));
+
+        org.assertj.core.api.Assertions.assertThat(completed).isFalse();
+        verifyNoInteractions(stockBatchJobLauncher);
+    }
+
+    @Test
     void portfolioSettlementScheduler_beforeClose_skipsPostCloseWork() {
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
         when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
 
         scheduler.rolloverSimulationDayIfNeeded();
 
+        verify(orderBookMarketSessionStateService).syncCurrentSession();
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
 
     @Test
-    void portfolioSettlementScheduler_afterClose_runsPostCloseWorkWithoutTimeDelay() {
-        // given
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
+    void portfolioSettlementScheduler_bothConfiguredOff_doesNotTouchSessionOrJobs() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", false);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", false);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verifyNoInteractions(
                 orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
+                simulationMarketSessionService,
+                batchJobRuntimeControl,
+                stockBatchJobLauncher
         );
+    }
+
+    @Test
+    void portfolioSettlementScheduler_afterSettlementEligibility_runsPostCloseWork() {
+        // given
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(simulationMarketSessionService.currentSimulationDateTime())
@@ -400,15 +518,34 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void portfolioSettlementScheduler_beforeSettlementEligibility_freezesButDefersSettlement() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(LocalDateTime.of(2026, 7, 3, 18, 9, 59));
+        when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
+                .thenReturn(true);
+        when(stockBatchJobLauncher.rolloverClosingPricesScheduled())
+                .thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
+        when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
+                .thenReturn(false, true);
+        when(postProcessingCompletionService.isComplete(java.time.LocalDate.of(2026, 7, 3)))
+                .thenReturn(false);
+        when(portfolioSettlementLifecycleService.isSettlementEligible(anyLong(), any()))
+                .thenReturn(false);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verify(stockBatchJobLauncher).rolloverClosingPricesScheduled();
+        verify(stockBatchJobLauncher, never()).settlePortfoliosScheduled();
+        verify(batchJobRuntimeControl, never())
+                .shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true);
+    }
+
+    @Test
     void portfolioSettlementScheduler_completedZeroCloseWithoutCloseRunDoesNotRunSettlement() {
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
@@ -427,20 +564,15 @@ class SchedulerRuntimeControlBehaviorTest {
     @Test
     void portfolioSettlementScheduler_preOpenRetriesMissingPreviousCloseBeforeOpeningNextDay() {
         // given
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
         when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
         when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(java.time.LocalDate.of(2026, 7, 4));
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(LocalDateTime.of(2026, 7, 4, 0, 30));
         when(simulationMarketSessionService.baseSimulationDate())
                 .thenReturn(java.time.LocalDate.of(2026, 7, 3));
         when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
@@ -453,7 +585,7 @@ class SchedulerRuntimeControlBehaviorTest {
         )).thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
         when(stockBatchJobLauncher.settlePortfolios(
                 java.time.LocalDate.of(2026, 7, 3),
-                LocalDateTime.of(2026, 7, 3, 18, 0)
+                LocalDateTime.of(2026, 7, 4, 0, 30)
         ))
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
@@ -471,34 +603,71 @@ class SchedulerRuntimeControlBehaviorTest {
         );
         verify(stockBatchJobLauncher).settlePortfolios(
                 java.time.LocalDate.of(2026, 7, 3),
-                LocalDateTime.of(2026, 7, 3, 18, 0)
+                LocalDateTime.of(2026, 7, 4, 0, 30)
+        );
+    }
+
+    @Test
+    void portfolioSettlementScheduler_preOpenActiveDateWithoutCycle_closesOldestActiveDate() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
+        java.time.LocalDate activeDate = java.time.LocalDate.of(2026, 7, 3);
+        java.time.LocalDate rawDate = java.time.LocalDate.of(2026, 7, 5);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
+        when(simulationMarketSessionService.currentSimulationDate()).thenReturn(rawDate);
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(rawDate.atTime(0, 30));
+        when(simulationMarketSessionService.baseSimulationDate()).thenReturn(activeDate);
+        when(marketSessionFenceService.businessState()).thenReturn(
+                new MarketSessionFenceService.MarketBusinessStateSnapshot(
+                        activeDate,
+                        activeDate.plusDays(1),
+                        rawDate,
+                        1L
+                )
+        );
+        when(postCloseCycleService.findFullMarketCycle(activeDate)).thenReturn(Optional.empty());
+        when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
+                .thenReturn(true);
+        when(stockBatchJobLauncher.rolloverClosingPrices(
+                activeDate,
+                activeDate.atTime(18, 0)
+        )).thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
+        when(marketCloseRolloverService.hasCompletedFullCloseRun(activeDate)).thenReturn(false, true);
+        when(postProcessingCompletionService.isComplete(activeDate)).thenReturn(false);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verify(stockBatchJobLauncher).rolloverClosingPrices(
+                activeDate,
+                activeDate.atTime(18, 0)
+        );
+        verify(stockBatchJobLauncher, never()).rolloverClosingPrices(
+                rawDate.minusDays(1),
+                rawDate.minusDays(1).atTime(18, 0)
         );
     }
 
     @Test
     void portfolioSettlementScheduler_preOpenRetriesMissingPreviousSettlementWithoutRerunningClose() {
         // given
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
         when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
         when(simulationMarketSessionService.currentSimulationDate())
                 .thenReturn(java.time.LocalDate.of(2026, 7, 4));
+        when(simulationMarketSessionService.currentSimulationDateTime())
+                .thenReturn(LocalDateTime.of(2026, 7, 4, 0, 30));
         when(simulationMarketSessionService.baseSimulationDate())
                 .thenReturn(java.time.LocalDate.of(2026, 7, 3));
         when(batchJobRuntimeControl.shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true))
                 .thenReturn(true);
         when(stockBatchJobLauncher.settlePortfolios(
                 java.time.LocalDate.of(2026, 7, 3),
-                LocalDateTime.of(2026, 7, 3, 18, 0)
+                LocalDateTime.of(2026, 7, 4, 0, 30)
         ))
                 .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
         when(marketCloseRolloverService.hasCompletedFullCloseRun(java.time.LocalDate.of(2026, 7, 3)))
@@ -516,20 +685,13 @@ class SchedulerRuntimeControlBehaviorTest {
         );
         verify(stockBatchJobLauncher).settlePortfolios(
                 java.time.LocalDate.of(2026, 7, 3),
-                LocalDateTime.of(2026, 7, 3, 18, 0)
+                LocalDateTime.of(2026, 7, 4, 0, 30)
         );
     }
 
     @Test
-    void portfolioSettlementScheduler_regularSessionDoesNotRunPreviousCloseCatchUp() {
-        PortfolioSettlementScheduler scheduler = new PortfolioSettlementScheduler(
-                stockBatchJobLauncher,
-                scheduledJobGuard,
-                simulationMarketSessionService,
-                orderBookMarketSessionStateService,
-                marketCloseRolloverService,
-                postProcessingCompletionService
-        );
+    void portfolioSettlementScheduler_regularOpenSessionWithoutBacklogDoesNotRunPreviousCloseCatchUp() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
         ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
         ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
         when(simulationMarketSessionService.isAfterCloseSession()).thenReturn(false);
@@ -544,6 +706,84 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.rolloverSimulationDayIfNeeded();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+        verify(postCloseCycleService).findOldestUnsettledFullMarketCycle();
+        verify(postProcessingCompletionService, never()).isComplete(any());
+    }
+
+    @Test
+    void portfolioSettlementScheduler_regularRawTimeWithClosedMarketRecoversOldestUnsettledCycle() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", true);
+        java.time.LocalDate businessDate = java.time.LocalDate.of(2026, 7, 3);
+        LocalDateTime rawSimulationNow = LocalDateTime.of(2026, 7, 4, 10, 0);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
+        when(simulationMarketSessionService.currentSimulationDate()).thenReturn(rawSimulationNow.toLocalDate());
+        when(simulationMarketSessionService.currentSimulationDateTime()).thenReturn(rawSimulationNow);
+        when(postCloseCycleService.findOldestUnsettledFullMarketCycle())
+                .thenReturn(Optional.of(frozenCycle(businessDate)));
+        when(marketSessionFenceService.hasOpenMarket()).thenReturn(false);
+        when(marketCloseRolloverService.hasCompletedFullCloseRun(businessDate)).thenReturn(true);
+        when(postProcessingCompletionService.isComplete(businessDate)).thenReturn(false, true);
+        when(batchJobRuntimeControl.shouldRunScheduledJob(PortfolioSettlementJob.JOB_NAME, true))
+                .thenReturn(true);
+        when(stockBatchJobLauncher.settlePortfolios(businessDate, rawSimulationNow))
+                .thenReturn(completedResponse(PortfolioSettlementJob.JOB_NAME));
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verify(stockBatchJobLauncher).settlePortfolios(businessDate, rawSimulationNow);
+    }
+
+    @Test
+    void portfolioSettlementScheduler_regularRawTimeWithOpenMarketDefersOldestUnsettledCycle() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        java.time.LocalDate businessDate = java.time.LocalDate.of(2026, 7, 3);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
+        when(simulationMarketSessionService.currentSimulationDate())
+                .thenReturn(java.time.LocalDate.of(2026, 7, 4));
+        when(postCloseCycleService.findOldestUnsettledFullMarketCycle())
+                .thenReturn(Optional.of(frozenCycle(businessDate)));
+        when(marketSessionFenceService.hasOpenMarket()).thenReturn(true);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
+    }
+
+    @Test
+    void portfolioSettlementScheduler_regularRawTimeWithClosedMarketRecoversMissingActiveDateCycle() {
+        PortfolioSettlementScheduler scheduler = newPortfolioSettlementScheduler();
+        ReflectionTestUtils.setField(scheduler, "marketCloseSchedulerConfigured", true);
+        ReflectionTestUtils.setField(scheduler, "settlementSchedulerConfigured", false);
+        java.time.LocalDate activeDate = java.time.LocalDate.of(2026, 7, 3);
+        java.time.LocalDate rawDate = java.time.LocalDate.of(2026, 7, 5);
+        when(simulationMarketSessionService.currentSession()).thenReturn(SimulationMarketSession.REGULAR);
+        when(simulationMarketSessionService.currentSimulationDate()).thenReturn(rawDate);
+        when(simulationMarketSessionService.currentSimulationDateTime()).thenReturn(rawDate.atTime(10, 0));
+        when(marketSessionFenceService.businessState()).thenReturn(
+                new MarketSessionFenceService.MarketBusinessStateSnapshot(
+                        activeDate,
+                        activeDate.plusDays(1),
+                        rawDate,
+                        1L
+                )
+        );
+        when(postCloseCycleService.findFullMarketCycle(activeDate)).thenReturn(Optional.empty());
+        when(batchJobRuntimeControl.shouldRunScheduledJob(MarketCloseRolloverJob.JOB_NAME, true))
+                .thenReturn(true);
+        when(stockBatchJobLauncher.rolloverClosingPrices(
+                activeDate,
+                activeDate.atTime(18, 0)
+        )).thenReturn(completedResponse(MarketCloseRolloverJob.JOB_NAME));
+        when(marketCloseRolloverService.hasCompletedFullCloseRun(activeDate)).thenReturn(false, true);
+
+        scheduler.rolloverSimulationDayIfNeeded();
+
+        verify(stockBatchJobLauncher).rolloverClosingPrices(
+                activeDate,
+                activeDate.atTime(18, 0)
+        );
     }
 
     @Test
@@ -603,12 +843,49 @@ class SchedulerRuntimeControlBehaviorTest {
         return new StockBatchJobRunResponse(jobName, "COMPLETED", "test", processedCount, "completed", now, now);
     }
 
+    private PortfolioSettlementScheduler newPortfolioSettlementScheduler() {
+        return new PortfolioSettlementScheduler(
+                stockBatchJobLauncher,
+                scheduledJobGuard,
+                simulationMarketSessionService,
+                orderBookMarketSessionStateService,
+                marketCloseRolloverService,
+                postProcessingCompletionService,
+                postCloseCycleService,
+                portfolioSettlementLifecycleService,
+                marketSessionFenceService
+        );
+    }
+
+    private PostCloseCycle frozenCycle(java.time.LocalDate businessDate) {
+        return new PostCloseCycle(
+                1L,
+                businessDate,
+                PostCloseScopeType.FULL_MARKET,
+                "ALL",
+                stock.batch.service.marketclose.model.PostCloseCycleKind.TRADING,
+                null,
+                PostClosePhase.LEDGER_FROZEN,
+                PostCloseCycleStatus.PENDING,
+                1,
+                1L,
+                1L,
+                businessDate.atTime(18, 10),
+                0,
+                null,
+                null,
+                null
+        );
+    }
+
     private AutoMarketScheduler newAutoMarketScheduler(Executor autoMarketRunTaskExecutor) {
         return new AutoMarketScheduler(
                 stockBatchJobLauncher,
                 scheduledJobGuard,
                 simulationMarketSessionService,
+                marketSessionFenceService,
                 autoMarketDailyRegimePreCreateService,
+                autoMarketProfileQueueReconcileService,
                 autoMarketRunTaskExecutor
         );
     }
@@ -617,7 +894,8 @@ class SchedulerRuntimeControlBehaviorTest {
         return new OrderBookExecutionScheduler(
                 stockBatchJobLauncher,
                 scheduledJobGuard,
-                simulationMarketSessionService
+                simulationMarketSessionService,
+                marketSessionFenceService
         );
     }
 

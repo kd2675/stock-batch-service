@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
+import stock.batch.service.marketclose.biz.PostCloseCycleService;
 
 @Component
 @DependsOn("simulationClockScheduler")
@@ -36,6 +38,8 @@ import stock.batch.service.common.vo.StockBatchJobRunResponse;
 public class StockBatchJobRunner implements SmartLifecycle {
 
     private static final int LIFECYCLE_PHASE = Integer.MAX_VALUE - 100;
+    static final String HEAVY_ADMISSION_LOCK_NAME = "post-close-heavy-admission";
+    static final String CYCLE_MDC_KEY = "cycleId";
 
     private final BatchJobLockRegistry batchJobLockRegistry;
     private final JobOperator jobOperator;
@@ -52,6 +56,7 @@ public class StockBatchJobRunner implements SmartLifecycle {
             BatchJobLockRegistry batchJobLockRegistry,
             JobOperator jobOperator,
             StockBatchStaleExecutionRecovery staleExecutionRecovery,
+            PostCloseCycleService postCloseCycleService,
             @Value("${stock.batch.job-lock.heartbeat-interval-seconds:30}") long lockHeartbeatIntervalSeconds,
             @Value("${stock.batch.shutdown.await-running-jobs-seconds:120}") long shutdownAwaitRunningJobsSeconds
     ) {
@@ -59,6 +64,7 @@ public class StockBatchJobRunner implements SmartLifecycle {
                 batchJobLockRegistry,
                 jobOperator,
                 staleExecutionRecovery,
+                postCloseCycleService,
                 lockHeartbeatIntervalSeconds,
                 shutdownAwaitRunningJobsSeconds,
                 newLockHeartbeatExecutor("stock-batch-lock-heartbeat")
@@ -73,11 +79,37 @@ public class StockBatchJobRunner implements SmartLifecycle {
             long shutdownAwaitRunningJobsSeconds,
             ScheduledExecutorService lockHeartbeatExecutor
     ) {
+        this(
+                batchJobLockRegistry,
+                jobOperator,
+                staleExecutionRecovery,
+                null,
+                lockHeartbeatIntervalSeconds,
+                shutdownAwaitRunningJobsSeconds,
+                lockHeartbeatExecutor
+        );
+    }
+
+    StockBatchJobRunner(
+            BatchJobLockRegistry batchJobLockRegistry,
+            JobOperator jobOperator,
+            StockBatchStaleExecutionRecovery staleExecutionRecovery,
+            PostCloseCycleService postCloseCycleService,
+            long lockHeartbeatIntervalSeconds,
+            long shutdownAwaitRunningJobsSeconds,
+            ScheduledExecutorService lockHeartbeatExecutor
+    ) {
         if (lockHeartbeatIntervalSeconds <= 0) {
             throw new IllegalArgumentException("lockHeartbeatIntervalSeconds must be positive");
         }
         if (lockHeartbeatIntervalSeconds >= batchJobLockRegistry.lockTtlSeconds()) {
             throw new IllegalArgumentException("lockHeartbeatIntervalSeconds must be shorter than lockTtlSeconds");
+        }
+        if (postCloseCycleService != null
+                && lockHeartbeatIntervalSeconds >= postCloseCycleService.leaseSeconds()) {
+            throw new IllegalArgumentException(
+                    "lockHeartbeatIntervalSeconds must be shorter than post-close cycle leaseSeconds"
+            );
         }
         if (shutdownAwaitRunningJobsSeconds < 0) {
             throw new IllegalArgumentException("shutdownAwaitRunningJobsSeconds must not be negative");
@@ -90,18 +122,35 @@ public class StockBatchJobRunner implements SmartLifecycle {
         this.lockHeartbeat = new StockBatchJobLockHeartbeat(
                 batchJobLockRegistry,
                 lockHeartbeatExecutor,
-                lockHeartbeatIntervalSeconds
+                lockHeartbeatIntervalSeconds,
+                postCloseCycleService
         );
     }
 
     public StockBatchJobRunResponse run(LightweightBatchTask task) {
-        BatchExecutionDescriptor execution = new BatchExecutionDescriptor(task.taskName(), task.executionMode());
-        return enter(execution, () -> runLightweightEntered(task, execution));
+        return runLightweight(task, null);
+    }
+
+    public StockBatchJobRunResponse run(LightweightBatchTask task, long closeCycleId) {
+        if (closeCycleId <= 0) {
+            throw new IllegalArgumentException("closeCycleId must be positive");
+        }
+        return runLightweight(task, closeCycleId);
+    }
+
+    private StockBatchJobRunResponse runLightweight(LightweightBatchTask task, Long closeCycleId) {
+        return withCycleLogContext(closeCycleId, () -> {
+            BatchExecutionDescriptor execution = new BatchExecutionDescriptor(task.taskName(), task.executionMode());
+            return enter(execution, () -> runLightweightEntered(task, execution, closeCycleId));
+        });
     }
 
     public StockBatchJobRunResponse run(Job job, String executionMode, JobParameters parameters) {
-        BatchExecutionDescriptor execution = new BatchExecutionDescriptor(job.getName(), executionMode);
-        return enter(execution, () -> runNativeEntered(job, parameters, execution));
+        Long closeCycleId = parameters.getLong(StockBatchJobParameters.CYCLE_ID);
+        return withCycleLogContext(closeCycleId, () -> {
+            BatchExecutionDescriptor execution = new BatchExecutionDescriptor(job.getName(), executionMode);
+            return enter(execution, () -> runNativeEntered(job, parameters, execution));
+        });
     }
 
     public boolean hasActiveJobs() {
@@ -130,13 +179,20 @@ public class StockBatchJobRunner implements SmartLifecycle {
 
     private StockBatchJobRunResponse runLightweightEntered(
             LightweightBatchTask task,
-            BatchExecutionDescriptor execution
+            BatchExecutionDescriptor execution,
+            Long closeCycleId
     ) {
         LocalDateTime startedAt = LocalDateTime.now();
-        if (!task.requiresJobLock()) {
-            return executeLightweight(task, execution, startedAt);
+        if (!task.requiresJobLock() && closeCycleId == null) {
+            return executeLightweight(task, execution, startedAt, null);
         }
-        return executeWithJobLock(execution, startedAt, () -> executeLightweight(task, execution, startedAt));
+        return executeWithJobLock(
+                execution,
+                startedAt,
+                closeCycleId,
+                closeCycleId != null,
+                () -> executeLightweight(task, execution, startedAt, closeCycleId)
+        );
     }
 
     private StockBatchJobRunResponse runNativeEntered(
@@ -145,18 +201,64 @@ public class StockBatchJobRunner implements SmartLifecycle {
             BatchExecutionDescriptor execution
     ) {
         LocalDateTime startedAt = LocalDateTime.now();
-        return executeWithJobLock(execution, startedAt, () -> executeNative(job, parameters, execution, startedAt));
+        return executeWithJobLock(
+                execution,
+                startedAt,
+                parameters.getLong(StockBatchJobParameters.CYCLE_ID),
+                true,
+                () -> executeNative(job, parameters, execution, startedAt)
+        );
     }
 
     private StockBatchJobRunResponse executeWithJobLock(
             BatchExecutionDescriptor execution,
             LocalDateTime startedAt,
+            Long closeCycleId,
+            boolean requiresHeavyAdmission,
             ExecutionSupplier action
     ) {
+        boolean admissionAcquired = false;
+        String admissionLockOwner = null;
+        if (requiresHeavyAdmission) {
+            admissionLockOwner = batchJobLockRegistry.newAcquisitionOwner();
+            try {
+                admissionAcquired = batchJobLockRegistry.tryAcquire(
+                        HEAVY_ADMISSION_LOCK_NAME,
+                        startedAt,
+                        admissionLockOwner
+                );
+            } catch (RuntimeException ex) {
+                LocalDateTime endedAt = LocalDateTime.now();
+                log.warn(
+                        "Stock batch heavy admission lock acquisition failed: job={}, mode={}, reason={}",
+                        execution.jobName(),
+                        execution.executionMode(),
+                        ex.getMessage(),
+                        ex
+                );
+                return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
+            }
+            if (!admissionAcquired) {
+                LocalDateTime endedAt = LocalDateTime.now();
+                log.info(
+                        "Stock batch execution deferred because another heavy maintenance job is running: job={}, mode={}",
+                        execution.jobName(),
+                        execution.executionMode()
+                );
+                return StockBatchJobRunResponses.alreadyRunning(execution, startedAt, endedAt);
+            }
+        }
+
+        String jobLockOwner = batchJobLockRegistry.newAcquisitionOwner();
         boolean lockAcquired;
         try {
-            lockAcquired = batchJobLockRegistry.tryAcquire(execution.jobName(), startedAt);
+            lockAcquired = batchJobLockRegistry.tryAcquire(
+                    execution.jobName(),
+                    startedAt,
+                    jobLockOwner
+            );
         } catch (RuntimeException ex) {
+            releaseHeavyAdmissionIfHeld(admissionAcquired, admissionLockOwner, execution);
             LocalDateTime endedAt = LocalDateTime.now();
             log.warn(
                     "Stock batch job lock acquisition failed: job={}, mode={}, reason={}",
@@ -168,14 +270,51 @@ public class StockBatchJobRunner implements SmartLifecycle {
             return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
         }
         if (!lockAcquired) {
+            releaseHeavyAdmissionIfHeld(admissionAcquired, admissionLockOwner, execution);
             LocalDateTime endedAt = LocalDateTime.now();
             return StockBatchJobRunResponses.alreadyRunning(execution, startedAt, endedAt);
         }
 
         AtomicReference<RuntimeException> heartbeatFailure = new AtomicReference<>();
-        ScheduledFuture<?> heartbeatFuture = lockHeartbeat.start(execution, heartbeatFailure);
+        String admissionLockName = admissionAcquired ? HEAVY_ADMISSION_LOCK_NAME : null;
+        ScheduledFuture<?> heartbeatFuture;
+        try {
+            heartbeatFuture = lockHeartbeat.start(
+                    execution,
+                    jobLockOwner,
+                    closeCycleId,
+                    admissionLockName,
+                    admissionLockOwner,
+                    heartbeatFailure
+            );
+        } catch (RuntimeException ex) {
+            lockHeartbeat.release(
+                    execution,
+                    jobLockOwner,
+                    admissionLockName,
+                    admissionLockOwner
+            );
+            LocalDateTime endedAt = LocalDateTime.now();
+            log.warn(
+                    "Stock batch job lock heartbeat startup failed: job={}, mode={}, reason={}",
+                    execution.jobName(),
+                    execution.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
+            return StockBatchJobRunResponses.failed(execution, ex, startedAt, endedAt);
+        }
         try {
             StockBatchJobRunResponse response = action.run();
+            heartbeatFuture.cancel(false);
+            lockHeartbeat.verifyOwnership(
+                    execution,
+                    jobLockOwner,
+                    closeCycleId,
+                    admissionLockName,
+                    admissionLockOwner,
+                    heartbeatFailure
+            );
             RuntimeException failure = heartbeatFailure.get();
             if (failure == null) {
                 return response;
@@ -191,18 +330,47 @@ public class StockBatchJobRunner implements SmartLifecycle {
             return StockBatchJobRunResponses.failed(execution, failure, startedAt, endedAt);
         } finally {
             heartbeatFuture.cancel(false);
-            lockHeartbeat.release(execution);
+            lockHeartbeat.release(
+                    execution,
+                    jobLockOwner,
+                    admissionLockName,
+                    admissionLockOwner
+            );
+        }
+    }
+
+    private void releaseHeavyAdmissionIfHeld(
+            boolean admissionAcquired,
+            String admissionLockOwner,
+            BatchExecutionDescriptor execution
+    ) {
+        if (!admissionAcquired) {
+            return;
+        }
+        try {
+            batchJobLockRegistry.release(HEAVY_ADMISSION_LOCK_NAME, admissionLockOwner);
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Stock batch heavy admission lock release failed: job={}, mode={}, reason={}",
+                    execution.jobName(),
+                    execution.executionMode(),
+                    ex.getMessage(),
+                    ex
+            );
         }
     }
 
     private StockBatchJobRunResponse executeLightweight(
             LightweightBatchTask task,
             BatchExecutionDescriptor execution,
-            LocalDateTime startedAt
+            LocalDateTime startedAt,
+            Long closeCycleId
     ) {
         try {
             logStarted(execution, startedAt);
-            int processedCount = task.run();
+            int processedCount = closeCycleId == null
+                    ? task.run()
+                    : task.runForPostCloseCycle(closeCycleId);
             requireNonNegativeProcessedCount(execution, processedCount);
             LocalDateTime endedAt = LocalDateTime.now();
             logCompleted(execution, processedCount, startedAt, endedAt);
@@ -243,7 +411,17 @@ public class StockBatchJobRunner implements SmartLifecycle {
                     .findFirst()
                     .orElseGet(() -> new IllegalStateException(jobExecution.getExitStatus().getExitDescription()));
             logFailure(execution, startedAt, endedAt, failure);
-            return StockBatchJobRunResponses.failed(execution, failure, startedAt, endedAt);
+            // A bounded Spring Batch stage can commit useful work and then fail its final
+            // completeness validation because more rows remain. Preserve the current
+            // JobExecution write count so the EOD coordinator can distinguish forward
+            // progress from a no-progress failure without querying order/execution ledgers.
+            return StockBatchJobRunResponses.failed(
+                    execution,
+                    failure,
+                    processedCount,
+                    startedAt,
+                    endedAt
+            );
         } catch (JobInstanceAlreadyCompleteException ex) {
             LocalDateTime endedAt = LocalDateTime.now();
             return StockBatchJobRunResponses.alreadyComplete(execution, startedAt, endedAt);
@@ -378,6 +556,26 @@ public class StockBatchJobRunner implements SmartLifecycle {
 
     private long elapsedMillis(LocalDateTime startedAt, LocalDateTime endedAt) {
         return Math.max(0, Duration.between(startedAt, endedAt).toMillis());
+    }
+
+    private StockBatchJobRunResponse withCycleLogContext(
+            Long closeCycleId,
+            ExecutionSupplier executionSupplier
+    ) {
+        if (closeCycleId == null) {
+            return executionSupplier.run();
+        }
+        String previousCycleId = MDC.get(CYCLE_MDC_KEY);
+        MDC.put(CYCLE_MDC_KEY, Long.toString(closeCycleId));
+        try {
+            return executionSupplier.run();
+        } finally {
+            if (previousCycleId == null) {
+                MDC.remove(CYCLE_MDC_KEY);
+            } else {
+                MDC.put(CYCLE_MDC_KEY, previousCycleId);
+            }
+        }
     }
 
     private void requireNonNegativeProcessedCount(BatchExecutionDescriptor execution, int processedCount) {

@@ -1,5 +1,6 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -9,20 +10,23 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.AutoParticipantCashDeposit;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 import stock.batch.service.batch.automarket.reader.AutoParticipantCashFlowReader;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
@@ -35,6 +39,7 @@ public class AutoParticipantCashFlowService {
     private static final String AUTO_PARTICIPANT_RECURRING_DEPOSIT_REASON = "AUTO_PARTICIPANT_RECURRING_DEPOSIT";
     private static final String AUTO_MARKET_CREATED_BY = "AUTO_MARKET";
     private static final String MANUAL_CREATED_BY = "AUTO_MARKET_MANUAL";
+    private static final int MAX_ACCOUNT_CHUNK_SIZE = 1_000;
     private static final Set<String> RECURRING_CASH_CREATED_BY_VALUES = Set.of(
             AUTO_MARKET_CREATED_BY,
             MANUAL_CREATED_BY
@@ -46,48 +51,148 @@ public class AutoParticipantCashFlowService {
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
+    private final AutoParticipantCashFlowTransactionExecutor transactionExecutor;
+    private final MarketSessionFenceService marketSessionFenceService;
+    private final AutoParticipantCashFlowRunLedger runLedger;
 
-    @Transactional
-    public int fundRecurringCash() {
-        return fundRecurringCash(false);
+    @Value("${stock.batch.auto-participant-cash-flow.account-chunk-size:200}")
+    private int accountChunkSize = 200;
+
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        validateAccountChunkSize(accountChunkSize);
     }
 
-    @Transactional
-    public int fundRecurringCashManually() {
-        return fundRecurringCash(true);
+    int fundRecurringCash() {
+        CashFlowRunResult result = fundRecurringCash(false, null);
+        return result.newlyProcessedCount();
     }
 
-    private int fundRecurringCash(boolean manualRun) {
+    public int fundRecurringCash(String runKey) {
+        CashFlowRunResult result = fundRecurringCash(false, runKey);
+        return Math.toIntExact(result.totalProcessedCount());
+    }
+
+    int fundRecurringCashManually() {
+        CashFlowRunResult result = fundRecurringCash(true, null);
+        return result.newlyProcessedCount();
+    }
+
+    public int fundRecurringCashManually(String runKey) {
+        CashFlowRunResult result = fundRecurringCash(true, runKey);
+        return Math.toIntExact(result.totalProcessedCount());
+    }
+
+    private CashFlowRunResult fundRecurringCash(boolean manualRun, String requestedRunKey) {
         if (simulationMarketSessionService.isRegularSession()) {
-            return 0;
+            return CashFlowRunResult.empty();
         }
+        if (marketSessionFenceService.hasOpenMarket()) {
+            throw new IllegalStateException("Cannot fund recurring cash while any market is open");
+        }
+        marketSessionFenceService.assertMarketLedgerMutationAllowed("auto-participant recurring cash");
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         LocalDateTime now = clock.simulationDateTime();
-        List<RecurringCashCandidate> candidates = recurringCashCandidates(profilePolicies, clock);
-        Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId = loadRecentRecurringCashFlows(candidates);
+        String operation = manualRun ? "MANUAL" : "SCHEDULED";
+        String runKey = requestedRunKey == null
+                ? compatibilityRunKey(operation)
+                : requestedRunKey;
+        AutoParticipantCashFlowRunLedger.RunProgress progress = runLedger.initializeAndRead(runKey, operation);
+        if (progress.completed()) {
+            return new CashFlowRunResult(0, progress.processedCount());
+        }
         int funded = 0;
-
-        for (RecurringCashCandidate candidate : candidates) {
-            if (hasRecentRecurringCashFlow(candidate, recentCashFlowsByAccountId)) {
+        int chunkSize = validateAccountChunkSize(accountChunkSize);
+        long afterAccountId = progress.lastAccountId();
+        while (true) {
+            List<AutoParticipantRecurringCashTarget> targets =
+                    autoParticipantCashFlowReader.findRecurringCashTargetChunk(afterAccountId, chunkSize);
+            if (targets.isEmpty()) {
+                long completedAfterAccountId = afterAccountId;
+                transactionExecutor.execute(() -> {
+                    AutoParticipantCashFlowRunLedger.RunProgress locked = runLedger.lock(runKey);
+                    requireRunCursor(runKey, completedAfterAccountId, locked);
+                    runLedger.complete(runKey, completedAfterAccountId);
+                    return 0;
+                });
+                break;
+            }
+            List<RecurringCashCandidate> chunk = recurringCashCandidates(profilePolicies, clock, targets);
+            Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId =
+                    loadRecentRecurringCashFlows(chunk);
+            long expectedAfterAccountId = afterAccountId;
+            long nextAfterAccountId = targets.getLast().accountId();
+            funded += transactionExecutor.execute(() -> {
+                AutoParticipantCashFlowRunLedger.RunProgress locked = runLedger.lock(runKey);
+                requireRunCursor(runKey, expectedAfterAccountId, locked);
+                int chunkFunded = fundRecurringCashChunk(
+                        chunk,
+                        recentCashFlowsByAccountId,
+                        manualRun,
+                        now
+                );
+                runLedger.advance(runKey, expectedAfterAccountId, nextAfterAccountId, chunkFunded);
+                return chunkFunded;
+            });
+            afterAccountId = nextAfterAccountId;
+            if (targets.size() < chunkSize) {
                 continue;
             }
-            String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
-            autoMarketWriter.depositCashFlow(candidate.accountId(), candidate.policy().amount(), candidate.policy().reason(), createdBy, now);
-            funded++;
         }
+        AutoParticipantCashFlowRunLedger.RunProgress completed = runLedger.initializeAndRead(runKey, operation);
+        return new CashFlowRunResult(funded, completed.processedCount());
+    }
 
-        return funded;
+    private void requireRunCursor(
+            String runKey,
+            long expectedLastAccountId,
+            AutoParticipantCashFlowRunLedger.RunProgress progress
+    ) {
+        if (progress.completed() || progress.lastAccountId() != expectedLastAccountId) {
+            throw new IllegalStateException(
+                    "Recurring cash run cursor changed during execution: runKey=%s, expected=%d, actual=%d, completed=%s"
+                            .formatted(
+                                    runKey,
+                                    expectedLastAccountId,
+                                    progress.lastAccountId(),
+                                    progress.completed()
+                            )
+            );
+        }
+    }
+
+    private String compatibilityRunKey(String operation) {
+        return "COMPATIBILITY:" + operation + ":" + UUID.randomUUID();
+    }
+
+    private int fundRecurringCashChunk(
+            List<RecurringCashCandidate> candidates,
+            Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId,
+            boolean manualRun,
+            LocalDateTime now
+    ) {
+        String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
+        List<AutoParticipantCashDeposit> deposits = candidates.stream()
+                .filter(candidate -> !hasRecentRecurringCashFlow(candidate, recentCashFlowsByAccountId))
+                .map(candidate -> new AutoParticipantCashDeposit(
+                        candidate.accountId(),
+                        candidate.policy().amount(),
+                        candidate.policy().reason()
+                ))
+                .toList();
+        return autoMarketWriter.depositCashFlowChunk(deposits, createdBy, now);
     }
 
     private List<RecurringCashCandidate> recurringCashCandidates(
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
-            SimulationClockSnapshot clock
+            SimulationClockSnapshot clock,
+            List<AutoParticipantRecurringCashTarget> targets
     ) {
         Set<Long> candidateAccountIds = new HashSet<>();
         List<RecurringCashCandidate> candidates = new ArrayList<>();
 
-        for (AutoParticipantRecurringCashTarget target : autoParticipantCashFlowReader.findRecurringCashTargets()) {
+        for (AutoParticipantRecurringCashTarget target : targets) {
             if (!candidateAccountIds.add(target.accountId())) {
                 continue;
             }
@@ -213,6 +318,16 @@ public class AutoParticipantCashFlowService {
         return autoProfileBehaviorSupport.policiesWithOverrides(autoMarketReader.findParticipantProfileConfigs());
     }
 
+    static int validateAccountChunkSize(int chunkSize) {
+        if (chunkSize < 1 || chunkSize > MAX_ACCOUNT_CHUNK_SIZE) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-participant-cash-flow.account-chunk-size must be between 1 and %d: %d"
+                            .formatted(MAX_ACCOUNT_CHUNK_SIZE, chunkSize)
+            );
+        }
+        return chunkSize;
+    }
+
     private record RecurringCashPolicy(
             BigDecimal amount,
             String reason,
@@ -224,5 +339,15 @@ public class AutoParticipantCashFlowService {
             long accountId,
             RecurringCashPolicy policy
     ) {
+    }
+
+    private record CashFlowRunResult(
+            int newlyProcessedCount,
+            long totalProcessedCount
+    ) {
+
+        private static CashFlowRunResult empty() {
+            return new CashFlowRunResult(0, 0);
+        }
     }
 }

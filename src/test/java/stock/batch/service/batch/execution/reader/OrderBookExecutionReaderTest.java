@@ -89,7 +89,7 @@ class OrderBookExecutionReaderTest {
         insertOrder(5L, 50L, "STOCK003", "BUY", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 5);
         insertOrder(6L, 60L, "STOCK003", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 6);
 
-        List<String> symbols = reader.findExecutableSymbols();
+        List<String> symbols = reader.findExecutableSymbolCandidates(10);
 
         assertThat(symbols).containsExactly("STOCK001");
     }

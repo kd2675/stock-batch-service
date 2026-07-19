@@ -6,13 +6,18 @@ import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
+import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
+import stock.batch.service.batch.execution.job.ExecutionAccountDaySummaryFlushJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
+import stock.batch.service.batch.marketclose.job.MarketOpenReadinessJob;
 import stock.batch.service.batch.marketdata.job.MarketDataRefreshJob;
+import stock.batch.service.batch.metadata.job.BatchMetadataRetentionJob;
+import stock.batch.service.batch.report.job.PostCloseReportAggregationJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
 import stock.batch.service.common.vo.BatchJobRuntimeStatusResponse;
 
@@ -40,7 +45,10 @@ public class BatchJobRuntimeCatalog {
             @Value("${stock.batch.auto-participant-cash-flow.enabled:true}") boolean autoParticipantCashFlowConfigured,
             @Value("${stock.batch.market-close.enabled:true}") boolean marketCloseConfigured,
             @Value("${stock.batch.settlement.enabled:true}") boolean settlementConfigured,
-            @Value("${stock.batch.holding-cleanup.enabled:true}") boolean holdingCleanupConfigured
+            @Value("${stock.batch.post-close.report-aggregation.enabled:true}") boolean postCloseReportAggregationConfigured,
+            @Value("${stock.batch.post-close.readiness.enabled:true}") boolean marketOpenReadinessConfigured,
+            @Value("${stock.batch.holding-cleanup.enabled:true}") boolean holdingCleanupConfigured,
+            @Value("${stock.batch.metadata-retention.enabled:false}") boolean metadataRetentionConfigured
     ) {
         this.batchJobRuntimeControl = batchJobRuntimeControl;
         this.definitions = createDefinitions(
@@ -55,7 +63,10 @@ public class BatchJobRuntimeCatalog {
                 autoParticipantCashFlowConfigured,
                 marketCloseConfigured,
                 settlementConfigured,
-                holdingCleanupConfigured
+                postCloseReportAggregationConfigured,
+                marketOpenReadinessConfigured,
+                holdingCleanupConfigured,
+                metadataRetentionConfigured
         );
     }
 
@@ -118,21 +129,29 @@ public class BatchJobRuntimeCatalog {
             boolean autoParticipantCashFlowConfigured,
             boolean marketCloseConfigured,
             boolean settlementConfigured,
-            boolean holdingCleanupConfigured
+            boolean postCloseReportAggregationConfigured,
+            boolean marketOpenReadinessConfigured,
+            boolean holdingCleanupConfigured,
+            boolean metadataRetentionConfigured
     ) {
         Map<String, RuntimeDefinition> createdDefinitions = new LinkedHashMap<>();
         put(createdDefinitions, MarketDataRefreshJob.JOB_NAME, marketDataConfigured);
         put(createdDefinitions, OrderBookExecutionJob.JOB_NAME, orderBookExecutionConfigured);
+        put(createdDefinitions, ExecutionAccountDaySummaryFlushJob.JOB_NAME, orderBookExecutionConfigured);
         put(createdDefinitions, CorporateActionJob.JOB_NAME, corporateActionsConfigured);
         put(createdDefinitions, AutoMarketJob.JOB_NAME, autoMarketConfigured);
         put(createdDefinitions, AutoMarketDailyRegimePreCreateJob.JOB_NAME, autoMarketDailyRegimeConfigured);
         put(createdDefinitions, AutoMarketProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
+        put(createdDefinitions, AutoMarketPreOpenProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
         put(createdDefinitions, AutoMarketOrderExpiryJob.JOB_NAME, autoMarketOrderExpiryConfigured);
         put(createdDefinitions, ListingAutoMarketJob.JOB_NAME, listingAutoMarketConfigured);
         put(createdDefinitions, AutoParticipantCashFlowJob.JOB_NAME, autoParticipantCashFlowConfigured);
         put(createdDefinitions, MarketCloseRolloverJob.JOB_NAME, marketCloseConfigured);
         put(createdDefinitions, PortfolioSettlementJob.JOB_NAME, settlementConfigured);
+        put(createdDefinitions, PostCloseReportAggregationJob.JOB_NAME, postCloseReportAggregationConfigured);
+        put(createdDefinitions, MarketOpenReadinessJob.JOB_NAME, marketOpenReadinessConfigured);
         put(createdDefinitions, HoldingCleanupJob.JOB_NAME, holdingCleanupConfigured);
+        put(createdDefinitions, BatchMetadataRetentionJob.JOB_NAME, metadataRetentionConfigured);
         return Collections.unmodifiableMap(createdDefinitions);
     }
 

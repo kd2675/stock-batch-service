@@ -27,12 +27,10 @@ public class BatchJobRuntimeControl {
         this.jdbcClient = JdbcClient.create(jdbcTemplate);
     }
 
-    @Transactional
     public boolean shouldRunScheduledJob(String jobName, boolean schedulerConfigured) {
         return status(jobName, schedulerConfigured).effectiveEnabled();
     }
 
-    @Transactional
     public BatchJobRuntimeStatus status(String jobName, boolean schedulerConfigured) {
         ControlRow controlRow = findOrCreateControlRow(jobName);
         if (controlRow.schedulerConfigured() != schedulerConfigured) {

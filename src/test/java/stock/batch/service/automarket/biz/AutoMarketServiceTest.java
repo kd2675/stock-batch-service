@@ -11,6 +11,7 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
 import stock.batch.service.batch.automarket.model.AutoMarketPressure;
@@ -24,6 +25,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -40,6 +42,9 @@ class AutoMarketServiceTest {
 
     @Autowired
     private AutoMarketDailyRegimePreCreateService autoMarketDailyRegimePreCreateService;
+
+    @Autowired
+    private AutoMarketReadyProfileQueue autoMarketReadyProfileQueue;
 
     @Autowired
     private ListingAutoMarketJobService listingAutoMarketJobService;
@@ -62,6 +67,7 @@ class AutoMarketServiceTest {
     @BeforeEach
     void setUp() {
         jdbcTemplate.update("delete from stock_execution");
+        jdbcTemplate.update("delete from stock_auto_participant_cash_flow_run");
         jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_auto_participant_order_schedule");
@@ -80,6 +86,8 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_market_config");
         jdbcTemplate.update("delete from stock_auto_participant_profile_config");
         jdbcTemplate.update("delete from stock_auto_participant");
+        jdbcTemplate.update("delete from stock_market_session_fence");
+        jdbcTemplate.update("delete from stock_market_business_state");
         jdbcTemplate.update("delete from stock_simulation_clock");
         insertSimulationClock(7200);
 
@@ -99,6 +107,23 @@ class AutoMarketServiceTest {
                 """
                 insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
                 values ('005930', true, 'OPEN', current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_market_business_state(
+                    state_id, active_business_date, preparing_business_date, raw_simulation_date,
+                    version, created_at, updated_at
+                ) values ('DEFAULT', DATE '2026-01-01', null, DATE '2026-01-01', 0, current_timestamp, current_timestamp)
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_market_session_fence(
+                    market_type, symbol, business_date, session_epoch, session_state,
+                    state_changed_at, version, created_at, updated_at
+                ) values ('ORDER_BOOK', '005930', DATE '2026-01-01', 1, 'OPEN',
+                          current_timestamp, 0, current_timestamp, current_timestamp)
                 """
         );
         jdbcTemplate.update(
@@ -130,7 +155,7 @@ class AutoMarketServiceTest {
 
     @Test
     void runAutoMarketStep_enabledConfigWithoutAccounts_doesNotCreateAccountsOrOrders() {
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("select count(*) from stock_account where user_key like 'stock-auto-%'"))
                 .isZero();
@@ -144,7 +169,7 @@ class AutoMarketServiceTest {
     void runAutoMarketStep_createsStableDailyRegimeForSimulationDay() {
         jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
 
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(1L);
@@ -152,7 +177,7 @@ class AutoMarketServiceTest {
         Long firstPricePressure = queryLong("select price_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'");
         Long firstAssetPressure = queryLong("select asset_preference_pressure from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'");
 
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01' and regime_phase = 'SLOT_0900'"))
                 .isEqualTo(1L);
@@ -168,7 +193,7 @@ class AutoMarketServiceTest {
     void runAutoMarketStep_createsStableThirtyMinuteRegimeModifier() {
         jdbcTemplate.update("delete from stock_order_book_regime_modifier where symbol = '005930'");
 
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("""
                 select count(*)
@@ -188,7 +213,7 @@ class AutoMarketServiceTest {
                   and modifier_window_start_at = TIMESTAMP '2026-01-01 09:00:00'
                 """);
 
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("""
                 select seed
@@ -201,7 +226,7 @@ class AutoMarketServiceTest {
                 .isEqualTo(firstSeed);
 
         insertSimulationClockAtSecondOfDay(7200, 9 * 3600 + 35 * 60);
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("""
                 select count(*)
@@ -226,9 +251,9 @@ class AutoMarketServiceTest {
     void runAutoMarketStep_afterMidSession_createsSeparateMiddayRegime() {
         jdbcTemplate.update("delete from stock_order_book_daily_regime where symbol = '005930'");
 
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
         insertSimulationClockAtSecondOfDay(7200, 12 * 3600 + 5 * 60);
-        runAutoMarketStep();
+        runAutoMarketStepWithDueProfile();
 
         assertThat(queryLong("select count(*) from stock_order_book_daily_regime where symbol = '005930' and simulation_trade_date = DATE '2026-01-01'"))
                 .isEqualTo(2L);
@@ -537,6 +562,49 @@ class AutoMarketServiceTest {
     }
 
     @Test
+    void participantOrderSchedule_activeLease_requeuesAtLeaseExpiryInsteadOfOneSecondRetry() {
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+        LocalDateTime leaseUntil = now.plusMinutes(2);
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_order_schedule(
+                    user_key, profile_type, next_run_at, last_run_at,
+                    lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                )
+                values ('stock-auto-001', 'NOISE_TRADER', ?, null, ?, 'other-worker', 10, 50, current_timestamp, current_timestamp)
+                """,
+                now.minusMinutes(1),
+                leaseUntil
+        );
+
+        List<AutoMarketReadyProfileQueue.ReadyProfile> schedules =
+                autoParticipantOrderScheduleService.findNextProfileSchedules(
+                        List.of(AutoParticipantProfileType.NOISE_TRADER),
+                        now.plusSeconds(1)
+                );
+
+        assertThat(schedules).containsExactly(new AutoMarketReadyProfileQueue.ReadyProfile(
+                AutoParticipantProfileType.NOISE_TRADER,
+                leaseUntil
+        ));
+    }
+
+    @Test
+    void participantOrderSchedule_missingProfile_doesNotCreateFallbackQueueEntry() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+
+        List<AutoMarketReadyProfileQueue.ReadyProfile> schedules =
+                autoParticipantOrderScheduleService.findNextProfileSchedules(
+                        List.of(AutoParticipantProfileType.SCALPER),
+                        now.plusSeconds(1)
+                );
+
+        assertThat(schedules).isEmpty();
+    }
+
+    @Test
     void runAutoMarketStep_doesNotGrantIssuedSharesAsAutoHoldings() {
         jdbcTemplate.update("update stock_order_book_instrument set issued_shares = 150, tradable_shares = 150 where symbol = '005930'");
 
@@ -570,7 +638,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void reserveBuyCash_closedAccount_returnsFalseWithoutDebiting() {
+    void reserveBuyCashChunk_closedAccount_rejectsWithoutDebiting() {
         jdbcTemplate.update(
                 """
                 insert into stock_account(user_key, cash_balance, status, created_at, updated_at)
@@ -579,15 +647,19 @@ class AutoMarketServiceTest {
         );
         Long accountId = queryLong("select id from stock_account where user_key = 'closed-auto-buyer'");
 
-        boolean reserved = autoMarketWriter.reserveBuyCash(accountId, new BigDecimal("1000.00"), LocalDateTime.now());
+        assertThatThrownBy(() -> autoMarketWriter.reserveBuyCashChunk(
+                java.util.Map.of(accountId, new BigDecimal("1000.00")),
+                LocalDateTime.now()
+        ))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("auto-order buy reservation count mismatch");
 
-        assertThat(reserved).isFalse();
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'closed-auto-buyer'"))
                 .isEqualByComparingTo(new BigDecimal("100000.00"));
     }
 
     @Test
-    void reserveSellQuantity_insufficientAvailableQuantity_returnsFalseWithoutReserving() {
+    void reserveSellQuantityChunk_insufficientAvailableQuantity_rejectsWithoutReserving() {
         jdbcTemplate.update(
                 """
                 insert into stock_account(user_key, cash_balance, status, created_at, updated_at)
@@ -604,9 +676,15 @@ class AutoMarketServiceTest {
         );
         Long accountId = queryLong("select id from stock_account where user_key = 'limited-auto-seller'");
 
-        boolean reserved = autoMarketWriter.reserveSellQuantity(accountId, "005930", 3, LocalDateTime.now());
+        AutoMarketWriter.HoldingReservationKey key =
+                new AutoMarketWriter.HoldingReservationKey(accountId, "005930");
+        assertThatThrownBy(() -> autoMarketWriter.reserveSellQuantityChunk(
+                java.util.Map.of(key, 3L),
+                LocalDateTime.now()
+        ))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("auto-order sell reservation count mismatch");
 
-        assertThat(reserved).isFalse();
         assertThat(queryLong("select reserved_quantity from stock_holding where account_id = " + accountId + " and symbol = '005930'"))
                 .isZero();
     }
@@ -1924,6 +2002,14 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
         insertFundedAutoAccount("stock-auto-002", "50000000.00");
+        jdbcTemplate.update(
+                """
+                insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
+                select id, '005930', 10, 0, 70000.00, current_timestamp
+                  from stock_account
+                 where user_key in ('stock-auto-001', 'stock-auto-002')
+                """
+        );
 
         runAutoMarketStep();
 
@@ -2917,6 +3003,7 @@ class AutoMarketServiceTest {
                 values ('000660', true, 1, 15, current_timestamp)
                 """
         );
+        insertOpenSessionFence("000660");
         insertDailyRegime("000660", "UP", "STOCK", 10, 5, 5, 2001L);
     }
 
@@ -2945,7 +3032,21 @@ class AutoMarketServiceTest {
                 values ('999999', true, 1, 15, current_timestamp)
                 """
         );
+        insertOpenSessionFence("999999");
         insertDailyRegime("999999", "UP", "STOCK", 10, 5, 5, 3001L);
+    }
+
+    private void insertOpenSessionFence(String symbol) {
+        jdbcTemplate.update(
+                """
+                insert into stock_market_session_fence(
+                    market_type, symbol, business_date, session_epoch, session_state,
+                    state_changed_at, version, created_at, updated_at
+                ) values ('ORDER_BOOK', ?, DATE '2026-01-01', 1, 'OPEN',
+                          current_timestamp, 0, current_timestamp, current_timestamp)
+                """,
+                symbol
+        );
     }
 
     private void insertDailyRegime(
@@ -3099,10 +3200,14 @@ class AutoMarketServiceTest {
 
     private void insertSimulationClock(int realSecondsPerSimulationDay) {
         insertSimulationClockAtSecondOfDay(realSecondsPerSimulationDay, 9 * 3600);
+        jdbcTemplate.update("update stock_order_book_market_config set market_status = 'OPEN'");
+        jdbcTemplate.update("update stock_market_session_fence set session_state = 'OPEN'");
     }
 
     private void insertAfterCloseSimulationClock() {
         insertSimulationClockAtSecondOfDay(7200, 18 * 3600 + 30 * 60);
+        jdbcTemplate.update("update stock_order_book_market_config set market_status = 'CLOSED'");
+        jdbcTemplate.update("update stock_market_session_fence set session_state = 'CLOSED'");
     }
 
     private void insertSimulationClockAtSecondOfDay(int realSecondsPerSimulationDay, int simulationSecondOfDay) {
@@ -3130,6 +3235,12 @@ class AutoMarketServiceTest {
 
     private int runAutoMarketStep() {
         autoMarketProfileQueueReconcileService.reconcileReadyProfiles();
+        return autoMarketService.runAutoMarketStep();
+    }
+
+    private int runAutoMarketStepWithDueProfile() {
+        autoMarketProfileQueueReconcileService.reconcileReadyProfiles();
+        autoMarketReadyProfileQueue.enqueue(AutoParticipantProfileType.NOISE_TRADER, LocalDateTime.MIN);
         return autoMarketService.runAutoMarketStep();
     }
 }

@@ -2,29 +2,36 @@ package stock.batch.service.batch.common.support;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
+import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.step.StepExecution;
 
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
+import stock.batch.service.marketclose.biz.PostCloseCycleService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -32,17 +39,38 @@ import static org.mockito.Mockito.when;
 
 class StockBatchJobRunnerTest {
 
+    private static final String EXECUTION_LOCK_OWNER = "test-execution-owner";
+
     private final BatchJobLockRegistry batchJobLockRegistry = mock(BatchJobLockRegistry.class);
     private final JobOperator jobOperator = mock(JobOperator.class);
     private final StockBatchStaleExecutionRecovery staleExecutionRecovery =
             mock(StockBatchStaleExecutionRecovery.class);
+    private final PostCloseCycleService postCloseCycleService = mock(PostCloseCycleService.class);
     private final ScheduledExecutorService lockHeartbeatExecutor = mock(ScheduledExecutorService.class);
     @SuppressWarnings("unchecked")
     private final ScheduledFuture<Object> lockHeartbeatFuture = mock(ScheduledFuture.class);
 
     @BeforeEach
     void setUp() throws InterruptedException {
+        MDC.remove(StockBatchJobRunner.CYCLE_MDC_KEY);
         when(batchJobLockRegistry.lockTtlSeconds()).thenReturn(60L);
+        when(batchJobLockRegistry.newAcquisitionOwner()).thenReturn(EXECUTION_LOCK_OWNER);
+        when(batchJobLockRegistry.tryAcquire(
+                anyString(),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        )).thenReturn(true);
+        when(batchJobLockRegistry.renew(
+                anyString(),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        )).thenReturn(true);
+        when(batchJobLockRegistry.tryAcquire(
+                eq(StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME),
+                any(LocalDateTime.class)
+        )).thenReturn(true);
+        when(batchJobLockRegistry.renew(any(), any(LocalDateTime.class))).thenReturn(true);
+        when(postCloseCycleService.leaseSeconds()).thenReturn(180L);
         doReturn(lockHeartbeatFuture).when(lockHeartbeatExecutor).scheduleWithFixedDelay(
                 any(Runnable.class),
                 eq(30L),
@@ -74,7 +102,7 @@ class StockBatchJobRunnerTest {
         var response = runner().run(task);
 
         assertThat(response.status()).isEqualTo("COMPLETED");
-        verify(batchJobLockRegistry).release(task.taskName());
+        verify(batchJobLockRegistry).release(task.taskName(), EXECUTION_LOCK_OWNER);
         verify(lockHeartbeatExecutor).scheduleWithFixedDelay(
                 any(Runnable.class),
                 eq(30L),
@@ -103,7 +131,11 @@ class StockBatchJobRunnerTest {
         assertThat(response.processedCount()).isEqualTo(250);
         verify(jobOperator).start(job, parameters);
         verify(staleExecutionRecovery).recover(eq("portfolio-settlement"), any(LocalDateTime.class));
-        verify(batchJobLockRegistry).release("portfolio-settlement");
+        verify(batchJobLockRegistry).release("portfolio-settlement", EXECUTION_LOCK_OWNER);
+        verify(batchJobLockRegistry).release(
+                StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME,
+                EXECUTION_LOCK_OWNER
+        );
     }
 
     @Test
@@ -126,7 +158,11 @@ class StockBatchJobRunnerTest {
         Job job = mock(Job.class);
         JobParameters parameters = new JobParameters();
         when(job.getName()).thenReturn("corporate-actions");
-        when(batchJobLockRegistry.tryAcquire(eq("corporate-actions"), any(LocalDateTime.class))).thenReturn(false);
+        when(batchJobLockRegistry.tryAcquire(
+                eq("corporate-actions"),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        )).thenReturn(false);
 
         var response = runner().run(job, "order-book", parameters);
 
@@ -134,6 +170,119 @@ class StockBatchJobRunnerTest {
         assertThat(response.message()).isEqualTo("Job is already running");
         verify(jobOperator, never()).start(any(Job.class), any(JobParameters.class));
         verify(staleExecutionRecovery, never()).recover(any(), any());
+    }
+
+    @Test
+    void run_nativeJobHeavyAdmissionHeld_skipsBeforeJobLockAndMetadataCreation() throws Exception {
+        Job job = mock(Job.class);
+        JobParameters parameters = new JobParameters();
+        when(job.getName()).thenReturn("portfolio-settlement");
+        when(batchJobLockRegistry.tryAcquire(
+                eq(StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        )).thenReturn(false);
+
+        var response = runner().run(job, "portfolio-snapshot", parameters);
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        verify(batchJobLockRegistry, never()).tryAcquire(
+                eq("portfolio-settlement"),
+                any(LocalDateTime.class),
+                anyString()
+        );
+        verify(jobOperator, never()).start(any(Job.class), any(JobParameters.class));
+        verify(staleExecutionRecovery, never()).recover(any(), any());
+    }
+
+    @Test
+    void run_nativeJobHeartbeatStartupFails_releasesJobAndAdmissionLocksBeforeWorkStarts() throws Exception {
+        Job job = mock(Job.class);
+        JobParameters parameters = new JobParameters();
+        when(job.getName()).thenReturn("portfolio-settlement");
+        when(batchJobLockRegistry.tryAcquire(eq("portfolio-settlement"), any(LocalDateTime.class))).thenReturn(true);
+        doThrow(new RejectedExecutionException("heartbeat executor stopped"))
+                .when(lockHeartbeatExecutor)
+                .scheduleWithFixedDelay(
+                        any(Runnable.class),
+                        eq(30L),
+                        eq(30L),
+                        eq(TimeUnit.SECONDS)
+                );
+
+        var response = runner().run(job, "portfolio-snapshot", parameters);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.message()).contains("heartbeat executor stopped");
+        verify(batchJobLockRegistry).release("portfolio-settlement", EXECUTION_LOCK_OWNER);
+        verify(batchJobLockRegistry).release(
+                StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME,
+                EXECUTION_LOCK_OWNER
+        );
+        verify(jobOperator, never()).start(any(Job.class), any(JobParameters.class));
+    }
+
+    @Test
+    void run_nativePostCloseJob_heartbeatRenewsJobAndCycleLeases() throws Exception {
+        Job job = mock(Job.class);
+        JobParameters parameters = new JobParametersBuilder()
+                .addLong(StockBatchJobParameters.CYCLE_ID, 77L)
+                .toJobParameters();
+        JobExecution jobExecution = mock(JobExecution.class);
+        StepExecution stepExecution = mock(StepExecution.class);
+        when(job.getName()).thenReturn("corporate-actions");
+        when(batchJobLockRegistry.tryAcquire(eq("corporate-actions"), any(LocalDateTime.class))).thenReturn(true);
+        when(batchJobLockRegistry.renew(eq("corporate-actions"), any(LocalDateTime.class))).thenReturn(true);
+        when(jobOperator.start(job, parameters)).thenReturn(jobExecution);
+        when(jobExecution.getStatus()).thenReturn(BatchStatus.COMPLETED);
+        when(jobExecution.getEndTime()).thenReturn(LocalDateTime.now());
+        when(jobExecution.getStepExecutions()).thenReturn(List.of(stepExecution));
+
+        cycleAwareRunner().run(job, "corporate-cash", parameters);
+        var heartbeatCaptor = org.mockito.ArgumentCaptor.forClass(Runnable.class);
+        verify(lockHeartbeatExecutor).scheduleWithFixedDelay(
+                heartbeatCaptor.capture(),
+                eq(30L),
+                eq(30L),
+                eq(TimeUnit.SECONDS)
+        );
+        heartbeatCaptor.getValue().run();
+
+        verify(postCloseCycleService, atLeastOnce()).renewOwnedRunningLease(eq(77L), any(LocalDateTime.class));
+        verify(batchJobLockRegistry, atLeastOnce()).renew(
+                eq(StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        );
+    }
+
+    @Test
+    void run_lightweightPostCloseTask_heartbeatRenewsJobAndCycleLeases() {
+        TestTask task = new TestTask("market-data-refresh", "n/a", true, 3, null);
+        when(batchJobLockRegistry.tryAcquire(eq(task.taskName()), any(LocalDateTime.class))).thenReturn(true);
+        when(batchJobLockRegistry.renew(eq(task.taskName()), any(LocalDateTime.class))).thenReturn(true);
+
+        var response = cycleAwareRunner().run(task, 77L);
+        var heartbeatCaptor = org.mockito.ArgumentCaptor.forClass(Runnable.class);
+        verify(lockHeartbeatExecutor).scheduleWithFixedDelay(
+                heartbeatCaptor.capture(),
+                eq(30L),
+                eq(30L),
+                eq(TimeUnit.SECONDS)
+        );
+        heartbeatCaptor.getValue().run();
+
+        assertThat(response.status()).isEqualTo("COMPLETED");
+        assertThat(task.runCount).isZero();
+        assertThat(task.postCloseRunCount).isEqualTo(1);
+        assertThat(task.observedCycleLogContext).isEqualTo("77");
+        assertThat(MDC.get(StockBatchJobRunner.CYCLE_MDC_KEY)).isNull();
+        verify(postCloseCycleService, atLeastOnce()).renewOwnedRunningLease(eq(77L), any(LocalDateTime.class));
+        verify(batchJobLockRegistry, atLeastOnce()).renew(
+                eq(StockBatchJobRunner.HEAVY_ADMISSION_LOCK_NAME),
+                any(LocalDateTime.class),
+                eq(EXECUTION_LOCK_OWNER)
+        );
     }
 
     @Test
@@ -154,6 +303,29 @@ class StockBatchJobRunnerTest {
 
         assertThat(response.status()).isEqualTo("FAILED");
         assertThat(response.message()).contains("stage failed");
+    }
+
+    @Test
+    void run_nativeFailedExecution_preservesCommittedStepWriteCount() throws Exception {
+        Job job = mock(Job.class);
+        JobParameters parameters = new JobParameters();
+        JobExecution jobExecution = mock(JobExecution.class);
+        StepExecution stageExecution = mock(StepExecution.class);
+        when(job.getName()).thenReturn("corporate-actions");
+        when(batchJobLockRegistry.tryAcquire(eq("corporate-actions"), any(LocalDateTime.class))).thenReturn(true);
+        when(jobOperator.start(job, parameters)).thenReturn(jobExecution);
+        when(jobExecution.getStatus()).thenReturn(BatchStatus.FAILED);
+        when(jobExecution.getEndTime()).thenReturn(LocalDateTime.now());
+        when(jobExecution.getStepExecutions()).thenReturn(List.of(stageExecution));
+        when(stageExecution.getWriteCount()).thenReturn(200L);
+        when(jobExecution.getAllFailureExceptions()).thenReturn(List.of());
+        when(jobExecution.getExitStatus()).thenReturn(ExitStatus.FAILED.addExitDescription("more work remains"));
+
+        var response = runner().run(job, "corporate-cash", parameters);
+
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.processedCount()).isEqualTo(200);
+        assertThat(response.message()).contains("more work remains");
     }
 
     @Test
@@ -202,6 +374,18 @@ class StockBatchJobRunnerTest {
         );
     }
 
+    private StockBatchJobRunner cycleAwareRunner() {
+        return new StockBatchJobRunner(
+                batchJobLockRegistry,
+                jobOperator,
+                staleExecutionRecovery,
+                postCloseCycleService,
+                30,
+                60,
+                lockHeartbeatExecutor
+        );
+    }
+
     private static final class TestTask implements LightweightBatchTask {
 
         private final String taskName;
@@ -210,6 +394,8 @@ class StockBatchJobRunnerTest {
         private final int processedCount;
         private final RuntimeException failure;
         private int runCount;
+        private int postCloseRunCount;
+        private String observedCycleLogContext;
 
         private TestTask(
                 String taskName,
@@ -243,6 +429,16 @@ class StockBatchJobRunnerTest {
         @Override
         public int run() {
             runCount++;
+            if (failure != null) {
+                throw failure;
+            }
+            return processedCount;
+        }
+
+        @Override
+        public int runForPostCloseCycle(long closeCycleId) {
+            postCloseRunCount++;
+            observedCycleLogContext = MDC.get(StockBatchJobRunner.CYCLE_MDC_KEY);
             if (failure != null) {
                 throw failure;
             }

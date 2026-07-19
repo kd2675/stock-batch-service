@@ -33,17 +33,19 @@ public class MarketPriceRefreshTargetReader {
                               where obi.symbol = stock_instrument.symbol
                           )
                         union all
-                        select symbol, limit_price as reference_price
+                        select symbol, max(limit_price) as reference_price
                         from stock_order
-                        where status in ('PENDING', 'PARTIALLY_FILLED')
+                        where market_type = 'VIRTUAL_PRICE'
+                          and status in ('PENDING', 'PARTIALLY_FILLED')
                           and limit_price is not null
                           and not exists (
                               select 1
                               from stock_order_book_instrument obi
                               where obi.symbol = stock_order.symbol
                           )
+                        group by symbol
                         union all
-                        select symbol, average_price as reference_price
+                        select symbol, max(average_price) as reference_price
                         from stock_holding
                         where quantity > 0
                           and not exists (
@@ -51,6 +53,7 @@ public class MarketPriceRefreshTargetReader {
                               from stock_order_book_instrument obi
                               where obi.symbol = stock_holding.symbol
                           )
+                        group by symbol
                     ) watched_raw
                     group by symbol
                 ) watched

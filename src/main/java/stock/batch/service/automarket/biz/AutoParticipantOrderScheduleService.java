@@ -1,15 +1,19 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -21,10 +25,19 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 
 @Component
-@RequiredArgsConstructor
 class AutoParticipantOrderScheduleService {
 
+    private static final int MAX_BASE_INTERVAL_SECONDS = 3_600;
+    private static final int MAX_GENERATION_INTERVAL_SECONDS = 86_400;
+    private static final int MAX_SPREAD_SECONDS = 3_600;
+    private static final int MAX_LEASE_SECONDS = 3_600;
+    private static final int MAX_DUE_LIMIT = 500;
+    private static final int COMPLETION_ROW_CHUNK_SIZE = 100;
+    private static final int SCHEDULE_QUERY_ROW_CHUNK_SIZE = 500;
+    private static final int SCHEDULE_WRITE_ROW_CHUNK_SIZE = 100;
+
     private final JdbcTemplate jdbcTemplate;
+    private final boolean mysql;
 
     @Value("${stock.batch.auto-market.generation-base-interval-seconds:10}")
     private int baseIntervalSeconds;
@@ -45,6 +58,29 @@ class AutoParticipantOrderScheduleService {
     private int dueLimitPerSymbol;
 
     private final String leaseOwner = "stock-batch-" + UUID.randomUUID();
+
+    AutoParticipantOrderScheduleService(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+        String productName = jdbcTemplate.execute(
+                (ConnectionCallback<String>) connection -> connection.getMetaData().getDatabaseProductName()
+        );
+        this.mysql = productName != null && productName.toLowerCase(Locale.ROOT).contains("mysql");
+    }
+
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        validateRange("generation-base-interval-seconds", baseIntervalSeconds, 1, MAX_BASE_INTERVAL_SECONDS);
+        validateRange("generation-min-interval-seconds", minIntervalSeconds, 1, MAX_GENERATION_INTERVAL_SECONDS);
+        validateRange("generation-max-interval-seconds", maxIntervalSeconds, 1, MAX_GENERATION_INTERVAL_SECONDS);
+        if (maxIntervalSeconds < minIntervalSeconds) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.generation-max-interval-seconds must be greater than or equal to generation-min-interval-seconds"
+            );
+        }
+        validateRange("generation-spread-seconds", spreadSeconds, 0, MAX_SPREAD_SECONDS);
+        validateRange("generation-lease-seconds", leaseSeconds, 1, MAX_LEASE_SECONDS);
+        validateRange("generation-due-limit-per-symbol", dueLimitPerSymbol, 1, MAX_DUE_LIMIT);
+    }
 
     int ensureSchedules(
             List<AutoParticipantStrategy> strategies,
@@ -79,35 +115,35 @@ class AutoParticipantOrderScheduleService {
         if (dueUserKeys.isEmpty()) {
             return List.of();
         }
-        List<AutoParticipantStrategy> claimedStrategies = new ArrayList<>();
         LocalDateTime leaseUntil = now.plusSeconds(Math.max(1, leaseSeconds));
-        for (String userKey : dueUserKeys) {
-            AutoParticipantStrategy strategy = strategyByUserKey.get(userKey);
-            if (strategy == null) {
-                continue;
-            }
-            int updatedRows = jdbcTemplate.update(
-                    """
-                    update stock_auto_participant_order_schedule
-                    set lease_until = ?,
-                        lease_owner = ?,
-                        updated_at = ?
-                    where user_key = ?
-                      and next_run_at <= ?
-                      and (lease_until is null or lease_until <= ?)
-                    """,
-                    leaseUntil,
-                    leaseOwner,
-                    now,
-                    userKey,
-                    now,
-                    now
-            );
-            if (updatedRows > 0) {
-                claimedStrategies.add(strategy);
-            }
+        int updatedRows = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                .sql(
+                        """
+                        update stock_auto_participant_order_schedule
+                           set lease_until = :leaseUntil,
+                               lease_owner = :leaseOwner,
+                               updated_at = :now
+                         where user_key in (:userKeys)
+                           and next_run_at <= :now
+                           and (lease_until is null or lease_until <= :now)
+                        """
+                )
+                .param("leaseUntil", leaseUntil)
+                .param("leaseOwner", leaseOwner)
+                .param("now", now)
+                .param("userKeys", dueUserKeys)
+                .update();
+        if (updatedRows <= 0) {
+            return List.of();
         }
-        return claimedStrategies;
+        Set<String> claimedUserKeys = updatedRows == dueUserKeys.size()
+                ? Set.copyOf(dueUserKeys)
+                : findClaimedUserKeys(dueUserKeys, now);
+        return dueUserKeys.stream()
+                .filter(claimedUserKeys::contains)
+                .map(strategyByUserKey::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     List<AutoMarketReadyProfileQueue.ReadyProfile> findDueProfileSchedules(LocalDateTime now, int limit) {
@@ -143,7 +179,14 @@ class AutoParticipantOrderScheduleService {
         return JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
                 .sql(
                         """
-                        select p.profile_type, min(s.next_run_at) as ready_at
+                        select p.profile_type,
+                               min(case
+                                     when s.lease_until is not null
+                                      and s.lease_until > :now
+                                      and s.lease_until > s.next_run_at
+                                     then s.lease_until
+                                     else s.next_run_at
+                                   end) as ready_at
                         from stock_auto_participant_order_schedule s
                         join stock_auto_participant p
                           on p.user_key = s.user_key
@@ -152,7 +195,6 @@ class AutoParticipantOrderScheduleService {
                         join stock_account a
                           on a.user_key = p.user_key
                          and a.status = 'ACTIVE'
-                        where s.lease_until is null or s.lease_until <= :now
                         group by p.profile_type
                         order by ready_at asc, max(s.priority) desc, p.profile_type asc
                         limit :limit
@@ -181,7 +223,14 @@ class AutoParticipantOrderScheduleService {
         Map<AutoParticipantProfileType, LocalDateTime> nextReadyAtByProfile = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
                 .sql(
                         """
-                        select p.profile_type, min(s.next_run_at) as ready_at
+                        select p.profile_type,
+                               min(case
+                                     when s.lease_until is not null
+                                      and s.lease_until > :fallbackReadyAt
+                                      and s.lease_until > s.next_run_at
+                                     then s.lease_until
+                                     else s.next_run_at
+                                   end) as ready_at
                         from stock_auto_participant_order_schedule s
                         join stock_auto_participant p
                           on p.user_key = s.user_key
@@ -191,7 +240,6 @@ class AutoParticipantOrderScheduleService {
                           on a.user_key = p.user_key
                          and a.status = 'ACTIVE'
                         where p.profile_type in (:profileTypes)
-                          and (s.lease_until is null or s.lease_until <= :fallbackReadyAt)
                         group by p.profile_type
                         """
                 )
@@ -206,10 +254,10 @@ class AutoParticipantOrderScheduleService {
                 .collect(LinkedHashMap::new, (map, entry) -> map.put(entry.getKey(), entry.getValue()), LinkedHashMap::putAll);
         List<AutoMarketReadyProfileQueue.ReadyProfile> profiles = new ArrayList<>();
         for (AutoParticipantProfileType profileType : profileTypes) {
-            profiles.add(new AutoMarketReadyProfileQueue.ReadyProfile(
-                    profileType,
-                    nextReadyAtByProfile.getOrDefault(profileType, fallbackReadyAt)
-            ));
+            LocalDateTime nextReadyAt = nextReadyAtByProfile.get(profileType);
+            if (nextReadyAt != null) {
+                profiles.add(new AutoMarketReadyProfileQueue.ReadyProfile(profileType, nextReadyAt));
+            }
         }
         return profiles;
     }
@@ -219,36 +267,94 @@ class AutoParticipantOrderScheduleService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        int completed = 0;
+        Map<String, ScheduleCompletion> completionsByUserKey = new LinkedHashMap<>();
         for (AutoParticipantStrategy strategy : strategies) {
+            if (strategy.userKey() == null || strategy.userKey().isBlank()) {
+                continue;
+            }
             ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
             int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
-            LocalDateTime nextRunAt = now.plusSeconds(intervalSeconds + spreadSeconds(strategy.userKey(), intervalSeconds));
-            completed += jdbcTemplate.update(
-                    """
-                    update stock_auto_participant_order_schedule
-                    set profile_type = ?,
-                        last_run_at = ?,
-                        next_run_at = ?,
-                        lease_until = null,
-                        lease_owner = null,
-                        run_interval_seconds = ?,
-                        priority = ?,
-                        updated_at = ?
-                    where user_key = ?
-                      and lease_owner = ?
-                    """,
-                    strategy.profileType().name(),
-                    now,
-                    nextRunAt,
-                    intervalSeconds,
-                    priority(strategy.profileType(), policy),
-                    now,
+            LocalDateTime nextRunAt = now.plusSeconds(
+                    intervalSeconds + spreadSeconds(strategy.userKey(), intervalSeconds)
+            );
+            completionsByUserKey.putIfAbsent(
                     strategy.userKey(),
-                    leaseOwner
+                    new ScheduleCompletion(
+                            strategy.userKey(),
+                            strategy.profileType(),
+                            nextRunAt,
+                            intervalSeconds,
+                            priority(strategy.profileType(), policy)
+                    )
             );
         }
+        List<ScheduleCompletion> completions = List.copyOf(completionsByUserKey.values());
+        int completed = 0;
+        for (int start = 0; start < completions.size(); start += COMPLETION_ROW_CHUNK_SIZE) {
+            int end = Math.min(completions.size(), start + COMPLETION_ROW_CHUNK_SIZE);
+            completed += completeStrategyChunk(completions.subList(start, end), now);
+        }
         return completed;
+    }
+
+    private int completeStrategyChunk(List<ScheduleCompletion> completions, LocalDateTime now) {
+        if (completions.isEmpty()) {
+            return 0;
+        }
+        String profileTypeCases = casePlaceholders(completions.size());
+        String nextRunAtCases = casePlaceholders(completions.size());
+        String intervalCases = casePlaceholders(completions.size());
+        String priorityCases = casePlaceholders(completions.size());
+        String userKeyPlaceholders = completions.stream()
+                .map(completion -> "?")
+                .collect(Collectors.joining(", "));
+        String sql = """
+                update stock_auto_participant_order_schedule
+                   set profile_type = case user_key %s else profile_type end,
+                       last_run_at = ?,
+                       next_run_at = case user_key %s else next_run_at end,
+                       lease_until = null,
+                       lease_owner = null,
+                       run_interval_seconds = case user_key %s else run_interval_seconds end,
+                       priority = case user_key %s else priority end,
+                       updated_at = ?
+                 where user_key in (%s)
+                   and lease_owner = ?
+                """.formatted(
+                profileTypeCases,
+                nextRunAtCases,
+                intervalCases,
+                priorityCases,
+                userKeyPlaceholders
+        );
+        List<Object> parameters = new ArrayList<>(completions.size() * 9 + 3);
+        completions.forEach(completion -> {
+            parameters.add(completion.userKey());
+            parameters.add(completion.profileType().name());
+        });
+        parameters.add(now);
+        completions.forEach(completion -> {
+            parameters.add(completion.userKey());
+            parameters.add(completion.nextRunAt());
+        });
+        completions.forEach(completion -> {
+            parameters.add(completion.userKey());
+            parameters.add(completion.intervalSeconds());
+        });
+        completions.forEach(completion -> {
+            parameters.add(completion.userKey());
+            parameters.add(completion.priority());
+        });
+        parameters.add(now);
+        completions.forEach(completion -> parameters.add(completion.userKey()));
+        parameters.add(leaseOwner);
+        return jdbcTemplate.update(sql, parameters.toArray());
+    }
+
+    private String casePlaceholders(int rowCount) {
+        return java.util.stream.IntStream.range(0, rowCount)
+                .mapToObj(index -> "when ? then ?")
+                .collect(Collectors.joining(" "));
     }
 
     private int ensureScheduleEntries(
@@ -256,90 +362,136 @@ class AutoParticipantOrderScheduleService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        int scheduled = 0;
-        Map<String, ScheduleMetadata> existingSchedules = findExistingSchedules(strategies);
+        Map<String, ScheduleDefinition> definitionsByUserKey = new LinkedHashMap<>();
         for (AutoParticipantStrategy strategy : strategies) {
+            if (strategy.userKey() == null || strategy.userKey().isBlank()) {
+                continue;
+            }
             ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
             int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
             int priority = priority(strategy.profileType(), policy);
-            ScheduleMetadata existing = existingSchedules.get(strategy.userKey());
-            if (existing == null) {
-                insertSchedule(strategy, intervalSeconds, priority, now);
-                scheduled++;
-                continue;
-            }
-            if (existing.matches(strategy.profileType(), intervalSeconds, priority)) {
-                continue;
-            }
-            updateScheduleMetadata(strategy, intervalSeconds, priority, now);
+            definitionsByUserKey.putIfAbsent(
+                    strategy.userKey(),
+                    new ScheduleDefinition(strategy.userKey(), strategy.profileType(), intervalSeconds, priority)
+            );
         }
+        if (definitionsByUserKey.isEmpty()) {
+            return 0;
+        }
+        List<ScheduleDefinition> definitions = List.copyOf(definitionsByUserKey.values());
+        Map<String, ScheduleMetadata> existingSchedules = findExistingSchedules(
+                definitions.stream().map(ScheduleDefinition::userKey).toList()
+        );
+        List<ScheduleDefinition> missing = definitions.stream()
+                .filter(definition -> !existingSchedules.containsKey(definition.userKey()))
+                .toList();
+        List<ScheduleDefinition> changed = definitions.stream()
+                .filter(definition -> {
+                    ScheduleMetadata existing = existingSchedules.get(definition.userKey());
+                    return existing != null && !existing.matches(
+                            definition.profileType(),
+                            definition.intervalSeconds(),
+                            definition.priority()
+                    );
+                })
+                .toList();
+        int scheduled = insertScheduleDefinitions(missing, now);
+        updateScheduleMetadata(changed, now);
         return scheduled;
     }
 
-    private void insertSchedule(
-            AutoParticipantStrategy strategy,
-            int intervalSeconds,
-            int priority,
-            LocalDateTime now
-    ) {
-        try {
-            jdbcTemplate.update(
-                    """
-                    insert into stock_auto_participant_order_schedule(
-                        user_key, profile_type, next_run_at, last_run_at,
-                        lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
-                    )
-                    values (?, ?, ?, null, null, null, ?, ?, ?, ?)
-                    """,
-                    strategy.userKey(),
-                    strategy.profileType().name(),
-                    now,
-                    intervalSeconds,
-                    priority,
-                    now,
-                    now
-            );
-        } catch (DuplicateKeyException ignored) {
-            // Another batch process seeded this schedule first. The next run refreshes metadata if needed.
+    private int insertScheduleDefinitions(List<ScheduleDefinition> definitions, LocalDateTime now) {
+        int inserted = 0;
+        for (int start = 0; start < definitions.size(); start += SCHEDULE_WRITE_ROW_CHUNK_SIZE) {
+            int end = Math.min(definitions.size(), start + SCHEDULE_WRITE_ROW_CHUNK_SIZE);
+            List<ScheduleDefinition> chunk = definitions.subList(start, end);
+            String values = java.util.stream.IntStream.range(0, chunk.size())
+                    .mapToObj(index -> "(?, ?, ?, null, null, null, ?, ?, ?, ?)")
+                    .collect(Collectors.joining(", "));
+            String sql = mysql
+                    ? """
+                      insert ignore into stock_auto_participant_order_schedule(
+                          user_key, profile_type, next_run_at, last_run_at,
+                          lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                      ) values %s
+                      """.formatted(values)
+                    : """
+                      merge into stock_auto_participant_order_schedule(
+                          user_key, profile_type, next_run_at, last_run_at,
+                          lease_until, lease_owner, run_interval_seconds, priority, created_at, updated_at
+                      ) key(user_key) values %s
+                      """.formatted(values);
+            List<Object> parameters = new ArrayList<>(chunk.size() * 7);
+            for (ScheduleDefinition definition : chunk) {
+                parameters.add(definition.userKey());
+                parameters.add(definition.profileType().name());
+                parameters.add(now);
+                parameters.add(definition.intervalSeconds());
+                parameters.add(definition.priority());
+                parameters.add(now);
+                parameters.add(now);
+            }
+            inserted += jdbcTemplate.update(sql, parameters.toArray());
+        }
+        return inserted;
+    }
+
+    private void updateScheduleMetadata(List<ScheduleDefinition> definitions, LocalDateTime now) {
+        for (int start = 0; start < definitions.size(); start += SCHEDULE_WRITE_ROW_CHUNK_SIZE) {
+            int end = Math.min(definitions.size(), start + SCHEDULE_WRITE_ROW_CHUNK_SIZE);
+            updateScheduleMetadataChunk(definitions.subList(start, end), now);
         }
     }
 
-    private void updateScheduleMetadata(
-            AutoParticipantStrategy strategy,
-            int intervalSeconds,
-            int priority,
-            LocalDateTime now
-    ) {
-        jdbcTemplate.update(
-                """
+    private int updateScheduleMetadataChunk(List<ScheduleDefinition> definitions, LocalDateTime now) {
+        if (definitions.isEmpty()) {
+            return 0;
+        }
+        String profileTypeCases = casePlaceholders(definitions.size());
+        String intervalCases = casePlaceholders(definitions.size());
+        String priorityCases = casePlaceholders(definitions.size());
+        String userKeyPlaceholders = definitions.stream()
+                .map(definition -> "?")
+                .collect(Collectors.joining(", "));
+        String sql = """
                 update stock_auto_participant_order_schedule
-                set profile_type = ?,
-                    run_interval_seconds = ?,
-                    priority = ?,
-                    updated_at = ?
-                where user_key = ?
-                  and (profile_type <> ? or run_interval_seconds <> ? or priority <> ?)
-                """,
-                strategy.profileType().name(),
-                intervalSeconds,
-                priority,
-                now,
-                strategy.userKey(),
-                strategy.profileType().name(),
-                intervalSeconds,
-                priority
-        );
+                   set profile_type = case user_key %s else profile_type end,
+                       run_interval_seconds = case user_key %s else run_interval_seconds end,
+                       priority = case user_key %s else priority end,
+                       updated_at = ?
+                 where user_key in (%s)
+                """.formatted(profileTypeCases, intervalCases, priorityCases, userKeyPlaceholders);
+        List<Object> parameters = new ArrayList<>(definitions.size() * 7 + 1);
+        definitions.forEach(definition -> {
+            parameters.add(definition.userKey());
+            parameters.add(definition.profileType().name());
+        });
+        definitions.forEach(definition -> {
+            parameters.add(definition.userKey());
+            parameters.add(definition.intervalSeconds());
+        });
+        definitions.forEach(definition -> {
+            parameters.add(definition.userKey());
+            parameters.add(definition.priority());
+        });
+        parameters.add(now);
+        definitions.forEach(definition -> parameters.add(definition.userKey()));
+        return jdbcTemplate.update(sql, parameters.toArray());
     }
 
-    private Map<String, ScheduleMetadata> findExistingSchedules(List<AutoParticipantStrategy> strategies) {
-        List<String> userKeys = strategies.stream()
-                .map(AutoParticipantStrategy::userKey)
-                .filter(userKey -> userKey != null && !userKey.isBlank())
-                .distinct()
-                .toList();
+    private Map<String, ScheduleMetadata> findExistingSchedules(List<String> userKeys) {
         if (userKeys.isEmpty()) {
             return Map.of();
         }
+        Map<String, ScheduleMetadata> schedules = new LinkedHashMap<>();
+        for (int start = 0; start < userKeys.size(); start += SCHEDULE_QUERY_ROW_CHUNK_SIZE) {
+            int end = Math.min(userKeys.size(), start + SCHEDULE_QUERY_ROW_CHUNK_SIZE);
+            findExistingScheduleChunk(userKeys.subList(start, end)).forEach(schedules::put);
+        }
+        return Map.copyOf(schedules);
+    }
+
+    private Map<String, ScheduleMetadata> findExistingScheduleChunk(List<String> userKeys) {
         return JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
                 .sql(
                         """
@@ -362,6 +514,14 @@ class AutoParticipantOrderScheduleService {
                 .collect(LinkedHashMap::new, (map, entry) -> map.put(entry.getKey(), entry.getValue()), LinkedHashMap::putAll);
     }
 
+    private record ScheduleDefinition(
+            String userKey,
+            AutoParticipantProfileType profileType,
+            int intervalSeconds,
+            int priority
+    ) {
+    }
+
     private record ScheduleMetadata(String profileType, int intervalSeconds, int priority) {
 
         private boolean matches(AutoParticipantProfileType expectedProfileType, int expectedIntervalSeconds, int expectedPriority) {
@@ -369,6 +529,15 @@ class AutoParticipantOrderScheduleService {
                     && intervalSeconds == expectedIntervalSeconds
                     && priority == expectedPriority;
         }
+    }
+
+    private record ScheduleCompletion(
+            String userKey,
+            AutoParticipantProfileType profileType,
+            LocalDateTime nextRunAt,
+            int intervalSeconds,
+            int priority
+    ) {
     }
 
     private List<String> findDueUserKeys(List<String> userKeys, LocalDateTime now) {
@@ -392,6 +561,26 @@ class AutoParticipantOrderScheduleService {
                 .param("limit", Math.max(1, dueLimitPerSymbol))
                 .query(String.class)
                 .list();
+    }
+
+    private Set<String> findClaimedUserKeys(List<String> userKeys, LocalDateTime now) {
+        return JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                .sql(
+                        """
+                        select user_key
+                          from stock_auto_participant_order_schedule
+                         where user_key in (:userKeys)
+                           and lease_owner = :leaseOwner
+                           and lease_until > :now
+                        """
+                )
+                .param("userKeys", userKeys)
+                .param("leaseOwner", leaseOwner)
+                .param("now", now)
+                .query(String.class)
+                .list()
+                .stream()
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private Map<String, AutoParticipantStrategy> strategyByUserKey(List<AutoParticipantStrategy> strategies) {
@@ -434,5 +623,14 @@ class AutoParticipantOrderScheduleService {
     ) {
         ProfilePolicy policy = profilePolicies.get(profileType);
         return policy == null ? profilePolicies.get(AutoParticipantProfileType.defaultType()) : policy;
+    }
+
+    private void validateRange(String propertyName, int value, int minimum, int maximum) {
+        if (value < minimum || value > maximum) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.%s must be between %d and %d: %d"
+                            .formatted(propertyName, minimum, maximum, value)
+            );
+        }
     }
 }

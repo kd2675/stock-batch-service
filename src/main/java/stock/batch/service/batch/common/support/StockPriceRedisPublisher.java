@@ -25,16 +25,33 @@ public class StockPriceRedisPublisher {
 
     public void publish(String symbol, BigDecimal currentPrice, LocalDateTime priceTime, String provider) {
         try {
-            redisTemplate.opsForValue().set("stock:price:" + symbol, currentPrice.toPlainString(), priceCacheTtl());
-            redisTemplate.convertAndSend(
-                    "stock.price." + symbol,
-                    objectMapper.writeValueAsString(new PriceEvent(symbol, currentPrice, priceTime.toString(), provider))
-            );
+            publishRequired(symbol, currentPrice, priceTime, provider);
         } catch (JsonProcessingException ex) {
             log.warn("Redis price event serialization skipped: symbol={}, reason={}", symbol, ex.getMessage());
         } catch (RuntimeException ex) {
             log.warn("Redis price publish skipped: symbol={}, reason={}", symbol, ex.getMessage());
         }
+    }
+
+    public void publishStrict(String symbol, BigDecimal currentPrice, LocalDateTime priceTime, String provider) {
+        try {
+            publishRequired(symbol, currentPrice, priceTime, provider);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Redis price event serialization failed: symbol=" + symbol, ex);
+        }
+    }
+
+    private void publishRequired(
+            String symbol,
+            BigDecimal currentPrice,
+            LocalDateTime priceTime,
+            String provider
+    ) throws JsonProcessingException {
+        redisTemplate.opsForValue().set("stock:price:" + symbol, currentPrice.toPlainString(), priceCacheTtl());
+        redisTemplate.convertAndSend(
+                "stock.price." + symbol,
+                objectMapper.writeValueAsString(new PriceEvent(symbol, currentPrice, priceTime.toString(), provider))
+        );
     }
 
     private Duration priceCacheTtl() {

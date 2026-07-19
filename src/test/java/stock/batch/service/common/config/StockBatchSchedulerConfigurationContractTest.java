@@ -5,6 +5,8 @@ import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ClassPathResource;
 
+import stock.batch.service.scheduler.StockBatchSchedulerConfig;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,6 +15,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class StockBatchSchedulerConfigurationContractTest {
 
@@ -28,6 +31,34 @@ class StockBatchSchedulerConfigurationContractTest {
             "socketTimeout=30000",
             "tcpKeepAlive=true"
     );
+
+    @Test
+    void envExample_usesLoadSafeCurrentSchedulerProperties() throws IOException {
+        String envExample = Files.readString(Path.of(".env.example"), StandardCharsets.UTF_8);
+
+        assertThat(envExample)
+                .contains(
+                        "STOCK_BATCH_AUTO_MARKET_FIXED_RATE_MS=5000",
+                        "STOCK_BATCH_MARKET_CLOSE_POLL_FIXED_DELAY_MS=10000",
+                        "STOCK_BATCH_POST_CLOSE_COORDINATOR_POLL_FIXED_DELAY_MS=10000",
+                        "STOCK_BATCH_POST_CLOSE_RETRY_BASE_SECONDS=30",
+                        "STOCK_BATCH_POST_CLOSE_RETRY_MAX_SECONDS=900",
+                        "STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT=25",
+                        "STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE=25",
+                        "STOCK_BATCH_SIGNAL_HEARTBEAT_INTERVAL_SECONDS=30",
+                        "STOCK_BATCH_SETTLEMENT_CHUNK_SIZE=200"
+                )
+                .doesNotContain(
+                        "STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS",
+                        "STOCK_BATCH_SETTLEMENT_CRON",
+                        "STOCK_BATCH_SETTLEMENT_ZONE"
+                );
+
+        assertThat(Files.readString(
+                Path.of("src/main/resources/application.yml"),
+                StandardCharsets.UTF_8
+        )).doesNotContain("stock.batch.auto-market.fixed-delay-ms", "STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS");
+    }
 
     @Test
     void schedulerEnabledProperties_areExternallyConfigurable() throws IOException {
@@ -88,6 +119,36 @@ class StockBatchSchedulerConfigurationContractTest {
     }
 
     @Test
+    void signalLeaseDefaults_keepHeartbeatShorterThanClaimLease() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        int leaseSeconds = defaultNumber(applicationProperties.getProperty("stock.batch.signal.lease-seconds"));
+        int heartbeatSeconds = defaultNumber(
+                applicationProperties.getProperty("stock.batch.signal.heartbeat-interval-seconds")
+        );
+
+        assertThat(leaseSeconds).isEqualTo(180);
+        assertThat(heartbeatSeconds).isEqualTo(30);
+        assertThat(heartbeatSeconds).isLessThan(leaseSeconds);
+        assertThat(leaseSeconds).isGreaterThanOrEqualTo(heartbeatSeconds * 3);
+    }
+
+    @Test
+    void overnightVolumeDefaults_boundActionAndReportCheckpointCohorts() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.corporate-action.action-batch-limit"))
+                .isEqualTo("${STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT:25}");
+        assertThat(applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE:25}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.corporate-action.action-batch-limit")))
+                .isEqualTo(25);
+        assertThat(defaultNumber(
+                applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size")
+        )).isEqualTo(25);
+    }
+
+    @Test
     void jdbcQueryTimeoutDefault_isPositiveAndExternallyConfigurable() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 
@@ -116,7 +177,7 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(applicationProperties.getProperty("stock.batch.execution.symbol-chunk-max-duration-ms"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_SYMBOL_CHUNK_MAX_DURATION_MS:500}");
         assertThat(applicationProperties.getProperty("stock.batch.order-book-execution.fixed-delay-ms"))
-                .isEqualTo("${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:5000}");
+                .isEqualTo("${STOCK_BATCH_ORDER_BOOK_EXECUTION_FIXED_DELAY_MS:30000}");
         assertThat(applicationProperties.getProperty("stock.batch.order-book-execution.worker.count"))
                 .isEqualTo("${STOCK_BATCH_ORDER_BOOK_EXECUTION_WORKER_COUNT:2}");
         assertThat(applicationProperties.getProperty("stock.batch.order-book-execution.worker.idle-delay-ms"))
@@ -126,17 +187,43 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.deadlock-retry-max-attempts"))).isBetween(1, 10);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.symbol-chunk-limit"))).isEqualTo(5);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution.symbol-chunk-max-duration-ms"))).isEqualTo(500);
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.order-book-execution.fixed-delay-ms"))).isEqualTo(5_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.order-book-execution.fixed-delay-ms"))).isEqualTo(30_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.order-book-execution.worker.count"))).isEqualTo(2);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.order-book-execution.worker.idle-delay-ms"))).isEqualTo(100);
+    }
+
+    @Test
+    void executionAccountSummaryDefaults_areExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.execution-account-summary.flush-fixed-delay-ms"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_FLUSH_FIXED_DELAY_MS:30000}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution-account-summary.flush-batch-size"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_FLUSH_BATCH_SIZE:5000}");
+        assertThat(applicationProperties.getProperty("stock.batch.execution-account-summary.max-pending-deltas"))
+                .isEqualTo("${STOCK_BATCH_EXECUTION_ACCOUNT_SUMMARY_MAX_PENDING_DELTAS:100000}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution-account-summary.flush-fixed-delay-ms")))
+                .isGreaterThanOrEqualTo(30_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution-account-summary.flush-batch-size")))
+                .isBetween(1, 5_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.execution-account-summary.max-pending-deltas")))
+                .isBetween(1, 1_000_000);
+    }
+
+    @Test
+    void portfolioSettlementDefault_isExternallyConfigurableAndBounded() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.settlement.chunk-size"))
+                .isEqualTo("${STOCK_BATCH_SETTLEMENT_CHUNK_SIZE:200}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.settlement.chunk-size")))
+                .isBetween(1, 2_000);
     }
 
     @Test
     void autoMarketGenerationDefaults_areExternallyConfigurableAndBounded() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 
-        assertThat(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_FIXED_DELAY_MS:3000}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.fixed-rate-ms"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_FIXED_RATE_MS:5000}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.fixed-delay-ms"))
@@ -145,8 +232,12 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_DAILY_REGIME_PRE_CREATE_BEFORE_MINUTES:30}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_PROFILE_WORKER_COUNT:9}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-participant-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_PARTICIPANT_CHUNK_SIZE:25}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_DUE_LIMIT_PER_SYMBOL:100}");
+        assertThat(applicationProperties.getProperty("stock.batch.auto-market.generation-candidate-row-limit"))
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_GENERATION_CANDIDATE_ROW_LIMIT:2000}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.max-open-order-quantity-multiplier"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_MAX_OPEN_ORDER_QUANTITY_MULTIPLIER:10}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-enabled"))
@@ -173,18 +264,26 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_RUN_THREAD_POOL_MAX_SIZE:1}");
         assertThat(applicationProperties.getProperty("stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity"))
                 .isEqualTo("${STOCK_BATCH_AUTO_MARKET_RUN_THREAD_POOL_QUEUE_CAPACITY:0}");
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.fixed-delay-ms"))).isBetween(2_000, 10_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.fixed-rate-ms"))).isEqualTo(5_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market-order-expiry.fixed-delay-ms")))
+                .isGreaterThanOrEqualTo(1_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market-order-expiry.symbol-limit-per-run")))
+                .isBetween(1, 500);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.fixed-delay-ms"))).isBetween(5_000, 10_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.daily-regime.pre-create-before-minutes"))).isEqualTo(30);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))).isBetween(1, 16);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-profile-worker-count"))).isEqualTo(9);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-participant-chunk-size"))).isBetween(1, 100);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-due-limit-per-symbol"))).isBetween(1, 500);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.generation-candidate-row-limit"))).isBetween(1, 10_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.max-open-order-quantity-multiplier"))).isEqualTo(10);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-initial-delay-ms"))).isEqualTo(4_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"))).isEqualTo(600_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.profile-queue.reconcile-limit"))).isBetween(1, 1_000);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.core-size"))).isBetween(1, 16);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.max-size"))).isBetween(1, 16);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.thread-pool.queue-capacity"))).isZero();
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.run-dispatcher.thread-pool.core-size"))).isEqualTo(1);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.run-dispatcher.thread-pool.max-size"))).isEqualTo(1);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity"))).isEqualTo(0);
@@ -198,9 +297,12 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}");
         assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))
                 .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}");
+        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.symbol-limit-per-run"))
+                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_SYMBOL_LIMIT_PER_RUN:100}");
         assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-backoff-ms"))
                 .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}");
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))).isBetween(5_000, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.symbol-limit-per-run"))).isBetween(1, 500);
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
     }
 
@@ -219,7 +321,50 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(defaultNumber(propertyValue)).isGreaterThanOrEqualTo(300_000);
         assertThat(schedulerSource).contains("stock.batch.auto-participant-cash-flow.fixed-delay-ms:300000");
         assertThat(readme).contains("기본값은 300000ms");
-        assertThat(readme).contains("실제 서버 시간이 기준인 polling 간격");
+        assertThat(readme).contains("polling 간격은 실제 서버 시간 기준");
+    }
+
+    @Test
+    void marketCloseVolumeDefaults_areBoundedAndExternallyConfigurable() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.market-close.order-capture-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_MARKET_CLOSE_ORDER_CAPTURE_CHUNK_SIZE:1000}");
+        assertThat(applicationProperties.getProperty("stock.batch.market-close.order-cancel-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_MARKET_CLOSE_ORDER_CANCEL_CHUNK_SIZE:500}");
+        assertThat(applicationProperties.getProperty("stock.batch.market-close.holding-snapshot-account-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_MARKET_CLOSE_HOLDING_SNAPSHOT_ACCOUNT_CHUNK_SIZE:500}");
+        assertThat(applicationProperties.getProperty("stock.batch.market-close.account-snapshot-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_MARKET_CLOSE_ACCOUNT_SNAPSHOT_CHUNK_SIZE:500}");
+        assertThat(applicationProperties.getProperty("stock.batch.market-close.reconciliation-account-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_MARKET_CLOSE_RECONCILIATION_ACCOUNT_CHUNK_SIZE:500}");
+
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.market-close.order-capture-chunk-size")))
+                .isBetween(1, 10_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.market-close.order-cancel-chunk-size")))
+                .isBetween(1, 5_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.market-close.holding-snapshot-account-chunk-size")))
+                .isBetween(1, 2_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.market-close.account-snapshot-chunk-size")))
+                .isBetween(1, 2_000);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.market-close.reconciliation-account-chunk-size")))
+                .isBetween(1, 2_000);
+    }
+
+    @Test
+    void postCloseRetryDefaults_backOffFailedJobsWithoutLongDatabasePressure() throws IOException {
+        PropertySource<?> applicationProperties = loadApplicationProperties();
+
+        assertThat(applicationProperties.getProperty("stock.batch.post-close.retry-base-seconds"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_RETRY_BASE_SECONDS:30}");
+        assertThat(applicationProperties.getProperty("stock.batch.post-close.retry-max-seconds"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_RETRY_MAX_SECONDS:900}");
+        assertThat(applicationProperties.getProperty("stock.batch.post-close.deferred-retry-seconds"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_DEFERRED_RETRY_SECONDS:60}");
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.post-close.retry-base-seconds")))
+                .isGreaterThanOrEqualTo(30);
+        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.post-close.retry-max-seconds")))
+                .isGreaterThanOrEqualTo(300);
     }
 
     @Test
@@ -267,18 +412,73 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
                 .isEqualTo("${STOCK_BATCH_EXECUTION_SCHEDULER_POOL_SIZE:2}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))
-                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:2}");
+                .isEqualTo("${STOCK_BATCH_AUTO_MARKET_SCHEDULER_POOL_SIZE:1}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
-                .isEqualTo("${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:2}");
+                .isEqualTo("${STOCK_BATCH_MAINTENANCE_SCHEDULER_POOL_SIZE:1}");
+        assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.post-close.pool-size"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_SCHEDULER_POOL_SIZE:1}");
         assertThat(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"))
                 .isEqualTo("${STOCK_BATCH_SIMULATION_CLOCK_SCHEDULER_POOL_SIZE:1}");
 
         int defaultTotalSchedulerThreads = defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.execution.pool-size"))
                 + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.auto-market.pool-size"))
                 + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.maintenance.pool-size"))
+                + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.post-close.pool-size"))
                 + defaultNumber(applicationProperties.getProperty("stock.batch.scheduler-pools.simulation-clock.pool-size"));
 
         assertThat(defaultTotalSchedulerThreads).isLessThanOrEqualTo(7);
+    }
+
+    @Test
+    void dedicatedSchedulerShutdown_cancelsPendingTriggersButWaitsForRunningWork() {
+        var scheduler = new StockBatchSchedulerConfig()
+                .stockBatchMaintenanceTaskScheduler(1, 1);
+        scheduler.initialize();
+
+        try {
+            var executor = scheduler.getScheduledThreadPoolExecutor();
+
+            assertThat(executor.getExecuteExistingDelayedTasksAfterShutdownPolicy()).isFalse();
+            assertThat(executor.getContinueExistingPeriodicTasksAfterShutdownPolicy()).isFalse();
+        } finally {
+            scheduler.destroy();
+        }
+    }
+
+    @Test
+    void postCloseScheduler_rejectsParallelPoolConfiguration() {
+        StockBatchSchedulerConfig config = new StockBatchSchedulerConfig();
+
+        assertThatThrownBy(() -> config.stockBatchPostCloseTaskScheduler(2, 120))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly 1");
+    }
+
+    @Test
+    void autoMarketScheduler_rejectsParallelPoolConfiguration() {
+        StockBatchSchedulerConfig config = new StockBatchSchedulerConfig();
+
+        assertThatThrownBy(() -> config.stockBatchAutoMarketTaskScheduler(2, 120))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly 1");
+    }
+
+    @Test
+    void maintenanceScheduler_rejectsParallelPoolConfiguration() {
+        StockBatchSchedulerConfig config = new StockBatchSchedulerConfig();
+
+        assertThatThrownBy(() -> config.stockBatchMaintenanceTaskScheduler(2, 120))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly 1");
+    }
+
+    @Test
+    void executionScheduler_rejectsPoolAboveSafeMaximum() {
+        StockBatchSchedulerConfig config = new StockBatchSchedulerConfig();
+
+        assertThatThrownBy(() -> config.stockBatchExecutionTaskScheduler(5, 120))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 1 and 4");
     }
 
     @Test

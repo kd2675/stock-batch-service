@@ -25,6 +25,8 @@ import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 @Component
 public class AutoMarketReader {
 
+    private static final int LATEST_PRICE_SYMBOL_QUERY_CHUNK_SIZE = 100;
+
     private final JdbcClient jdbcClient;
 
     public AutoMarketReader(JdbcTemplate jdbcTemplate) {
@@ -69,6 +71,47 @@ public class AutoMarketReader {
                  and r.event_type <> 'DELETE'
                 where c.enabled = true
                 order by c.symbol asc
+                """
+        )
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toConfig(rs))
+                .list();
+    }
+
+    public List<AutoMarketConfig> findEnabledMaintenanceConfigs() {
+        return jdbcClient.sql(
+                """
+                select c.symbol,
+                       i.market,
+                       0 as primary_price_pressure_bias,
+                       0 as primary_asset_preference_pressure_bias,
+                       0 as primary_volatility_pressure_bias,
+                       0 as primary_liquidity_pressure_bias,
+                       0 as primary_execution_aggression_pressure_bias,
+                       0 as secondary_price_pressure_bias,
+                       0 as secondary_asset_preference_pressure_bias,
+                       0 as secondary_volatility_pressure_bias,
+                       0 as secondary_liquidity_pressure_bias,
+                       0 as secondary_execution_aggression_pressure_bias,
+                       c.max_order_quantity,
+                       c.order_ttl_seconds,
+                       i.tradable_shares,
+                       i.tick_size,
+                       i.price_limit_rate,
+                       p.current_price,
+                       p.previous_close,
+                       null as report_score
+                  from stock_auto_market_config c
+                  join stock_order_book_instrument i
+                    on i.symbol = c.symbol
+                   and i.enabled = true
+                  join stock_order_book_market_config m
+                    on m.symbol = c.symbol
+                   and m.enabled = true
+                   and m.market_status = 'OPEN'
+                  join stock_price p
+                    on p.symbol = c.symbol
+                 where c.enabled = true
+                 order by c.symbol asc
                 """
         )
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toConfig(rs))
@@ -422,6 +465,18 @@ public class AutoMarketReader {
         if (normalizedSymbols.isEmpty()) {
             return Map.of();
         }
+        Map<String, BigDecimal> pricesBySymbol = new LinkedHashMap<>();
+        for (int start = 0; start < normalizedSymbols.size(); start += LATEST_PRICE_SYMBOL_QUERY_CHUNK_SIZE) {
+            int end = Math.min(normalizedSymbols.size(), start + LATEST_PRICE_SYMBOL_QUERY_CHUNK_SIZE);
+            pricesBySymbol.putAll(findLatestPricesAtOrBeforeChunk(normalizedSymbols.subList(start, end), priceTime));
+        }
+        return Map.copyOf(pricesBySymbol);
+    }
+
+    private Map<String, BigDecimal> findLatestPricesAtOrBeforeChunk(
+            List<String> normalizedSymbols,
+            LocalDateTime priceTime
+    ) {
         String sql = IntStream.range(0, normalizedSymbols.size())
                 .mapToObj(index -> """
                         select %d as symbol_index,

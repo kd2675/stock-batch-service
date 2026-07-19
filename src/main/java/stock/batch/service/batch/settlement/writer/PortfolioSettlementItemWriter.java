@@ -26,8 +26,6 @@ public class PortfolioSettlementItemWriter implements ItemWriter<PortfolioSnapsh
 
     @Override
     public void write(Chunk<? extends PortfolioSnapshotCommand> chunk) {
-        for (PortfolioSnapshotCommand command : chunk) {
-            portfolioSnapshotWriter.write(command, snapshotDate, snapshotAt);
-        }
+        portfolioSnapshotWriter.write(chunk.getItems(), snapshotDate, snapshotAt);
     }
 }

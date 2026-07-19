@@ -64,6 +64,36 @@ public class StockBatchScheduledJobGuard {
         }
     }
 
+    public StockBatchJobRunResponse runOptionalBatchIfEnabled(
+            String jobName,
+            boolean schedulerConfigured,
+            Supplier<StockBatchJobRunResponse> action
+    ) {
+        LocalDateTime now = LocalDateTime.now();
+        if (shuttingDown.get()) {
+            return StockBatchJobRunResponses.scheduledDisabled(jobName, now);
+        }
+        try {
+            if (!batchJobRuntimeControl.shouldRunScheduledJob(jobName, schedulerConfigured)) {
+                return StockBatchJobRunResponses.completedWithoutWork(
+                        jobName,
+                        "optional-post-close-maintenance",
+                        "Optional post-close job is disabled; phase continues without maintenance work",
+                        now
+                );
+            }
+            return action.get();
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "Optional stock batch scheduled job failed: job={}, reason={}",
+                    jobName,
+                    ex.getMessage(),
+                    ex
+            );
+            return StockBatchJobRunResponses.scheduledFailure(jobName, ex, LocalDateTime.now());
+        }
+    }
+
     private boolean shouldRun(String jobName, boolean schedulerConfigured) {
         if (shuttingDown.get()) {
             return false;

@@ -1,8 +1,11 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -21,8 +24,6 @@ import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
-import stock.batch.service.simulation.SimulationClockService;
-import web.common.core.simulation.SimulationClockSnapshot;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.dailyLowerLimit;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.nextInt;
@@ -35,23 +36,35 @@ class AutoParticipantOrderService {
     private static final String BUY = "BUY";
     private static final String SELL = "SELL";
     private static final Duration PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW = Duration.ofDays(7);
+    private static final int MAX_OPEN_ORDER_QUANTITY_MULTIPLIER = 100;
 
     private final AutoMarketReader autoMarketReader;
     private final AutoMarketOrderExecutor autoMarketOrderExecutor;
     private final AutoParticipantOrderPricing autoParticipantOrderPricing;
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
-    private final SimulationClockService simulationClockService;
 
     @Value("${stock.batch.auto-market.max-open-order-quantity-multiplier:10}")
-    private int maxOpenOrderQuantityMultiplier;
+    private int maxOpenOrderQuantityMultiplier = 10;
+
+    @PostConstruct
+    void validateVolumeConfiguration() {
+        if (maxOpenOrderQuantityMultiplier < 1
+                || maxOpenOrderQuantityMultiplier > MAX_OPEN_ORDER_QUANTITY_MULTIPLIER) {
+            throw new IllegalStateException(
+                    "stock.batch.auto-market.max-open-order-quantity-multiplier must be between 1 and %d: %d"
+                            .formatted(MAX_OPEN_ORDER_QUANTITY_MULTIPLIER, maxOpenOrderQuantityMultiplier)
+            );
+        }
+    }
 
     AutoParticipantOrderGenerationResult placeAutoOrders(
             List<AutoParticipantStrategy> strategies,
             AutoMarketConfig config,
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
-            double momentumPressure
+            double momentumPressure,
+            LocalDateTime businessEffectiveAt
     ) {
-        Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config);
+        Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config, businessEffectiveAt);
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         double initialOrderPressure = orderBookState.orderPressure();
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
@@ -118,13 +131,13 @@ class AutoParticipantOrderService {
 
     private Map<Long, AutoParticipantTradingState> loadTradingStates(
             List<AutoParticipantStrategy> strategies,
-            AutoMarketConfig config
+            AutoMarketConfig config,
+            LocalDateTime businessEffectiveAt
     ) {
         if (strategies.isEmpty()) {
             return Map.of();
         }
-        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        var recentDividendSince = clock.simulationDateTime().minus(PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW);
+        LocalDateTime recentDividendSince = businessEffectiveAt.minus(PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW);
         return autoMarketReader.findTradingSnapshots(
                         strategies.stream()
                                 .map(AutoParticipantStrategy::accountId)

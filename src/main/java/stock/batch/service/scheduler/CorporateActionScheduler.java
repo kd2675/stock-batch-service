@@ -1,6 +1,7 @@
 package stock.batch.service.scheduler;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -18,12 +19,18 @@ public class CorporateActionScheduler {
     private final StockBatchScheduledJobGuard scheduledJobGuard;
     private final SimulationMarketSessionService simulationMarketSessionService;
 
+    @Value("${stock.batch.post-close.coordinator.enabled:true}")
+    private boolean postCloseCoordinatorEnabled;
+
     @Scheduled(
             scheduler = StockBatchSchedulerNames.MAINTENANCE,
             initialDelayString = "${stock.batch.corporate-actions.initial-delay-ms:20000}",
             fixedDelayString = "${stock.batch.corporate-actions.fixed-delay-ms:60000}"
     )
     public void applyCorporateActions() {
+        if (postCloseCoordinatorEnabled) {
+            return;
+        }
         if (simulationMarketSessionService.currentSession() == SimulationMarketSession.REGULAR) {
             return;
         }

@@ -7,6 +7,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -19,9 +20,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
-@SpringBootTest
+@SpringBootTest(properties = "stock.batch.corporate-action.account-chunk-size=2")
 @ActiveProfiles("test")
 class CorporateActionServiceTest {
+
+    @Test
+    void validateAccountChunkSize_aboveVolumeLimit_rejectsConfiguration() {
+        assertThatThrownBy(() -> CorporateActionService.validateAccountChunkSize(1_001))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be between 1 and 1000");
+    }
+
+    @Test
+    void validateActionBatchLimit_aboveVolumeLimit_rejectsConfiguration() {
+        assertThatThrownBy(() -> CorporateActionService.validateActionBatchLimit(201))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be between 1 and 200");
+    }
 
     @Autowired
     private CorporateActionService corporateActionService;
@@ -39,6 +54,7 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%' or user_key like 'rights-%' or user_key like 'capital-%')");
         jdbcTemplate.update("delete from stock_auto_participant where user_key like 'capital-%'");
+        jdbcTemplate.update("delete from stock_corporate_action_processing");
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'bonus-%'");
@@ -53,6 +69,9 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant_event_profile_config");
         jdbcTemplate.update("delete from stock_auto_market_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order_book_market_config where symbol like 'ZQ%'");
+        jdbcTemplate.update("update stock_order_book_market_config set market_status = 'CLOSED'");
+        jdbcTemplate.update("update stock_virtual_market_config set market_status = 'CLOSED'");
+        jdbcTemplate.update("update stock_market_session_fence set session_state = 'CLOSED'");
         jdbcTemplate.update("delete from stock_order_book_instrument where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_simulation_clock");
         setPausedSimulationClock(LocalDate.now(), LocalDateTime.now(), LocalTime.of(19, 0));
@@ -137,6 +156,40 @@ class CorporateActionServiceTest {
     }
 
     @Test
+    void applyDueCorporateActions_exRightsEntitlementsExceedChunkSize_createsEveryFrozenHolderOnce() {
+        LocalDate today = LocalDate.now();
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ046", 100000L, 100000L);
+        insertPrice("ZQ046", "70000.00");
+        for (int index = 1; index <= 3; index++) {
+            String userKey = "dividend-entitlement-chunk-" + index;
+            insertAccount(userKey);
+            insertHolding(userKey, "ZQ046", 10L * index, 0L, "70000.00");
+        }
+        long closeRunId = insertHoldingSnapshot(
+                "ZQ046",
+                today.minusDays(1),
+                today.minusDays(1).atTime(18, 0)
+        );
+        insertCashDividend(
+                "ZQ046",
+                "1000.00",
+                "70000.00",
+                "70000.00",
+                today,
+                today.plusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        String outcome = processedCount
+                + ":" + queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ046'")
+                + ":" + queryLong("select count(distinct account_id) from stock_corporate_action_entitlement where symbol = 'ZQ046'")
+                + ":" + queryLong("select count(*) from stock_corporate_action_entitlement where symbol = 'ZQ046' and holding_snapshot_run_id = " + closeRunId);
+        assertThat(outcome).isEqualTo("1:3:3:3");
+    }
+
+    @Test
     void applyDueCorporateActions_preOpenWithoutPreviousCloseRun_waits() {
         LocalDate simulationDate = LocalDate.now();
         setPausedSimulationClock(simulationDate.minusDays(1), LocalDateTime.now(), simulationDate.atTime(5, 30));
@@ -158,6 +211,46 @@ class CorporateActionServiceTest {
                 .isEqualTo("ANNOUNCED");
         assertThat(queryLong("select issued_shares from stock_order_book_instrument where symbol = 'ZQ024'"))
                 .isEqualTo(100000L);
+    }
+
+    @Test
+    void processExRightsStep_missingFrozenSnapshot_failsPhaseClosed() {
+        LocalDate preparingBusinessDate = LocalDate.now();
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ047", 100000L, 100000L);
+        insertPrice("ZQ047", "70000.00");
+        insertAccount("dividend-preopen-missing-holder");
+        insertHolding("dividend-preopen-missing-holder", "ZQ047", 10L, 0L, "70000.00");
+        insertCashDividend(
+                "ZQ047",
+                "1000.00",
+                "70000.00",
+                "70000.00",
+                preparingBusinessDate,
+                preparingBusinessDate.plusDays(1)
+        );
+
+        Throwable failure = catchThrowable(() -> {
+            corporateActionService.processExRightsStep(preparingBusinessDate, preparingBusinessDate);
+            corporateActionService.processCapitalIncreaseListingStep(preparingBusinessDate, preparingBusinessDate);
+            corporateActionService.processFreeShareListingStep(preparingBusinessDate, preparingBusinessDate);
+            corporateActionService.processStockSplitStep(preparingBusinessDate, preparingBusinessDate);
+            corporateActionService.processDelistingStep(preparingBusinessDate, preparingBusinessDate);
+            corporateActionService.validatePreOpenSecurityTransformsStep(
+                    preparingBusinessDate,
+                    preparingBusinessDate
+            );
+        });
+        String failureOutcome = failure.getClass().getSimpleName()
+                + ":" + failure.getMessage()
+                + ":" + java.util.Arrays.stream(failure.getSuppressed())
+                        .map(Throwable::getMessage)
+                        .toList();
+
+        assertThat(failureOutcome)
+                .contains("IllegalStateException", "incomplete transforms");
+        assertThat(queryString("select status from stock_corporate_action where symbol = 'ZQ047'"))
+                .isEqualTo("ANNOUNCED");
     }
 
     @Test
@@ -244,6 +337,94 @@ class CorporateActionServiceTest {
                 """)).isEqualByComparingTo(new BigDecimal("10000.00"));
         assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ007'"))
                 .isEqualTo("PAID");
+    }
+
+    @Test
+    void processCashDividendPaymentStep_cashDividendExceedsChunkSize_commitsAllAccountUnitsAndCompletesAction() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ040", 100000L, 100000L);
+        long actionId = insertAppliedCashDividend("ZQ040", LocalDate.now());
+        for (int index = 1; index <= 3; index++) {
+            String userKey = "dividend-chunk-" + index;
+            insertAccount(userKey);
+            insertAnnouncedDividendEntitlement(
+                    actionId,
+                    accountIdFor(userKey),
+                    "ZQ040",
+                    "1000.00"
+            );
+        }
+
+        int processedCount = corporateActionService.processCashDividendPaymentStep(LocalDate.now());
+        corporateActionService.validateCorporateCashStep(LocalDate.now());
+
+        String outcome = processedCount
+                + ":" + queryLong("select count(*) from stock_corporate_action_entitlement where action_id = "
+                + actionId + " and status = 'PAID'")
+                + ":" + queryLong("select count(*) from stock_corporate_action_processing where action_id = "
+                + actionId + " and action_phase = 'cash-dividend-payment' and status = 'COMPLETED'")
+                + ":" + queryLong("select count(*) from stock_account_cash_flow where reason = 'DIVIDEND_PAYMENT' "
+                + "and account_id in (select id from stock_account where user_key like 'dividend-chunk-%')");
+        assertThat(outcome).isEqualTo("1:3:4:3");
+    }
+
+    @Test
+    void processCashDividendPaymentStep_moreActionsThanBatchLimit_restartsWithoutDuplicatePayment() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ044", 100000L, 100000L);
+        insertOrderBookInstrument("ZQ045", 100000L, 100000L);
+        insertAccount("dividend-action-chunk-1");
+        insertAccount("dividend-action-chunk-2");
+        long firstActionId = insertAppliedCashDividend("ZQ044", LocalDate.now());
+        long secondActionId = insertAppliedCashDividend("ZQ045", LocalDate.now());
+        insertAnnouncedDividendEntitlement(
+                firstActionId,
+                accountIdFor("dividend-action-chunk-1"),
+                "ZQ044",
+                "1000.00"
+        );
+        insertAnnouncedDividendEntitlement(
+                secondActionId,
+                accountIdFor("dividend-action-chunk-2"),
+                "ZQ045",
+                "1000.00"
+        );
+        ReflectionTestUtils.setField(corporateActionService, "actionBatchLimit", 1);
+
+        try {
+            int firstProcessed = corporateActionService.processCashDividendPaymentStep(LocalDate.now());
+            assertThatThrownBy(() -> corporateActionService.validateCorporateCashStep(LocalDate.now()))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("count=1");
+            int secondProcessed = corporateActionService.processCashDividendPaymentStep(LocalDate.now());
+            int finalValidation = corporateActionService.validateCorporateCashStep(LocalDate.now());
+            int idempotentProcessed = corporateActionService.processCashDividendPaymentStep(LocalDate.now());
+
+            String outcome = firstProcessed + ":" + secondProcessed + ":" + finalValidation + ":"
+                    + idempotentProcessed + ":" + queryLong("""
+                    select count(*)
+                      from stock_account_cash_flow
+                     where reason = 'DIVIDEND_PAYMENT'
+                       and account_id in (
+                           select id from stock_account where user_key like 'dividend-action-chunk-%'
+                       )
+                    """);
+            assertThat(outcome).isEqualTo("1:1:0:0:2");
+        } finally {
+            ReflectionTestUtils.setField(corporateActionService, "actionBatchLimit", 25);
+        }
+    }
+
+    @Test
+    void processCashDividendPaymentStep_openMarket_rejectsBeforeCorporateLedgerWork() {
+        LocalDate today = LocalDate.now();
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ099", 100000L, 100000L);
+        insertOrderBookMarketConfig("ZQ099");
+
+        assertThatThrownBy(() -> corporateActionService.processCashDividendPaymentStep(today))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("while any market is open");
     }
 
     @Test
@@ -1152,6 +1333,9 @@ class CorporateActionServiceTest {
         insertOrderBookInstrument("ZQ015", 100000L, 100000L);
         insertPrice("ZQ015", "70000.00");
         insertOrderBookMarketConfig("ZQ015");
+        jdbcTemplate.update(
+                "update stock_order_book_market_config set market_status = 'CLOSED' where symbol = 'ZQ015'"
+        );
         insertAutoMarketConfig("ZQ015");
         insertListingAutoConfig("ZQ015");
         insertParticipantSymbolConfig("ZQ015");
@@ -1241,6 +1425,24 @@ class CorporateActionServiceTest {
                 baseDate,
                 accumulatedRealSeconds,
                 lastHeartbeatAt,
+                lastHeartbeatAt,
+                lastHeartbeatAt
+        );
+        jdbcTemplate.update(
+                """
+                merge into stock_market_business_state(
+                    state_id,
+                    active_business_date,
+                    preparing_business_date,
+                    raw_simulation_date,
+                    version,
+                    created_at,
+                    updated_at
+                ) key(state_id)
+                values ('DEFAULT', ?, null, ?, 0, ?, ?)
+                """,
+                simulationDateTime.toLocalDate(),
+                simulationDateTime.toLocalDate(),
                 lastHeartbeatAt,
                 lastHeartbeatAt
         );

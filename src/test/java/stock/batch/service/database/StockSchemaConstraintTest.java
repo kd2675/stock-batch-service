@@ -417,9 +417,12 @@ class StockSchemaConstraintTest {
     }
 
     @Test
-    void stockCorporateActionEntitlement_accountCreatedIndex_existsInSchema() throws SQLException {
+    void stockCorporateActionEntitlement_volumeSafeIndexes_existInSchema() throws SQLException {
         assertIndexNames("stock_corporate_action_entitlement")
-                .contains("idx_stock_corporate_action_entitlement_account_created");
+                .contains(
+                        "idx_stock_corporate_action_entitlement_account_created",
+                        "idx_stock_corporate_action_entitlement_action_status_id"
+                );
     }
 
     private org.assertj.core.api.ListAssert<String> assertIndexNames(String tableName) throws SQLException {

@@ -1,5 +1,8 @@
 package stock.batch.service.automarket.biz;
 
+import jakarta.annotation.PostConstruct;
+
+import java.time.Instant;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -14,14 +17,20 @@ import org.springframework.transaction.support.TransactionTemplate;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
+import web.common.core.simulation.SimulationMarketSession;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class ListingAutoMarketJobService {
+
+    private static final int MAX_DEADLOCK_RETRY_ATTEMPTS = 10;
+    private static final long MAX_DEADLOCK_RETRY_BACKOFF_MILLIS = 1_000L;
+    private static final int MAX_SYMBOL_LIMIT_PER_RUN = 500;
 
     private final AutoMarketReader autoMarketReader;
     private final ListingAutoAccountOrderService listingAutoAccountOrderService;
@@ -29,6 +38,7 @@ public class ListingAutoMarketJobService {
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
     private final OrderBookSymbolLock orderBookSymbolLock;
+    private final MarketSessionFenceService marketSessionFenceService;
     private final MeterRegistry meterRegistry;
 
     @Value("${stock.batch.listing-auto-market.deadlock-retry-max-attempts:5}")
@@ -37,23 +47,55 @@ public class ListingAutoMarketJobService {
     @Value("${stock.batch.listing-auto-market.deadlock-retry-backoff-ms:50}")
     private long deadlockRetryBackoffMs = 50;
 
+    @Value("${stock.batch.listing-auto-market.symbol-limit-per-run:100}")
+    private int symbolLimitPerRun = 100;
+
+    @PostConstruct
+    void validateRetryConfiguration() {
+        if (deadlockRetryMaxAttempts < 1 || deadlockRetryMaxAttempts > MAX_DEADLOCK_RETRY_ATTEMPTS) {
+            throw new IllegalStateException(
+                    "stock.batch.listing-auto-market.deadlock-retry-max-attempts must be between 1 and %d: %d"
+                            .formatted(MAX_DEADLOCK_RETRY_ATTEMPTS, deadlockRetryMaxAttempts)
+            );
+        }
+        if (deadlockRetryBackoffMs < 0 || deadlockRetryBackoffMs > MAX_DEADLOCK_RETRY_BACKOFF_MILLIS) {
+            throw new IllegalStateException(
+                    "stock.batch.listing-auto-market.deadlock-retry-backoff-ms must be between 0 and %d: %d"
+                            .formatted(MAX_DEADLOCK_RETRY_BACKOFF_MILLIS, deadlockRetryBackoffMs)
+            );
+        }
+        if (symbolLimitPerRun < 1 || symbolLimitPerRun > MAX_SYMBOL_LIMIT_PER_RUN) {
+            throw new IllegalStateException(
+                    "stock.batch.listing-auto-market.symbol-limit-per-run must be between 1 and %d: %d"
+                            .formatted(MAX_SYMBOL_LIMIT_PER_RUN, symbolLimitPerRun)
+            );
+        }
+    }
+
     public int runListingAutoMarket() {
         long startedNanos = System.nanoTime();
         if (!isRegularSessionActive()) {
             return 0;
         }
-        List<AutoMarketConfig> configs = autoMarketReader.findEnabledConfigs();
-        if (configs.isEmpty()) {
+        List<AutoMarketConfig> allConfigs = autoMarketReader.findEnabledMaintenanceConfigs();
+        if (allConfigs.isEmpty()) {
             return 0;
         }
+        List<AutoMarketConfig> configs = AutoMarketSymbolWorkSlice.select(
+                allConfigs,
+                AutoMarketConfig::symbol,
+                symbolLimitPerRun,
+                Instant.now()
+        );
 
         int processed = 0;
         for (AutoMarketConfig config : configs) {
             processed += runSymbolListingAutoMarket(config);
         }
         log.info(
-                "Listing auto market completed: symbols={}, processedCount={}, elapsedMs={}",
+                "Listing auto market completed: symbols={}, availableSymbols={}, processedCount={}, elapsedMs={}",
                 configs.size(),
+                allConfigs.size(),
                 processed,
                 elapsedMillis(startedNanos)
         );
@@ -66,16 +108,17 @@ public class ListingAutoMarketJobService {
                     try (lock) {
                         return runIntInTransactionWithDeadlockRetry(
                                 config.symbol(),
-                                () -> listingAutoAccountOrderService.run(config)
+                                () -> marketSessionFenceService.lockOpenOrderBookFences(List.of(config.symbol()))
+                                        .map(sessionApproval -> listingAutoAccountOrderService.run(
+                                                config,
+                                                sessionApproval
+                                        ))
+                                        .orElse(0)
                         );
                     }
                 })
                 .orElseGet(() -> {
-                    meterRegistry.counter(
-                            "stock.listing.auto.market.symbol.lock.skips",
-                            "symbol",
-                            config.symbol()
-                    ).increment();
+                    meterRegistry.counter("stock.listing.auto.market.symbol.lock.skips").increment();
                     log.debug("Listing auto market skipped because order-book symbol is busy: symbol={}", config.symbol());
                     return 0;
                 });
@@ -83,7 +126,9 @@ public class ListingAutoMarketJobService {
 
     private boolean isRegularSessionActive() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        return clock.running() && simulationMarketSessionService.isRegularSession();
+        return clock.running()
+                && simulationMarketSessionService.sessionAt(clock.simulationDateTime())
+                == SimulationMarketSession.REGULAR;
     }
 
     private int runIntInTransaction(Supplier<Integer> action) {

@@ -19,14 +19,20 @@ public class AutoMarketRunExecutorConfig {
             @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.max-size:1}") int maxSize,
             @Value("${stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity:0}") int queueCapacity
     ) {
-        if (coreSize <= 0) {
-            throw new IllegalArgumentException("stock.batch.auto-market.run-dispatcher.thread-pool.core-size must be positive");
+        if (coreSize != 1) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.run-dispatcher.thread-pool.core-size must be exactly 1"
+            );
         }
-        if (maxSize < coreSize) {
-            throw new IllegalArgumentException("stock.batch.auto-market.run-dispatcher.thread-pool.max-size must be greater than or equal to core-size");
+        if (maxSize != 1) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.run-dispatcher.thread-pool.max-size must be exactly 1"
+            );
         }
-        if (queueCapacity < 0) {
-            throw new IllegalArgumentException("stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity must not be negative");
+        if (queueCapacity != 0) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.run-dispatcher.thread-pool.queue-capacity must be exactly 0"
+            );
         }
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setThreadNamePrefix("stock-auto-market-run-");

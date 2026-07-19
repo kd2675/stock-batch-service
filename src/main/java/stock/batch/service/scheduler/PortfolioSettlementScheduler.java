@@ -12,11 +12,16 @@ import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.common.support.StockBatchJobRunResponses;
 import stock.batch.service.batch.marketclose.job.MarketCloseRolloverJob;
 import stock.batch.service.batch.settlement.job.PortfolioSettlementJob;
+import stock.batch.service.batch.settlement.biz.PortfolioSettlementLifecycleService;
 import stock.batch.service.common.vo.StockBatchJobRunResponse;
 import stock.batch.service.marketclose.biz.MarketClosePostProcessingCompletionService;
 import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
+import stock.batch.service.marketclose.biz.PostCloseCycleService;
+import stock.batch.service.marketclose.model.PostCloseCycle;
 import stock.batch.service.simulation.SimulationMarketSessionService;
+import web.common.core.simulation.SimulationMarketSession;
 
 @Component
 @RequiredArgsConstructor
@@ -29,6 +34,9 @@ public class PortfolioSettlementScheduler {
     private final OrderBookMarketSessionStateService orderBookMarketSessionStateService;
     private final MarketCloseRolloverService marketCloseRolloverService;
     private final MarketClosePostProcessingCompletionService postProcessingCompletionService;
+    private final PostCloseCycleService postCloseCycleService;
+    private final PortfolioSettlementLifecycleService portfolioSettlementLifecycleService;
+    private final MarketSessionFenceService marketSessionFenceService;
 
     @Value("${stock.batch.market-close.enabled:true}")
     private boolean marketCloseSchedulerConfigured;
@@ -39,10 +47,13 @@ public class PortfolioSettlementScheduler {
     private LocalDate lastPostCloseProcessedDate;
 
     @Scheduled(
-            scheduler = StockBatchSchedulerNames.MAINTENANCE,
-            fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:5000}"
+            scheduler = StockBatchSchedulerNames.POST_CLOSE,
+            fixedDelayString = "${stock.batch.market-close.poll-fixed-delay-ms:10000}"
     )
     public void rolloverSimulationDayIfNeeded() {
+        if (!marketCloseSchedulerConfigured && !settlementSchedulerConfigured) {
+            return;
+        }
         orderBookMarketSessionStateService.syncCurrentSession();
         LocalDate closeDate = closeDateNeedingPostCloseWork();
         if (closeDate == null) {
@@ -73,11 +84,18 @@ public class PortfolioSettlementScheduler {
     }
 
     /**
-     * Runs the complete post-close pipeline for one business date. The return value is true only
-     * when the database confirms every required post-close item, not merely when a job exits
-     * without throwing.
+     * Runs the latency-sensitive freeze and portfolio-settlement prefix for one business date.
+     * Overnight and pre-open phases are owned by the coordinator. The return value is true only
+     * when the database confirms the frozen settlement cohort, not merely when a job exits.
      */
     boolean settlePortfolios(LocalDate businessDate) {
+        if (marketSessionFenceService.hasOpenMarket()) {
+            log.info(
+                    "Stock batch post-close pipeline deferred to protect regular order traffic: businessDate={}",
+                    businessDate
+            );
+            return false;
+        }
         if (!ensureMarketCloseCompleted(businessDate)) {
             log.info("Stock batch post-close pipeline waiting for market close rollover: businessDate={}", businessDate);
             return false;
@@ -102,6 +120,18 @@ public class PortfolioSettlementScheduler {
             log.info("Stock batch portfolio settlement skipped because scheduler is disabled: businessDate={}", businessDate);
             return true;
         }
+        PostCloseCycle cycle = postCloseCycleService.findFullMarketCycle(businessDate).orElse(null);
+        if (cycle == null || !portfolioSettlementLifecycleService.isSettlementEligible(
+                cycle.id(),
+                simulationMarketSessionService.currentSimulationDateTime()
+        )) {
+            log.info(
+                    "Stock batch portfolio settlement deferred until frozen-cycle eligibility: businessDate={}, eligibleAt={}",
+                    businessDate,
+                    cycle == null ? null : cycle.settlementEligibleAt()
+            );
+            return false;
+        }
         log.info("Stock batch portfolio settlement stage started: businessDate={}", businessDate);
         StockBatchJobRunResponse response;
         if (businessDate.equals(simulationMarketSessionService.currentSimulationDate())) {
@@ -116,7 +146,7 @@ public class PortfolioSettlementScheduler {
                     settlementSchedulerConfigured,
                     () -> stockBatchJobLauncher.settlePortfolios(
                             businessDate,
-                            businessDate.atTime(simulationMarketSessionService.closeTime())
+                            simulationMarketSessionService.currentSimulationDateTime()
                     )
             );
         }
@@ -151,6 +181,18 @@ public class PortfolioSettlementScheduler {
             log.info("Stock batch market close rollover skipped because scheduler is disabled: businessDate={}", businessDate);
             return false;
         }
+        PostCloseCycle existingCycle = postCloseCycleService.findFullMarketCycle(businessDate).orElse(null);
+        if (existingCycle != null
+                && !postCloseCycleService.isPhaseClaimEligible(existingCycle, java.time.LocalDateTime.now())) {
+            log.info(
+                    "Stock batch market close retry deferred before Job launch: businessDate={}, status={}, nextRetryAt={}, leaseUntil={}",
+                    businessDate,
+                    existingCycle.status(),
+                    existingCycle.nextRetryAt(),
+                    existingCycle.leaseUntil()
+            );
+            return false;
+        }
         log.info("Stock batch market close rollover stage started: businessDate={}", businessDate);
         StockBatchJobRunResponse response;
         if (businessDate.equals(simulationMarketSessionService.currentSimulationDate())) {
@@ -180,8 +222,35 @@ public class PortfolioSettlementScheduler {
     }
 
     private LocalDate closeDateNeedingPostCloseWork() {
+        SimulationMarketSession session = simulationMarketSessionService.currentSession();
         LocalDate currentDate = simulationMarketSessionService.currentSimulationDate();
-        return switch (simulationMarketSessionService.currentSession()) {
+        PostCloseCycle oldestUnsettled = postCloseCycleService.findOldestUnsettledFullMarketCycle()
+                .orElse(null);
+        if (oldestUnsettled != null) {
+            return oldestUnsettled.businessDate();
+        }
+        MarketSessionFenceService.MarketBusinessStateSnapshot state = marketSessionFenceService.businessState();
+        if (state != null && !state.activeBusinessDate().equals(currentDate)) {
+            if (postCloseCycleService.findFullMarketCycle(state.activeBusinessDate()).isEmpty()
+                    && !state.activeBusinessDate().isBefore(
+                    simulationMarketSessionService.baseSimulationDate()
+            )) {
+                return state.activeBusinessDate();
+            }
+            return null;
+        }
+        // Raw simulation time can enter REGULAR while a failed previous close keeps every market
+        // CLOSED. Continue only the frozen-prefix recovery in that state; settlePortfolios()
+        // performs the authoritative hasOpenMarket() guard before launching any heavy work. A
+        // normal open session reaches this branch with no stale active date and returns without
+        // touching order/execution ledgers.
+        if (session == SimulationMarketSession.REGULAR) {
+            return null;
+        }
+        if (postCloseCycleService.isSkippedCompleted(currentDate)) {
+            return null;
+        }
+        return switch (session) {
             case AFTER_CLOSE -> currentDate;
             case PRE_OPEN -> closeDateNeedingPreOpenCatchUp(currentDate);
             case REGULAR -> null;

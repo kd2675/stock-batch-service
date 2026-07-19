@@ -12,19 +12,36 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
+@SpringBootTest(properties = "stock.batch.auto-participant-cash-flow.account-chunk-size=2")
 @ActiveProfiles("test")
 class AutoParticipantCashFlowServiceTest {
 
+    @Test
+    void validateAccountChunkSize_aboveVolumeLimit_rejectsConfiguration() {
+        assertThatThrownBy(() -> AutoParticipantCashFlowService.validateAccountChunkSize(1_001))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be between 1 and 1000");
+    }
+
     @Autowired
     private AutoParticipantCashFlowService autoParticipantCashFlowService;
+
+    @Autowired
+    private AutoParticipantCashFlowTransactionExecutor transactionExecutor;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("delete from stock_market_session_fence");
+        jdbcTemplate.update("delete from stock_post_close_phase_attempt");
+        jdbcTemplate.update("delete from stock_post_close_cycle_metric");
+        jdbcTemplate.update("delete from stock_post_close_cycle");
+        jdbcTemplate.update("delete from stock_market_business_state");
+        jdbcTemplate.update("delete from stock_auto_participant_cash_flow_run");
         jdbcTemplate.update("delete from stock_account_cash_flow");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
@@ -32,10 +49,21 @@ class AutoParticipantCashFlowServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_auto_market_config");
         jdbcTemplate.update("delete from stock_order_book_market_config");
+        jdbcTemplate.update("update stock_virtual_market_config set market_status = 'CLOSED'");
         jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_auto_participant_profile_config");
         jdbcTemplate.update("delete from stock_auto_participant");
         jdbcTemplate.update("delete from stock_simulation_clock");
+        jdbcTemplate.update(
+                """
+                insert into stock_market_business_state(
+                    state_id, active_business_date, preparing_business_date,
+                    raw_simulation_date, version, created_at, updated_at
+                )
+                values ('DEFAULT', date '2026-07-01', null, date '2026-07-01', 0,
+                        timestamp '2026-07-01 00:00:00', timestamp '2026-07-01 00:00:00')
+                """
+        );
     }
 
     @Test
@@ -81,6 +109,137 @@ class AutoParticipantCashFlowServiceTest {
                 where a.user_key = 'stock-auto-custom'
                   and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
                 """)).isZero();
+    }
+
+    @Test
+    void fundRecurringCash_sameRunKeyAfterCompletedBusinessCommits_doesNotPayAgain() {
+        insertAutoParticipant("stock-auto-restart-complete", "NOISE_TRADER", true, "10000.00", "1.0", "SECOND");
+        insertActiveAccount("stock-auto-restart-complete", "0.00");
+        insertPausedSimulationClock();
+
+        int firstProcessed = autoParticipantCashFlowService.fundRecurringCash("restart-complete-run");
+        jdbcTemplate.update(
+                """
+                update stock_account_cash_flow
+                   set created_at = timestamp '2026-06-30 23:59:58'
+                 where account_id = (
+                       select id from stock_account where user_key = 'stock-auto-restart-complete'
+                 )
+                """
+        );
+        int restartedProcessed = autoParticipantCashFlowService.fundRecurringCash("restart-complete-run");
+
+        assertThat(firstProcessed + ":" + restartedProcessed).isEqualTo("1:1");
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isEqualTo(1L);
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-restart-complete'"))
+                .isEqualByComparingTo(new BigDecimal("10000.00"));
+        assertThat(queryLong("select processed_count from stock_auto_participant_cash_flow_run where run_key = 'restart-complete-run'"))
+                .isEqualTo(1L);
+
+        int nextRunProcessed = autoParticipantCashFlowService.fundRecurringCash("restart-next-run");
+
+        assertThat(nextRunProcessed).isEqualTo(1);
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isEqualTo(2L);
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-restart-complete'"))
+                .isEqualByComparingTo(new BigDecimal("20000.00"));
+    }
+
+    @Test
+    void fundRecurringCash_partialRunRestart_resumesAfterCommittedAccountCursor() {
+        insertAutoParticipant("stock-auto-restart-1", "NOISE_TRADER", true, "10000.00", "1.0", "SECOND");
+        insertActiveAccount("stock-auto-restart-1", "0.00");
+        insertAutoParticipant("stock-auto-restart-2", "NOISE_TRADER", true, "10000.00", "1.0", "SECOND");
+        insertActiveAccount("stock-auto-restart-2", "0.00");
+        insertAutoParticipant("stock-auto-restart-3", "NOISE_TRADER", true, "10000.00", "1.0", "SECOND");
+        insertActiveAccount("stock-auto-restart-3", "0.00");
+        insertPausedSimulationClock();
+        long firstAccountId = queryLong(
+                "select id from stock_account where user_key = 'stock-auto-restart-1'"
+        );
+        jdbcTemplate.update(
+                "update stock_account set cash_balance = 10000.00 where id = ?",
+                firstAccountId
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(
+                    account_id, flow_type, amount, reason, created_by, created_at
+                ) values (?, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT',
+                          'AUTO_MARKET', timestamp '2026-06-30 23:59:58')
+                """,
+                firstAccountId
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_cash_flow_run(
+                    run_key, operation, last_account_id, processed_count,
+                    completed_at, created_at, updated_at
+                ) values ('restart-partial-run', 'SCHEDULED', ?, 1, null,
+                          current_timestamp, current_timestamp)
+                """,
+                firstAccountId
+        );
+
+        int totalProcessed = autoParticipantCashFlowService.fundRecurringCash("restart-partial-run");
+
+        assertThat(totalProcessed).isEqualTo(3);
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isEqualTo(3L);
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-restart-1'"))
+                .isEqualByComparingTo(new BigDecimal("10000.00"));
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-restart-2'"))
+                .isEqualByComparingTo(new BigDecimal("10000.00"));
+        assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-restart-3'"))
+                .isEqualByComparingTo(new BigDecimal("10000.00"));
+        assertThat(queryLong("select processed_count from stock_auto_participant_cash_flow_run where run_key = 'restart-partial-run'"))
+                .isEqualTo(3L);
+        assertThat(queryLong("select count(*) from stock_auto_participant_cash_flow_run where completed_at is not null"))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void recurringCashChunk_businessFailureRollsBackCashFlowAndRunCursorTogether() {
+        insertActiveAccount("stock-auto-rollback", "0.00");
+        long accountId = queryLong("select id from stock_account where user_key = 'stock-auto-rollback'");
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_cash_flow_run(
+                    run_key, operation, last_account_id, processed_count,
+                    completed_at, created_at, updated_at
+                ) values ('rollback-run', 'SCHEDULED', 0, 0, null,
+                          current_timestamp, current_timestamp)
+                """
+        );
+
+        assertThatThrownBy(() -> transactionExecutor.execute(() -> {
+            jdbcTemplate.update(
+                    "update stock_account set cash_balance = 10000.00 where id = ?",
+                    accountId
+            );
+            jdbcTemplate.update(
+                    """
+                    insert into stock_account_cash_flow(
+                        account_id, flow_type, amount, reason, created_by, created_at
+                    ) values (?, 'DEPOSIT', 10000.00, 'AUTO_PARTICIPANT_RECURRING_DEPOSIT',
+                              'AUTO_MARKET', timestamp '2026-07-01 00:00:00')
+                    """,
+                    accountId
+            );
+            jdbcTemplate.update(
+                    """
+                    update stock_auto_participant_cash_flow_run
+                       set last_account_id = ?, processed_count = 1
+                     where run_key = 'rollback-run'
+                    """,
+                    accountId
+            );
+            throw new IllegalStateException("simulated chunk failure");
+        })).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("simulated chunk failure");
+        assertThat(queryDecimal("select cash_balance from stock_account where id = " + accountId))
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
+        assertThat(queryLong("select last_account_id from stock_auto_participant_cash_flow_run where run_key = 'rollback-run'"))
+                .isZero();
     }
 
     @Test
@@ -163,6 +322,42 @@ class AutoParticipantCashFlowServiceTest {
         assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'stock-auto-regular-manual'"))
                 .isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    void fundRecurringCash_databaseMarketStillOpen_rejectsBeforeCandidateQueries() {
+        insertPausedSimulationClock();
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(symbol, enabled, market_status, updated_at)
+                values ('CASH-GATE', true, 'OPEN', current_timestamp)
+                """
+        );
+
+        assertThatThrownBy(autoParticipantCashFlowService::fundRecurringCash)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("while any market is open");
+    }
+
+    @Test
+    void fundRecurringCash_closeFreezeInProgress_rejectsBeforeAccountUpdate() {
+        insertAutoParticipant("stock-auto-freeze", "PAYDAY_ACCUMULATOR", true, "50000.00", "1.0", "DAY");
+        insertActiveAccount("stock-auto-freeze", "0.00");
+        insertPausedSimulationClock();
+        jdbcTemplate.update(
+                """
+                insert into stock_post_close_cycle(
+                    business_date, scope_type, scope_key, phase, status, created_at, updated_at
+                )
+                values (date '2026-07-01', 'FULL_MARKET', 'ALL',
+                        'CLOSE_REQUESTED', 'RUNNING', current_timestamp, current_timestamp)
+                """
+        );
+
+        assertThatThrownBy(autoParticipantCashFlowService::fundRecurringCashManually)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ledger freeze is in progress");
+        assertThat(queryLong("select count(*) from stock_account_cash_flow")).isZero();
     }
 
     @Test

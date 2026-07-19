@@ -25,9 +25,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationClockSnapshot;
+import web.common.core.simulation.SimulationMarketSession;
 
 class ListingAutoMarketJobServiceTest {
 
@@ -38,6 +40,7 @@ class ListingAutoMarketJobServiceTest {
         SimulationClockService simulationClockService = mock(SimulationClockService.class);
         SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
         OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
         });
         ListingAutoMarketJobService service = new ListingAutoMarketJobService(
@@ -47,6 +50,7 @@ class ListingAutoMarketJobServiceTest {
                 simulationMarketSessionService,
                 transactionTemplate,
                 orderBookSymbolLock,
+                marketSessionFenceService,
                 new SimpleMeterRegistry()
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
@@ -63,13 +67,17 @@ class ListingAutoMarketJobServiceTest {
                 null,
                 null
         ));
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
+        when(simulationMarketSessionService.sessionAt(any(LocalDateTime.class)))
+                .thenReturn(SimulationMarketSession.REGULAR);
 
         int processed = service.runListingAutoMarket();
 
         assertThat(processed).isZero();
-        verify(autoMarketReader, never()).findEnabledConfigs();
-        verify(listingAutoAccountOrderService, never()).run(org.mockito.Mockito.any());
+        verify(autoMarketReader, never()).findEnabledMaintenanceConfigs();
+        verify(listingAutoAccountOrderService, never()).run(
+                org.mockito.Mockito.any(),
+                org.mockito.Mockito.any()
+        );
     }
 
     @Test
@@ -79,6 +87,7 @@ class ListingAutoMarketJobServiceTest {
         SimulationClockService simulationClockService = mock(SimulationClockService.class);
         SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
         TransactionTemplate transactionTemplate = transactionTemplate();
+        MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
         OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
         });
         ListingAutoMarketJobService service = new ListingAutoMarketJobService(
@@ -88,15 +97,24 @@ class ListingAutoMarketJobServiceTest {
                 simulationMarketSessionService,
                 transactionTemplate,
                 orderBookSymbolLock,
+                marketSessionFenceService,
                 new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMs", 0L);
         AutoMarketConfig config = config("LST001");
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(simulationClockService.currentSnapshot()).thenReturn(runningSnapshot(now));
-        when(simulationMarketSessionService.isRegularSession()).thenReturn(true);
-        when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of(config));
-        when(listingAutoAccountOrderService.run(config))
+        when(simulationMarketSessionService.sessionAt(any(LocalDateTime.class)))
+                .thenReturn(SimulationMarketSession.REGULAR);
+        when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
+        MarketSessionFenceService.MarketSessionApproval approval = new MarketSessionFenceService.MarketSessionApproval(
+                LocalDate.of(2026, 7, 3),
+                java.util.Map.of("LST001", 1L),
+                now
+        );
+        when(marketSessionFenceService.lockOpenOrderBookFences(List.of("LST001")))
+                .thenReturn(Optional.of(approval));
+        when(listingAutoAccountOrderService.run(config, approval))
                 .thenThrow(new CannotAcquireLockException("deadlock"))
                 .thenReturn(3);
 
@@ -104,7 +122,43 @@ class ListingAutoMarketJobServiceTest {
 
         assertThat(processed).isEqualTo(3);
         verify(transactionTemplate, times(2)).execute(any());
-        verify(listingAutoAccountOrderService, times(2)).run(config);
+        verify(listingAutoAccountOrderService, times(2)).run(config, approval);
+    }
+
+    @Test
+    void runListingAutoMarket_closedFenceSkipsListingOrderWrites() {
+        AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
+        ListingAutoAccountOrderService listingAutoAccountOrderService = mock(ListingAutoAccountOrderService.class);
+        SimulationClockService simulationClockService = mock(SimulationClockService.class);
+        SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
+        TransactionTemplate transactionTemplate = transactionTemplate();
+        MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.of(() -> {
+        });
+        ListingAutoMarketJobService service = new ListingAutoMarketJobService(
+                autoMarketReader,
+                listingAutoAccountOrderService,
+                simulationClockService,
+                simulationMarketSessionService,
+                transactionTemplate,
+                orderBookSymbolLock,
+                marketSessionFenceService,
+                new SimpleMeterRegistry()
+        );
+        AutoMarketConfig config = config("LST001");
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 17, 59, 59);
+        when(simulationClockService.currentSnapshot()).thenReturn(runningSnapshot(now));
+        when(simulationMarketSessionService.sessionAt(any(LocalDateTime.class)))
+                .thenReturn(SimulationMarketSession.REGULAR);
+        when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
+        when(marketSessionFenceService.lockOpenOrderBookFences(List.of("LST001")))
+                .thenReturn(Optional.empty());
+
+        int processed = service.runListingAutoMarket();
+
+        assertThat(processed).isZero();
+        verify(transactionTemplate).execute(any());
+        verify(listingAutoAccountOrderService, never()).run(any(), any());
     }
 
     private AutoMarketConfig config(String symbol) {

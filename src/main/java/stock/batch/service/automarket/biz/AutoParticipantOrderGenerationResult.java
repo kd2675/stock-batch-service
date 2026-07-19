@@ -46,6 +46,22 @@ record AutoParticipantOrderGenerationResult(
         );
     }
 
+    static AutoParticipantOrderGenerationResult droppedExecution(
+            int plannedOrderCount,
+            AutoMarketOrderDropReason reason
+    ) {
+        EnumMap<AutoMarketOrderDropReason, Integer> droppedOrderCounts = new EnumMap<>(AutoMarketOrderDropReason.class);
+        putPositive(droppedOrderCounts, reason, plannedOrderCount);
+        return new AutoParticipantOrderGenerationResult(
+                plannedOrderCount,
+                plannedOrderCount,
+                0,
+                0,
+                0,
+                droppedOrderCounts
+        );
+    }
+
     AutoParticipantOrderGenerationResult withPlanning(
             int decisionCount,
             Map<AutoMarketOrderDropReason, Integer> planningDropCounts

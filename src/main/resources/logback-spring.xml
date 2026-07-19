@@ -9,7 +9,7 @@
     <property name="LOG_ROOT" value="${STOCK_LOG_ROOT:-logs}"/>
     <property name="LOG_DIR" value="${STOCK_BATCH_LOG_DIR:-${LOG_ROOT}/stock-batch-service}"/>
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level ${APP_NAME} pid=${PID:-unknown} port=${SERVER_PORT} instance=${STOCK_INSTANCE_ID:-default} [%thread] %logger{48} trace=%X{traceId:-} span=%X{spanId:-} - %msg%n%wEx"/>
+              value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level ${APP_NAME} pid=${PID:-unknown} port=${SERVER_PORT} instance=${STOCK_INSTANCE_ID:-default} [%thread] %logger{48} trace=%X{traceId:-} span=%X{spanId:-} cycle=%X{cycleId:-} - %msg%n%wEx"/>
     <property name="MAX_FILE_SIZE" value="${STOCK_LOG_MAX_FILE_SIZE:-100MB}"/>
     <property name="APP_MAX_HISTORY" value="${STOCK_LOG_APP_MAX_HISTORY:-30}"/>
     <property name="ERROR_MAX_HISTORY" value="${STOCK_LOG_ERROR_MAX_HISTORY:-90}"/>

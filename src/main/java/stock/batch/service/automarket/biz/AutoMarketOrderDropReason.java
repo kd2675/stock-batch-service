@@ -6,6 +6,7 @@ enum AutoMarketOrderDropReason {
     INVALID_PRICE("invalid_price"),
     INSUFFICIENT_CASH("insufficient_cash"),
     INSUFFICIENT_HOLDING("insufficient_holding"),
+    SESSION_CLOSED("session_closed"),
     BUY_RESERVATION_FAILED("buy_reservation_failed"),
     SELL_RESERVATION_FAILED("sell_reservation_failed");
 

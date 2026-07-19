@@ -3,6 +3,8 @@ package stock.batch.service.batch.settlement.model;
 import java.math.BigDecimal;
 
 public record PortfolioSnapshotCommand(
+        long closeCycleId,
+        long closeRunId,
         long accountId,
         String userKey,
         BigDecimal cashBalance,
@@ -11,6 +13,9 @@ public record PortfolioSnapshotCommand(
         long reservedSellQuantity,
         long holdingPositionCount,
         BigDecimal totalAsset,
-        BigDecimal returnRate
+        BigDecimal returnRate,
+        String inputHash,
+        String calculationVersion,
+        String dataQualityStatus
 ) {
 }

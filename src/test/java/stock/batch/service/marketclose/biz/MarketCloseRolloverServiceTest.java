@@ -7,17 +7,29 @@ import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.marketclose.model.PostCloseCycle;
+import stock.batch.service.marketclose.model.PostClosePhase;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@TestPropertySource(properties = {
+        "stock.batch.market-close.order-capture-chunk-size=1",
+        "stock.batch.market-close.order-cancel-chunk-size=1",
+        "stock.batch.market-close.holding-snapshot-account-chunk-size=1",
+        "stock.batch.market-close.account-snapshot-chunk-size=1",
+        "stock.batch.market-close.reconciliation-account-chunk-size=1"
+})
 class MarketCloseRolloverServiceTest {
 
     private static final long POST_CLOSE_ACCUMULATED_REAL_SECONDS = 5_550L;
@@ -29,15 +41,28 @@ class MarketCloseRolloverServiceTest {
     private MarketCloseRolloverWriter marketCloseRolloverWriter;
 
     @Autowired
+    private PostCloseReportAggregationService postCloseReportAggregationService;
+
+    @Autowired
+    private PostCloseCycleService postCloseCycleService;
+
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
     void setUp() {
         jdbcTemplate.update("delete from stock_execution");
         jdbcTemplate.update("delete from stock_order");
+        jdbcTemplate.update("delete from stock_close_open_order_snapshot");
+        jdbcTemplate.update("delete from stock_close_open_order_summary");
+        jdbcTemplate.update("delete from stock_close_price_snapshot");
+        jdbcTemplate.update("delete from stock_close_account_snapshot");
+        jdbcTemplate.update("delete from stock_post_close_cycle_metric");
         jdbcTemplate.update("delete from stock_holding_snapshot");
         jdbcTemplate.update("delete from stock_execution_daily_account_snapshot");
         jdbcTemplate.update("delete from stock_order_book_daily_snapshot");
+        jdbcTemplate.update("delete from stock_post_close_phase_attempt");
+        jdbcTemplate.update("delete from stock_post_close_cycle");
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account where user_key like 'market-close-%'");
@@ -45,6 +70,8 @@ class MarketCloseRolloverServiceTest {
         jdbcTemplate.update("delete from stock_price");
         jdbcTemplate.update("delete from stock_order_book_market_config");
         jdbcTemplate.update("delete from stock_order_book_instrument");
+        jdbcTemplate.update("delete from stock_market_session_fence");
+        jdbcTemplate.update("delete from stock_market_business_state");
         jdbcTemplate.update("delete from stock_simulation_clock");
         setSimulationDate(LocalDate.of(2026, 1, 1));
     }
@@ -77,18 +104,127 @@ class MarketCloseRolloverServiceTest {
         assertThat(processedCount).isZero();
     }
 
+    @ParameterizedTest
+    @EnumSource(
+            value = PostClosePhase.class,
+            names = {"ORDER_ENTRY_CLOSED", "EXECUTION_DRAINED"}
+    )
+    void rolloverClosingPrices_fromLegacyInternalClosePhase_resumesLedgerFreeze(PostClosePhase legacyPhase) {
+        LocalDate businessDate = LocalDate.of(2026, 1, 2);
+        LocalDateTime closedAt = businessDate.atTime(18, 0);
+        setSimulationDate(businessDate);
+        insertOrderBookInstrument("MC_LEGACY");
+        insertPrice("MC_LEGACY", "73500.00", "70000.00", "internal-order-book");
+        PostCloseCycle cycle = postCloseCycleService.ensureFullMarketCycle(businessDate, closedAt);
+        jdbcTemplate.update(
+                "update stock_post_close_cycle set phase = ?, status = 'PENDING' where id = ?",
+                legacyPhase.name(),
+                cycle.id()
+        );
+
+        marketCloseRolloverService.rolloverClosingPrices(businessDate, closedAt);
+
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select c.phase, c.status, r.status as close_run_status
+                  from stock_post_close_cycle c
+                  join stock_market_close_run r on r.id = c.close_run_id
+                 where c.id = ?
+                """,
+                cycle.id()
+        )).containsEntry("PHASE", "LEDGER_FROZEN")
+                .containsEntry("STATUS", "PENDING")
+                .containsEntry("CLOSE_RUN_STATUS", "COMPLETED");
+    }
+
     @Test
-    void findCloseLockSymbols_withoutSymbol_includesAllFullCloseWriteTargets() {
+    void rolloverClosingPrices_persistsPollingMetricsWithoutRuntimeLedgerScans() {
+        insertPrice("EOD_METRIC", "73500.00", "70000.00", "internal-order-book");
+
+        marketCloseRolloverService.rolloverClosingPrices();
+
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select captured_open_order_count, cancelled_order_count,
+                       released_buy_cash, released_sell_quantity,
+                       reconciliation_mismatch_count, settlement_missing_account_count
+                  from stock_post_close_cycle_metric
+                """
+        )).containsEntry("CAPTURED_OPEN_ORDER_COUNT", 0L)
+                .containsEntry("CANCELLED_ORDER_COUNT", 0L)
+                .containsEntry("RELEASED_BUY_CASH", new BigDecimal("0.00"))
+                .containsEntry("RELEASED_SELL_QUANTITY", 0L)
+                .containsEntry("RECONCILIATION_MISMATCH_COUNT", 0L);
+    }
+
+    @Test
+    void findCloseLockSymbols_withoutSymbol_readsOnlyOrderBookControlTables() {
         insertPrice("MC_PRICE_ONLY", "73500.00", "70000.00", "internal-order-book");
         insertOrderBookInstrument("MC_INSTRUMENT_ONLY");
         insertOrderBookMarketConfig("MC_MARKET_ONLY");
         insertAccount("market-close-lock-buyer", "1000000.00");
         insertReservedBuyOrder("market-close-lock-order", "market-close-lock-buyer", "MC_ORDER_ONLY", "147000.00");
+        jdbcTemplate.update(
+                """
+                insert into stock_market_session_fence(
+                    market_type, symbol, business_date, session_epoch, session_state,
+                    state_changed_at, version, created_at, updated_at
+                )
+                values ('ORDER_BOOK', 'MC_FENCE_ONLY', date '2026-07-01', 1, 'CLOSED',
+                        timestamp '2026-07-01 18:00:00', 0,
+                        timestamp '2026-07-01 18:00:00', timestamp '2026-07-01 18:00:00')
+                """
+        );
 
         List<String> lockSymbols = marketCloseRolloverWriter.findCloseLockSymbols(null);
 
         assertThat(lockSymbols)
-                .contains("MC_PRICE_ONLY", "MC_INSTRUMENT_ONLY", "MC_MARKET_ONLY", "MC_ORDER_ONLY");
+                .contains("MC_FENCE_ONLY", "MC_INSTRUMENT_ONLY", "MC_MARKET_ONLY")
+                .doesNotContain("MC_PRICE_ONLY", "MC_ORDER_ONLY");
+    }
+
+    @Test
+    void openOrderCapture_streamsByStatusAndSymbol_withoutRecapturingTerminalHistory() {
+        LocalDateTime capturedAt = LocalDateTime.of(2026, 7, 3, 18, 0);
+        insertAccount("market-close-capture", "1000000.00");
+        insertReservedBuyOrder(
+                "market-close-terminal-order",
+                "market-close-capture",
+                "MC_CAPTURE",
+                "147000.00"
+        );
+        jdbcTemplate.update(
+                "update stock_order set status = 'CANCELLED', reserved_cash = 0 where client_order_id = ?",
+                "market-close-terminal-order"
+        );
+        insertReservedBuyOrder(
+                "market-close-partial-order",
+                "market-close-capture",
+                "MC_CAPTURE",
+                "73500.00"
+        );
+        jdbcTemplate.update(
+                "update stock_order set status = 'PARTIALLY_FILLED', filled_quantity = 1 where client_order_id = ?",
+                "market-close-partial-order"
+        );
+
+        assertThat(marketCloseRolloverWriter.findOpenOrderCaptureSymbols())
+                .containsExactly("MC_CAPTURE");
+        assertThat(marketCloseRolloverWriter.captureOpenOrdersChunk(
+                77L, 88L, "MC_CAPTURE", "PENDING", capturedAt, 0L, 1
+        )).isZero();
+        assertThat(marketCloseRolloverWriter.captureOpenOrdersChunk(
+                77L, 88L, "MC_CAPTURE", "PARTIALLY_FILLED", capturedAt, 0L, 1
+        )).isEqualTo(1);
+        assertThat(marketCloseRolloverWriter.findLastCapturedOrderId(
+                77L, "MC_CAPTURE", "PARTIALLY_FILLED"
+        )).isPositive();
+        assertThat(queryString(
+                "select source_order_status from stock_close_open_order_snapshot where close_cycle_id = 77"
+        )).isEqualTo("PARTIALLY_FILLED");
+        assertThat(queryLong(
+                "select count(*) from stock_close_open_order_snapshot where close_cycle_id = 77"
+        )).isEqualTo(1L);
     }
 
     @Test
@@ -107,10 +243,25 @@ class MarketCloseRolloverServiceTest {
 
         int processedCount = marketCloseRolloverService.rolloverClosingPrices();
 
-        assertThat(processedCount).isEqualTo(7);
+        assertThat(processedCount).isEqualTo(4);
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
+        assertThat(queryLong("select count(*) from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .as("18:00 freeze must not run the stock_execution-backed symbol report aggregation")
+                .isZero();
+        assertThat(queryLong("select count(*) from stock_execution_daily_account_snapshot where close_run_id = ?", closeRunId))
+                .as("18:00 freeze must not run the stock_execution-backed account report aggregation")
+                .isZero();
+        aggregateFullMarketReports(simulationDate);
         assertThat(queryLong("select cancelled_order_count from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo(2L);
+        assertThat(queryDecimal(
+                "select released_buy_cash from stock_post_close_cycle_metric where close_run_id = ?",
+                closeRunId
+        )).isEqualByComparingTo(new BigDecimal("147000.00"));
+        assertThat(queryLong(
+                "select released_sell_quantity from stock_post_close_cycle_metric where close_run_id = ?",
+                closeRunId
+        )).isEqualTo(4L);
         assertThat(queryLong("select holding_snapshot_count from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo(1L);
         assertThat(queryLong("select price_rollover_count from stock_market_close_run where id = " + closeRunId))
@@ -144,12 +295,17 @@ class MarketCloseRolloverServiceTest {
         assertThat(queryLong("select count(*) from stock_execution_daily_account_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(2L);
         assertThat(queryLong("select open_order_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
-                .isZero();
+                .isEqualTo(2L);
+        assertThat(queryDecimal("select reserved_buy_cash from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
+                .isEqualByComparingTo(new BigDecimal("147000.00"));
         assertThat(queryLong("select holder_count from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(1L);
         assertThat(queryLong("select holding_quantity from stock_order_book_daily_snapshot where close_run_id = ?", closeRunId))
                 .isEqualTo(10L);
         assertThat(queryLong("select count(*) from stock_order where symbol = 'MC001' and status = 'CANCELLED' and reserved_cash = 0"))
+                .isEqualTo(2L);
+        assertThat(queryLong("select count(*) from stock_close_open_order_snapshot where released_at is not null"))
+                .as("every one-order transaction must persist its release checkpoint")
                 .isEqualTo(2L);
         assertThat(queryDecimal("select cash_balance from stock_account where user_key = 'market-close-buyer'"))
                 .isEqualByComparingTo(new BigDecimal("1000000.00"));
@@ -157,7 +313,7 @@ class MarketCloseRolloverServiceTest {
                 select reserved_quantity
                   from stock_holding h
                   join stock_account a on a.id = h.account_id
-                 where a.user_key = 'market-close-seller'
+                where a.user_key = 'market-close-seller'
                    and h.symbol = 'MC001'
                 """)).isZero();
         assertThat(queryLong("""
@@ -175,7 +331,7 @@ class MarketCloseRolloverServiceTest {
                  where a.user_key = 'market-close-seller'
                    and s.symbol = 'MC001'
                    and s.close_run_id = ?
-                """, closeRunId)).isZero();
+                """, closeRunId)).isEqualTo(4L);
     }
 
     @Test
@@ -224,6 +380,7 @@ class MarketCloseRolloverServiceTest {
         );
 
         marketCloseRolloverService.rolloverClosingPrices();
+        aggregateFullMarketReports(simulationDate);
 
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
         List<BigDecimal> ohlc = jdbcTemplate.queryForObject(
@@ -270,7 +427,7 @@ class MarketCloseRolloverServiceTest {
         int processedCount = marketCloseRolloverService.rolloverClosingPrices("mc101");
 
         Long closeRunId = queryLong("select max(id) from stock_market_close_run");
-        assertThat(processedCount).isEqualTo(5);
+        assertThat(processedCount).isEqualTo(4);
         assertThat(queryString("select symbol from stock_market_close_run where id = " + closeRunId))
                 .isEqualTo("MC101");
         assertThat(queryLong("select cancelled_order_count from stock_market_close_run where id = " + closeRunId))
@@ -304,7 +461,7 @@ class MarketCloseRolloverServiceTest {
                   from stock_order_book_daily_snapshot
                  where close_run_id = ?
                    and symbol = 'MC101'
-                """, closeRunId)).isEqualTo(1L);
+                """, closeRunId)).isZero();
         assertThat(queryLong("""
                 select count(*)
                   from stock_order_book_daily_snapshot
@@ -345,7 +502,7 @@ class MarketCloseRolloverServiceTest {
     }
 
     @Test
-    void rolloverClosingPrices_sameDayMultipleCloses_createSeparateHoldingSnapshots() {
+    void rolloverClosingPrices_sameDaySecondClose_reusesCompletedLogicalCycle() {
         LocalDate simulationDate = LocalDate.of(2026, 1, 3);
         setSimulationDate(simulationDate);
         insertOrderBookInstrument("MC002");
@@ -366,30 +523,72 @@ class MarketCloseRolloverServiceTest {
         );
         int secondProcessedCount = marketCloseRolloverService.rolloverClosingPrices();
         Long secondCloseRunId = queryLong("select max(id) from stock_market_close_run");
+        aggregateFullMarketReports(simulationDate);
 
-        assertThat(firstProcessedCount).isEqualTo(3);
-        assertThat(secondProcessedCount).isEqualTo(2);
-        assertThat(secondCloseRunId).isGreaterThan(firstCloseRunId);
+        assertThat(firstProcessedCount).isEqualTo(2);
+        assertThat(secondProcessedCount).isZero();
+        assertThat(secondCloseRunId).isEqualTo(firstCloseRunId);
         assertThat(queryLong("select count(*) from stock_market_close_run where business_date = ?", simulationDate))
-                .isEqualTo(2L);
+                .isOne();
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_post_close_cycle
+                 where business_date = ?
+                   and scope_type = 'FULL_MARKET'
+                   and scope_key = 'ALL'
+                """, simulationDate)).isOne();
         assertThat(queryLong("""
                 select quantity
                   from stock_holding_snapshot
                  where symbol = 'MC002'
                    and close_run_id = ?
                 """, firstCloseRunId)).isEqualTo(10L);
-        assertThat(queryLong("""
-                select quantity
-                  from stock_holding_snapshot
-                 where symbol = 'MC002'
-                   and close_run_id = ?
-                """, secondCloseRunId)).isEqualTo(25L);
+        assertThat(queryLong("select count(*) from stock_holding_snapshot where symbol = 'MC002'"))
+                .isOne();
         assertThat(queryLong("""
                 select count(*)
                   from stock_order_book_daily_snapshot
                  where symbol = 'MC002'
                    and simulation_trade_date = ?
-                """, simulationDate)).isEqualTo(2L);
+                """, simulationDate)).isOne();
+    }
+
+    private void aggregateFullMarketReports(LocalDate businessDate) {
+        Long closeCycleId = queryLong("""
+                select id
+                  from stock_post_close_cycle
+                 where business_date = ?
+                   and scope_type = 'FULL_MARKET'
+                   and scope_key = 'ALL'
+                """, businessDate);
+        jdbcTemplate.update(
+                "update stock_post_close_cycle set phase = 'CORPORATE_CASH_APPLIED' where id = ?",
+                closeCycleId
+        );
+        LocalDateTime aggregatedAt = businessDate.plusDays(1).atTime(0, 10);
+        aggregateReportChunks(closeCycleId, aggregatedAt, true);
+        aggregateReportChunks(closeCycleId, aggregatedAt, false);
+    }
+
+    private void aggregateReportChunks(long closeCycleId, LocalDateTime aggregatedAt, boolean symbolReport) {
+        String afterSymbol = "";
+        while (true) {
+            PostCloseReportAggregationService.ReportAggregationChunk chunk = symbolReport
+                    ? postCloseReportAggregationService.aggregateOrderBookDailySnapshotChunk(
+                            closeCycleId,
+                            aggregatedAt,
+                            afterSymbol
+                    )
+                    : postCloseReportAggregationService.aggregateAccountDailySnapshotChunk(
+                            closeCycleId,
+                            aggregatedAt,
+                            afterSymbol
+                    );
+            if (chunk.finished()) {
+                return;
+            }
+            afterSymbol = chunk.lastSymbol();
+        }
     }
 
     private void setSimulationDate(LocalDate simulationDate) {

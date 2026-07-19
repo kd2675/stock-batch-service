@@ -30,25 +30,16 @@ class AccountSettlementTargetReaderTest {
 
     @Test
     void create_readsTargetsInStableAccountIdOrder() throws Exception {
-        insertAccount(2L, "user-b", "200000.00");
-        insertAccount(1L, "user-a", "100000.00");
-        jdbcTemplate.update(
-                "insert into stock_account_cash_flow(account_id, flow_type, amount, reason) values (1, 'DEPOSIT', 90000, 'OPENING_GRANT')"
+        insertAccountSnapshot(
+                2L, "user-b", "200000.00", "0.00", "0.00", "200000.00",
+                "0.00", 0L, 0L, 0L
         );
-        jdbcTemplate.update(
-                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price) values (1, 'AAA', 2, 1, 50000)"
-        );
-        jdbcTemplate.update(
-                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price) values (1, 'BBB', 3, 2, 10000)"
-        );
-        jdbcTemplate.update(
-                "insert into stock_price(symbol, current_price) values ('AAA', 60000)"
-        );
-        jdbcTemplate.update(
-                "insert into stock_order(account_id, side, status, reserved_cash) values (1, 'BUY', 'PENDING', 30000)"
+        insertAccountSnapshot(
+                1L, "user-a", "100000.00", "90000.00", "30000.00", "130000.00",
+                "150000.00", 5L, 3L, 2L
         );
 
-        var reader = readerFactory.create(1, true);
+        var reader = readerFactory.create(1, 10L);
         reader.open(new ExecutionContext());
         AccountSettlementTarget first = reader.read();
         AccountSettlementTarget second = reader.read();
@@ -71,9 +62,15 @@ class AccountSettlementTargetReaderTest {
     }
 
     @Test
-    void create_whenSettlementIsIneligible_returnsNoRows() throws Exception {
-        insertAccount(1L, "user-a", "100000.00");
-        var reader = readerFactory.create(10, false);
+    void create_whenFrozenInputReconciliationFailed_returnsNoRows() throws Exception {
+        insertAccountSnapshot(
+                1L, "user-a", "100000.00", "100000.00", "0.00", "100000.00",
+                "0.00", 0L, 0L, 0L
+        );
+        jdbcTemplate.update(
+                "update stock_close_account_snapshot set reconciliation_status = 'MISMATCHED' where account_id = 1"
+        );
+        var reader = readerFactory.create(10, 10L);
         reader.open(new ExecutionContext());
 
         AccountSettlementTarget target = reader.read();
@@ -82,21 +79,64 @@ class AccountSettlementTargetReaderTest {
         assertThat(target).isNull();
     }
 
-    private void insertAccount(long id, String userKey, String cashBalance) {
+    @Test
+    void create_selectsPhysicalPagingSortColumn() throws Exception {
+        var reader = readerFactory.create(1, 10L);
+        var queryProviderField = reader.getClass().getDeclaredField("queryProvider");
+        queryProviderField.setAccessible(true);
+        var queryProvider = (org.springframework.batch.infrastructure.item.database.PagingQueryProvider)
+                queryProviderField.get(reader);
+
+        assertThat(queryProvider.generateFirstPageQuery(1))
+                .containsIgnoringCase("select account_snapshot.account_id,");
+    }
+
+    private void insertAccountSnapshot(
+            long accountId,
+            String userKey,
+            String cashBalance,
+            String netCashFlow,
+            String reservedBuyCash,
+            String postCancelCash,
+            String holdingMarketValue,
+            long holdingQuantity,
+            long reservedSellQuantity,
+            long holdingPositionCount
+    ) {
         jdbcTemplate.update(
-                "insert into stock_account(id, user_key, cash_balance, status) values (?, ?, ?, 'ACTIVE')",
-                id,
+                """
+                insert into stock_close_account_snapshot(
+                    close_cycle_id, close_run_id, account_id, user_key, settlement_target,
+                    pre_cancel_cash, pre_cancel_order_reserved_cash, subscription_reserved_cash,
+                    post_cancel_cash, external_net_cash_flow, holding_market_value,
+                    holding_quantity, reserved_sell_quantity, holding_position_count,
+                    reconciliation_status
+                ) values (10, 20, ?, ?, true, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'MATCHED')
+                """,
+                accountId,
                 userKey,
-                new BigDecimal(cashBalance)
+                new BigDecimal(cashBalance),
+                new BigDecimal(reservedBuyCash),
+                new BigDecimal(postCancelCash),
+                new BigDecimal(netCashFlow),
+                new BigDecimal(holdingMarketValue),
+                holdingQuantity,
+                reservedSellQuantity,
+                holdingPositionCount
         );
     }
 
     private void createSchema() {
-        jdbcTemplate.execute("create table stock_account(id bigint primary key, user_key varchar(100), cash_balance decimal(19,2), status varchar(30))");
-        jdbcTemplate.execute("create table stock_account_cash_flow(account_id bigint, flow_type varchar(20), amount decimal(19,2), reason varchar(100))");
-        jdbcTemplate.execute("create table stock_holding(account_id bigint, symbol varchar(20), quantity bigint, reserved_quantity bigint, average_price decimal(19,2))");
-        jdbcTemplate.execute("create table stock_price(symbol varchar(20) primary key, current_price decimal(19,2))");
-        jdbcTemplate.execute("create table stock_order(account_id bigint, side varchar(10), status varchar(30), reserved_cash decimal(19,2))");
-        jdbcTemplate.execute("create table stock_corporate_action_entitlement(account_id bigint, status varchar(30), subscribed_cash_amount decimal(19,2))");
+        jdbcTemplate.execute("""
+                create table stock_close_account_snapshot(
+                    close_cycle_id bigint, close_run_id bigint, account_id bigint, user_key varchar(100),
+                    settlement_target boolean, pre_cancel_cash decimal(19,2),
+                    pre_cancel_order_reserved_cash decimal(19,2), subscription_reserved_cash decimal(19,2),
+                    post_cancel_cash decimal(19,2), external_net_cash_flow decimal(19,2),
+                    holding_market_value decimal(19,2), holding_quantity bigint,
+                    reserved_sell_quantity bigint, holding_position_count bigint,
+                    reconciliation_status varchar(20)
+                )
+                """);
     }
 }

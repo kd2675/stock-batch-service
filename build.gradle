@@ -44,13 +44,35 @@ dependencies {
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.batch:spring-batch-test'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
+    testImplementation 'org.testcontainers:testcontainers-mysql'
     testRuntimeOnly 'com.h2database:h2'
+    testRuntimeOnly 'com.mysql:mysql-connector-j:8.3.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 ext {
     set('springCloudVersion', "2025.1.0")
 }
+
+def stockBatchGitHead = providers.exec {
+    workingDir projectDir
+    commandLine 'git', 'rev-parse', '--short=12', 'HEAD'
+    ignoreExitValue = true
+}.standardOutput.asText.map { it.trim() ?: 'unknown' }
+def stockBatchGitStatus = providers.exec {
+    workingDir projectDir
+    commandLine 'git', 'status', '--porcelain', '--untracked-files=normal'
+    ignoreExitValue = true
+}.standardOutput.asText.map { it.trim() }
+def stockBatchInjectedBuildSha = providers.environmentVariable('BUILD_SHA')
+        .map { it.trim() }
+        .filter { !it.isEmpty() }
+def stockBatchBuildSha = stockBatchInjectedBuildSha.orElse(
+        stockBatchGitHead.zip(stockBatchGitStatus) { head, status ->
+            status ? "${head}-dirty" : head
+        }
+)
 
 dependencyManagement {
     imports {
@@ -59,9 +81,28 @@ dependencyManagement {
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'mysql'
+    }
+}
+
+tasks.register('mysqlTest', Test) {
+    description = 'Runs isolated MySQL 8 locking and EOD concurrency tests with Testcontainers.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+    useJUnitPlatform {
+        includeTags 'mysql'
+    }
 }
 
 springBoot {
     mainClass = 'stock.batch.service.StockBatchServiceApplication'
+    buildInfo {
+        properties {
+            time = null
+            additional = ['sha': stockBatchBuildSha.get()]
+        }
+    }
 }

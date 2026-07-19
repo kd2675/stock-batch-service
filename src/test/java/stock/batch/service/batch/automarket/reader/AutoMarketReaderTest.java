@@ -34,6 +34,61 @@ class AutoMarketReaderTest {
     }
 
     @Test
+    void findEnabledMaintenanceConfigs_readsOnlyRequiredMarketConfiguration() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_maintenance_config_test");
+        realJdbcTemplate.execute("""
+                create table stock_auto_market_config (
+                    symbol varchar(20) not null,
+                    enabled boolean not null,
+                    max_order_quantity int not null,
+                    order_ttl_seconds int not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_order_book_instrument (
+                    symbol varchar(20) not null,
+                    enabled boolean not null,
+                    market varchar(20) not null,
+                    tradable_shares bigint not null,
+                    tick_size decimal(19, 2) not null,
+                    price_limit_rate decimal(19, 2) not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_order_book_market_config (
+                    symbol varchar(20) not null,
+                    enabled boolean not null,
+                    market_status varchar(20) not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_price (
+                    symbol varchar(20) not null,
+                    current_price decimal(19, 2) not null,
+                    previous_close decimal(19, 2) not null
+                )
+                """);
+        realJdbcTemplate.update(
+                "insert into stock_auto_market_config values ('STOCK001', true, 500, 1200)"
+        );
+        realJdbcTemplate.update(
+                "insert into stock_order_book_instrument values ('STOCK001', true, 'ORDERBOOK', 1000000, 100, 30)"
+        );
+        realJdbcTemplate.update(
+                "insert into stock_order_book_market_config values ('STOCK001', true, 'OPEN')"
+        );
+        realJdbcTemplate.update(
+                "insert into stock_price values ('STOCK001', 70000, 69000)"
+        );
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+
+        AutoMarketConfig config = realReader.findEnabledMaintenanceConfigs().getFirst();
+
+        assertThat(config.symbol() + ":" + config.maxOrderQuantity() + ":" + config.orderTtlSeconds()
+                + ":" + config.reportScore()).isEqualTo("STOCK001:500:1200:null");
+    }
+
+    @Test
     void findEnabledParticipantStrategiesBySymbol_readsActiveParticipantsAndSymbolOverridesOnce() {
         JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_strategy_test");
         realJdbcTemplate.execute("""
@@ -473,7 +528,7 @@ class AutoMarketReaderTest {
     }
 
     @Test
-    void findLatestPricesAtOrBefore_readsLatestPricesBySymbolWithSingleQuery() {
+    void findLatestPricesAtOrBefore_readsLatestPricesBySymbolWithBoundedUnionQueries() {
         JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_prices_test");
         realJdbcTemplate.execute("""
                 create table stock_price_tick (
@@ -535,6 +590,36 @@ class AutoMarketReaderTest {
         assertThat(pricesBySymbol).containsOnlyKeys("STOCK002", "STOCK004");
         assertThat(pricesBySymbol.get("STOCK002")).isEqualByComparingTo(new BigDecimal("30200.00"));
         assertThat(pricesBySymbol.get("STOCK004")).isEqualByComparingTo(new BigDecimal("41000.00"));
+    }
+
+    @Test
+    void findLatestPricesAtOrBefore_moreThanOneHundredSymbols_readsAcrossQueryChunks() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_price_chunks_test");
+        realJdbcTemplate.execute("""
+                create table stock_price_tick (
+                    id bigint auto_increment primary key,
+                    symbol varchar(20) not null,
+                    price decimal(19, 2) not null,
+                    price_time timestamp not null
+                )
+                """);
+        realJdbcTemplate.update(
+                "insert into stock_price_tick(symbol, price, price_time) values (?, ?, ?)",
+                "STOCK101",
+                new BigDecimal("10100.00"),
+                LocalDateTime.of(2026, 6, 30, 9, 0)
+        );
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+        List<String> symbols = java.util.stream.IntStream.rangeClosed(1, 101)
+                .mapToObj(index -> "STOCK%03d".formatted(index))
+                .toList();
+
+        Map<String, BigDecimal> pricesBySymbol = realReader.findLatestPricesAtOrBefore(
+                symbols,
+                LocalDateTime.of(2026, 6, 30, 9, 1)
+        );
+
+        assertThat(pricesBySymbol).containsEntry("STOCK101", new BigDecimal("10100.00"));
     }
 
     private JdbcTemplate createJdbcTemplate(String databaseName) {

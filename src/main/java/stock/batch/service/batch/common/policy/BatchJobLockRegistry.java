@@ -14,6 +14,8 @@ import org.springframework.util.StringUtils;
 public class BatchJobLockRegistry {
 
     private static final String DEFAULT_LOCK_OWNER_PREFIX = "stock-batch-service-";
+    private static final int LOCK_OWNER_COLUMN_LENGTH = 128;
+    private static final int UUID_TEXT_LENGTH = 36;
 
     private final JdbcTemplate jdbcTemplate;
     private final long lockTtlSeconds;
@@ -40,7 +42,17 @@ public class BatchJobLockRegistry {
     }
 
     public boolean tryAcquire(String jobName, LocalDateTime now) {
+        return tryAcquire(jobName, now, lockOwner);
+    }
+
+    /**
+     * Acquires a lock for one physical execution token. Using a token distinct from the process
+     * owner prevents an old heartbeat or release from mutating a newer execution that reclaimed
+     * the same job after TTL expiry on the same JVM.
+     */
+    public boolean tryAcquire(String jobName, LocalDateTime now, String acquisitionOwner) {
         String normalizedJobName = BatchJobNames.normalize(jobName);
+        String normalizedOwner = normalizeOwner(acquisitionOwner);
         LocalDateTime lockedUntil = now.plusSeconds(lockTtlSeconds);
         try {
             jdbcTemplate.update(
@@ -49,19 +61,24 @@ public class BatchJobLockRegistry {
                     values (?, ?, ?, ?, ?)
                     """,
                     normalizedJobName,
-                    lockOwner,
+                    normalizedOwner,
                     lockedUntil,
                     now,
                     now
             );
             return true;
         } catch (DuplicateKeyException ignored) {
-            return acquireExpiredLock(normalizedJobName, now, lockedUntil);
+            return acquireExpiredLock(normalizedJobName, normalizedOwner, now, lockedUntil);
         }
     }
 
     public void release(String jobName) {
+        release(jobName, lockOwner);
+    }
+
+    public void release(String jobName, String acquisitionOwner) {
         String normalizedJobName = BatchJobNames.normalize(jobName);
+        String normalizedOwner = normalizeOwner(acquisitionOwner);
         jdbcTemplate.update(
                 """
                 delete from stock_batch_job_lock
@@ -69,12 +86,17 @@ public class BatchJobLockRegistry {
                    and lock_owner = ?
                 """,
                 normalizedJobName,
-                lockOwner
+                normalizedOwner
         );
     }
 
     public boolean renew(String jobName, LocalDateTime now) {
+        return renew(jobName, now, lockOwner);
+    }
+
+    public boolean renew(String jobName, LocalDateTime now, String acquisitionOwner) {
         String normalizedJobName = BatchJobNames.normalize(jobName);
+        String normalizedOwner = normalizeOwner(acquisitionOwner);
         LocalDateTime lockedUntil = now.plusSeconds(lockTtlSeconds);
         int updatedRows = jdbcTemplate.update(
                 """
@@ -87,16 +109,33 @@ public class BatchJobLockRegistry {
                 lockedUntil,
                 now,
                 normalizedJobName,
-                lockOwner
+                normalizedOwner
         );
         return updatedRows == 1;
+    }
+
+    public String newAcquisitionOwner() {
+        int maxPrefixLength = LOCK_OWNER_COLUMN_LENGTH - UUID_TEXT_LENGTH - 1;
+        String prefix = lockOwner.length() <= maxPrefixLength
+                ? lockOwner
+                : lockOwner.substring(0, maxPrefixLength);
+        return prefix + ":" + UUID.randomUUID();
     }
 
     public long lockTtlSeconds() {
         return lockTtlSeconds;
     }
 
-    private boolean acquireExpiredLock(String jobName, LocalDateTime now, LocalDateTime lockedUntil) {
+    public String lockOwner() {
+        return lockOwner;
+    }
+
+    private boolean acquireExpiredLock(
+            String jobName,
+            String acquisitionOwner,
+            LocalDateTime now,
+            LocalDateTime lockedUntil
+    ) {
         int updatedRows = jdbcTemplate.update(
                 """
                 update stock_batch_job_lock
@@ -106,12 +145,23 @@ public class BatchJobLockRegistry {
                  where job_name = ?
                    and locked_until <= ?
                 """,
-                lockOwner,
+                acquisitionOwner,
                 lockedUntil,
                 now,
                 jobName,
                 now
         );
         return updatedRows == 1;
+    }
+
+    private String normalizeOwner(String owner) {
+        if (!StringUtils.hasText(owner)) {
+            throw new IllegalArgumentException("acquisitionOwner is required");
+        }
+        String normalized = owner.trim();
+        if (normalized.length() > LOCK_OWNER_COLUMN_LENGTH) {
+            throw new IllegalArgumentException("acquisitionOwner exceeds lock_owner column length");
+        }
+        return normalized;
     }
 }

@@ -1,14 +1,18 @@
 package stock.batch.service.batch.common.support;
 
 import java.sql.SQLException;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
@@ -37,9 +41,13 @@ import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.config.BatchRepositoryConfig;
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
+import stock.batch.service.batch.metadata.biz.BatchMetadataRetentionService;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @SpringBatchTest
 @SpringBootTest
@@ -70,6 +78,13 @@ class StockBatchJobRepositoryIntegrationTest {
 
     @Autowired
     private BatchJobLockRegistry batchJobLockRegistry;
+
+    @Autowired
+    private JobRepository jobRepository;
+
+    @Autowired
+    @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_TRANSACTION_MANAGER)
+    private PlatformTransactionManager batchMetadataTransactionManager;
 
     @Autowired
     @Qualifier(BatchRepositoryDataSourceConfig.BATCH_METADATA_DATA_SOURCE)
@@ -190,6 +205,41 @@ class StockBatchJobRepositoryIntegrationTest {
         stockBatchJobLauncher.refreshMarketData();
 
         assertThat(countJobInstances(metadata, "market-data-refresh")).isEqualTo(before);
+    }
+
+    @Test
+    void metadataRetention_completedInstance_archivesThenDeletesThroughBatchSixRepository() throws Exception {
+        JobParameters parameters = parameters("metadata-retention-contract");
+        JobExecution execution = jobOperatorTestUtils.startJob(parameters);
+        MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
+        when(marketSessionFenceService.hasOpenMarket()).thenReturn(false);
+        Clock futureClock = Clock.fixed(
+                Instant.now().plusSeconds(60L * 60L * 24L * 40L),
+                ZoneId.systemDefault()
+        );
+        BatchMetadataRetentionService retentionService = new BatchMetadataRetentionService(
+                jobRepository,
+                marketSessionFenceService,
+                batchMetadataDataSource,
+                batchMetadataTransactionManager,
+                new SimpleMeterRegistry(),
+                futureClock,
+                30,
+                100,
+                20,
+                200,
+                true,
+                TEST_JOB_NAME
+        );
+
+        retentionService.archiveAndOptionallyPurgeCompletedInstances();
+
+        assertThat(jobRepository.getJobInstance(execution.getJobInstanceId())).isNull();
+        assertThat(new JdbcTemplate(batchMetadataDataSource).queryForObject(
+                "select PURGED_AT from STOCK_BATCH_JOB_METADATA_ARCHIVE where JOB_EXECUTION_ID = ?",
+                LocalDateTime.class,
+                execution.getId()
+        )).isNotNull();
     }
 
     private JobParameters parameters(String scenario) {

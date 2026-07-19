@@ -19,56 +19,26 @@ public class AccountSettlementTargetReader {
 
     private static final String READER_NAME = "accountSettlementTargetReader";
     private static final String SELECT_CLAUSE = """
-            select a.id as id,
-                   a.user_key,
-                   a.cash_balance,
-                   coalesce((
-                       select sum(
-                           case
-                               when f.flow_type = 'DEPOSIT' and f.reason <> 'DIVIDEND_PAYMENT' then f.amount
-                               when f.flow_type = 'WITHDRAW'
-                                   and f.reason <> 'CAPITAL_INCREASE_SUBSCRIPTION' then -f.amount
-                               else 0
-                           end
-                       )
-                         from stock_account_cash_flow f
-                        where f.account_id = a.id
-                   ), 0) as net_cash_flow,
-                   coalesce(h.market_value, 0) as market_value,
-                   coalesce(h.holding_quantity, 0) as holding_quantity,
-                   coalesce(h.reserved_sell_quantity, 0) as reserved_sell_quantity,
-                   coalesce(h.holding_position_count, 0) as holding_position_count,
-                   coalesce((
-                       select sum(o.reserved_cash)
-                         from stock_order o
-                        where o.account_id = a.id
-                          and o.side = 'BUY'
-                          and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                   ), 0) + coalesce((
-                       select sum(e.subscribed_cash_amount)
-                         from stock_corporate_action_entitlement e
-                        where e.account_id = a.id
-                          and e.status = 'SUBSCRIBED'
-                          and e.subscribed_cash_amount is not null
-                   ), 0) as reserved_buy_cash
+            select account_snapshot.account_id,
+                   account_snapshot.close_cycle_id,
+                   account_snapshot.close_run_id,
+                   account_snapshot.user_key,
+                   account_snapshot.pre_cancel_cash as cash_balance,
+                   account_snapshot.external_net_cash_flow as net_cash_flow,
+                   account_snapshot.holding_market_value as market_value,
+                   account_snapshot.holding_quantity,
+                   account_snapshot.reserved_sell_quantity,
+                   account_snapshot.holding_position_count,
+                   account_snapshot.pre_cancel_order_reserved_cash
+                     + account_snapshot.subscription_reserved_cash as reserved_buy_cash
             """;
     private static final String FROM_CLAUSE = """
-            from stock_account a
-            left join (
-              select h.account_id,
-                     sum(h.quantity * coalesce(p.current_price, h.average_price)) as market_value,
-                     sum(h.quantity) as holding_quantity,
-                     sum(h.reserved_quantity) as reserved_sell_quantity,
-                     sum(case when h.quantity > 0 then 1 else 0 end) as holding_position_count
-                from stock_holding h
-                left join stock_price p on p.symbol = h.symbol
-               group by h.account_id
-            ) h on h.account_id = a.id
+            from stock_close_account_snapshot account_snapshot
             """;
     private static final String ELIGIBLE_ACCOUNT_CLAUSE = """
-            a.status = 'ACTIVE'
-            and a.user_key is not null
-            and a.user_key not like 'stock-listing-%'
+            account_snapshot.close_cycle_id = :cycleId
+            and account_snapshot.settlement_target = true
+            and account_snapshot.reconciliation_status = 'MATCHED'
             """;
 
     private final DataSource dataSource;
@@ -79,7 +49,10 @@ public class AccountSettlementTargetReader {
         this.dataSource = dataSource;
     }
 
-    public JdbcPagingItemReader<AccountSettlementTarget> create(int pageSize, boolean eligible) throws Exception {
+    public JdbcPagingItemReader<AccountSettlementTarget> create(
+            int pageSize,
+            long closeCycleId
+    ) throws Exception {
         return new JdbcPagingItemReaderBuilder<AccountSettlementTarget>()
                 .name(READER_NAME)
                 .dataSource(dataSource)
@@ -88,10 +61,13 @@ public class AccountSettlementTargetReader {
                 .saveState(true)
                 .selectClause(SELECT_CLAUSE)
                 .fromClause(FROM_CLAUSE)
-                .whereClause(ELIGIBLE_ACCOUNT_CLAUSE + (eligible ? " and 1 = 1" : " and 1 = 0"))
-                .sortKeys(Map.of("id", Order.ASCENDING))
+                .whereClause(ELIGIBLE_ACCOUNT_CLAUSE)
+                .parameterValues(Map.of("cycleId", closeCycleId))
+                .sortKeys(Map.of("account_id", Order.ASCENDING))
                 .rowMapper((rs, rowNum) -> new AccountSettlementTarget(
-                        rs.getLong("id"),
+                        rs.getLong("close_cycle_id"),
+                        rs.getLong("close_run_id"),
+                        rs.getLong("account_id"),
                         rs.getString("user_key"),
                         rs.getBigDecimal("cash_balance"),
                         nullToZero(rs.getBigDecimal("net_cash_flow")),

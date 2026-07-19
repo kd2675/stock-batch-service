@@ -110,6 +110,48 @@ class BatchJobLockRegistryTest {
     }
 
     @Test
+    void executionToken_expiredLockReclaimed_oldHeartbeatAndReleaseCannotMutateNewExecution() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        BatchJobLockRegistry registry = new BatchJobLockRegistry(jdbcTemplate, 60, "batch-node-1");
+        LocalDateTime now = LocalDateTime.of(2026, 6, 25, 10, 0);
+        String firstExecution = "batch-node-1:first-execution";
+        String secondExecution = "batch-node-1:second-execution";
+
+        assertThat(registry.tryAcquire("post-close-heavy-admission", now, firstExecution)).isTrue();
+        assertThat(registry.tryAcquire(
+                "post-close-heavy-admission",
+                now.plusSeconds(61),
+                secondExecution
+        )).isTrue();
+
+        assertThat(registry.renew(
+                "post-close-heavy-admission",
+                now.plusSeconds(62),
+                firstExecution
+        )).isFalse();
+        registry.release("post-close-heavy-admission", firstExecution);
+
+        assertThat(lockOwner(jdbcTemplate, "post-close-heavy-admission")).isEqualTo(secondExecution);
+        assertThat(lockRowCount(jdbcTemplate, "post-close-heavy-admission")).isOne();
+    }
+
+    @Test
+    void newAcquisitionOwner_eachExecutionIsDistinctAndFitsSchema() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        BatchJobLockRegistry registry = new BatchJobLockRegistry(
+                jdbcTemplate,
+                60,
+                "x".repeat(128)
+        );
+
+        String first = registry.newAcquisitionOwner();
+        String second = registry.newAcquisitionOwner();
+
+        assertThat(first).hasSizeLessThanOrEqualTo(128).isNotEqualTo(second);
+        assertThat(second).hasSizeLessThanOrEqualTo(128);
+    }
+
+    @Test
     void tryAcquire_blankJobName_rejectsBeforeWritingDatabase() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         BatchJobLockRegistry registry = new BatchJobLockRegistry(jdbcTemplate, 60, "batch-node-1");

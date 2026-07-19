@@ -18,11 +18,13 @@ import org.springframework.test.context.ActiveProfiles;
 
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
+import stock.batch.service.marketclose.biz.MarketCloseRolloverService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBatchTest
-@SpringBootTest(properties = "stock.batch.settlement.chunk-size=2")
+@SpringBootTest(properties = "stock.batch.settlement.chunk-size=200")
 @ActiveProfiles("test")
 class PortfolioSettlementJobIntegrationTest {
 
@@ -32,6 +34,9 @@ class PortfolioSettlementJobIntegrationTest {
 
     @Autowired
     private StockBatchJobLauncher stockBatchJobLauncher;
+
+    @Autowired
+    private MarketCloseRolloverService marketCloseRolloverService;
 
     @Autowired
     private JobRepositoryTestUtils jobRepositoryTestUtils;
@@ -52,6 +57,17 @@ class PortfolioSettlementJobIntegrationTest {
     void setUp() {
         jobRepositoryTestUtils.removeJobExecutions();
         jdbcTemplate.update("delete from portfolio_snapshot");
+        jdbcTemplate.update("delete from stock_close_open_order_snapshot");
+        jdbcTemplate.update("delete from stock_close_open_order_summary");
+        jdbcTemplate.update("delete from stock_close_price_snapshot");
+        jdbcTemplate.update("delete from stock_close_account_snapshot");
+        jdbcTemplate.update("delete from stock_post_close_phase_attempt");
+        jdbcTemplate.update("delete from stock_post_close_cycle");
+        jdbcTemplate.update("delete from stock_market_session_fence");
+        jdbcTemplate.update("delete from stock_market_business_state");
+        jdbcTemplate.update("delete from stock_holding_snapshot");
+        jdbcTemplate.update("delete from stock_execution_daily_account_snapshot");
+        jdbcTemplate.update("delete from stock_order_book_daily_snapshot");
         jdbcTemplate.update("delete from stock_corporate_action_entitlement");
         jdbcTemplate.update("delete from stock_corporate_action");
         jdbcTemplate.update("delete from stock_order");
@@ -62,7 +78,6 @@ class PortfolioSettlementJobIntegrationTest {
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_simulation_clock");
         insertSimulationClock();
-        insertCompletedFullCloseRun(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
     }
 
     @Test
@@ -71,7 +86,7 @@ class PortfolioSettlementJobIntegrationTest {
         insertPrice("005930", "70000.00");
         insertHolding("ranker", "005930", 2, 1, "50000.00");
 
-        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
+        int settledCount = freezeAndSettle();
 
         assertThat(settledCount).isEqualTo(1);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
@@ -92,11 +107,11 @@ class PortfolioSettlementJobIntegrationTest {
 
     @Test
     void settleToday_multiplePages_recordsRealChunkCommitCount() {
-        for (int index = 1; index <= 5; index++) {
+        for (int index = 1; index <= 201; index++) {
             insertAccount("paged-ranker-" + index, "100000.00", "100000.00");
         }
 
-        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
+        int settledCount = freezeAndSettle();
 
         Long commitCount = batchMetadataJdbcTemplate.queryForObject(
                 """
@@ -113,42 +128,144 @@ class PortfolioSettlementJobIntegrationTest {
                 PortfolioSettlementJob.JOB_NAME,
                 PortfolioSettlementJob.STEP_NAME
         );
-        assertThat(settledCount + ":" + commitCount).isEqualTo("5:3");
+        assertThat(settledCount + ":" + commitCount).isEqualTo("201:2");
     }
 
     @Test
-    void settleToday_existingSnapshot_updatesSameDateRow() {
+    void settle_afterFreezeCashChanges_usesFrozenAccountCash() {
+        insertAccount("frozen-cash-ranker", "100000.00", "200000.00");
+        freezeLedgerOnly();
+        jdbcTemplate.update(
+                "update stock_account set cash_balance = 900000.00 where user_key = 'frozen-cash-ranker'"
+        );
+
+        stockBatchJobLauncher.settlePortfolios(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
+
+        assertThat(queryDecimal("""
+                select total_asset
+                  from portfolio_snapshot ps
+                  join stock_account a on a.id = ps.account_id
+                 where a.user_key = 'frozen-cash-ranker'
+                """)).isEqualByComparingTo(new BigDecimal("100000.00"));
+    }
+
+    @Test
+    void settle_afterFreezePriceChanges_usesFrozenClosePrice() {
+        insertAccount("frozen-price-ranker", "100000.00", "200000.00");
+        insertPrice("005930", "70000.00");
+        insertHolding("frozen-price-ranker", "005930", 2, "50000.00");
+        freezeLedgerOnly();
+        jdbcTemplate.update("update stock_price set current_price = 80000.00 where symbol = '005930'");
+
+        stockBatchJobLauncher.settlePortfolios(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
+
+        assertThat(queryDecimal("""
+                select total_asset
+                  from portfolio_snapshot ps
+                  join stock_account a on a.id = ps.account_id
+                 where a.user_key = 'frozen-price-ranker'
+                """)).isEqualByComparingTo(new BigDecimal("240000.00"));
+    }
+
+    @Test
+    void settle_accountCreatedAfterFreeze_isNotAddedToFrozenCohort() {
+        insertAccount("frozen-cohort-ranker", "100000.00", "100000.00");
+        freezeLedgerOnly();
+        insertAccount("late-ranker", "500000.00", "500000.00");
+
+        int settledCount = stockBatchJobLauncher.settlePortfolios(
+                TEST_SIMULATION_DATE,
+                TEST_SETTLEMENT_AT
+        ).processedCount();
+
+        assertThat(settledCount + ":" + queryLong("""
+                select count(*)
+                  from portfolio_snapshot ps
+                  join stock_account a on a.id = ps.account_id
+                 where a.user_key = 'late-ranker'
+                """)).isEqualTo("1:0");
+    }
+
+    @Test
+    void settle_sameFrozenCycleCorrectionReexecution_keepsOneSnapshotAndSameInputHash() {
+        insertAccount("repeatable-ranker", "100000.00", "200000.00");
+        insertPrice("005930", "70000.00");
+        insertHolding("repeatable-ranker", "005930", 2, "50000.00");
+        freezeLedgerOnly();
+        stockBatchJobLauncher.settlePortfolios(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT);
+        String firstHash = jdbcTemplate.queryForObject(
+                "select input_hash from portfolio_snapshot",
+                String.class
+        );
+        BigDecimal firstTotalAsset = queryDecimal("select total_asset from portfolio_snapshot");
+        jdbcTemplate.update(
+                """
+                update stock_post_close_cycle
+                   set phase = 'LEDGER_FROZEN',
+                       status = 'PENDING',
+                       phase_revision = phase_revision + 1,
+                       owner_id = null,
+                       lease_until = null,
+                       next_retry_at = null,
+                       completed_at = null
+                 where business_date = ?
+                   and scope_type = 'FULL_MARKET'
+                   and scope_key = 'ALL'
+                """,
+                TEST_SIMULATION_DATE
+        );
+
+        stockBatchJobLauncher.settlePortfolios(TEST_SIMULATION_DATE, TEST_SETTLEMENT_AT.plusMinutes(1));
+
+        String secondHash = jdbcTemplate.queryForObject(
+                "select input_hash from portfolio_snapshot",
+                String.class
+        );
+        assertThat(queryLong("select count(*) from portfolio_snapshot") + ":" + firstHash + ":" + secondHash)
+                .isEqualTo("1:" + firstHash + ":" + firstHash);
+        assertThat(queryDecimal("select total_asset from portfolio_snapshot"))
+                .isEqualByComparingTo(firstTotalAsset);
+    }
+
+    @Test
+    void settleToday_liveRowsChangeAfterFreeze_snapshotRemainsImmutable() {
         insertAccount("ranker", "100000.00", "200000.00");
         insertPrice("005930", "70000.00");
         insertHolding("ranker", "005930", 2, "50000.00");
-        stockBatchJobLauncher.settlePortfoliosForce(1L);
+        freezeAndSettle();
 
         jdbcTemplate.update("update stock_price set current_price = 80000.00 where symbol = '005930'");
         jdbcTemplate.update("update stock_holding set reserved_quantity = 2 where symbol = '005930'");
-        stockBatchJobLauncher.settlePortfoliosForce(2L);
+        assertThatThrownBy(stockBatchJobLauncher::settlePortfolios)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires LEDGER_FROZEN");
 
         assertThat(queryLong("select count(*) from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
                 .isEqualTo(1L);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
-                .isEqualByComparingTo(new BigDecimal("260000.00"));
+                .isEqualByComparingTo(new BigDecimal("240000.00"));
         assertThat(queryLong("select reserved_sell_quantity from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'ranker'"))
-                .isEqualTo(2L);
+                .isZero();
     }
 
     @Test
-    void settle_withSnapshotDate_createsSnapshotForRequestedBusinessDate() {
+    void settle_withFrozenCycle_createsSnapshotForCycleBusinessDate() {
         insertAccount("catch-up-ranker", "100000.00", "200000.00");
         insertPrice("005930", "70000.00");
         insertHolding("catch-up-ranker", "005930", 2, "50000.00");
 
+        marketCloseRolloverService.rolloverClosingPrices(
+                TEST_SIMULATION_DATE,
+                TEST_SIMULATION_DATE.atTime(18, 0)
+        );
         int settledCount = stockBatchJobLauncher.settlePortfolios(
-                LocalDate.of(2026, 7, 3),
-                LocalDateTime.of(2026, 7, 3, 18, 0)
+                TEST_SIMULATION_DATE,
+                TEST_SETTLEMENT_AT
         ).processedCount();
 
         assertThat(settledCount).isEqualTo(1);
         assertThat(queryDate("select snapshot_date from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'catch-up-ranker'"))
-                .isEqualTo(LocalDate.of(2026, 7, 3));
+                .isEqualTo(TEST_SIMULATION_DATE);
     }
 
     @Test
@@ -156,7 +273,7 @@ class PortfolioSettlementJobIntegrationTest {
         insertAccount("buyer", "9860000.00", "10000000.00");
         insertPendingBuyOrder("buyer-order", "buyer", "005930", "140000.00");
 
-        stockBatchJobLauncher.settlePortfolios();
+        freezeAndSettle();
 
         assertThat(queryDecimal("select ps.cash_balance from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(new BigDecimal("9860000.00"));
@@ -171,7 +288,7 @@ class PortfolioSettlementJobIntegrationTest {
         insertAccount("order-book-user", "100000.00", "200000.00");
         insertHolding("order-book-user", "123456", 2, "50000.00");
 
-        stockBatchJobLauncher.settlePortfolios();
+        freezeAndSettle();
 
         assertThat(queryDecimal("select market_value from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'order-book-user'"))
                 .isEqualByComparingTo(new BigDecimal("100000.00"));
@@ -188,7 +305,7 @@ class PortfolioSettlementJobIntegrationTest {
         insertPrice("005930", "70000.00");
         insertHolding("dividend-user", "005930", 2, "50000.00");
 
-        stockBatchJobLauncher.settlePortfolios();
+        freezeAndSettle();
 
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'dividend-user'"))
                 .isEqualByComparingTo(new BigDecimal("250000.00"));
@@ -207,7 +324,7 @@ class PortfolioSettlementJobIntegrationTest {
                 "2000000.00"
         );
 
-        stockBatchJobLauncher.settlePortfoliosForce(1L);
+        freezeAndSettle();
         String beforeListing = snapshotTotalAndReturn("capital-settlement-user");
 
         jdbcTemplate.update(
@@ -217,7 +334,9 @@ class PortfolioSettlementJobIntegrationTest {
         );
         insertPrice("ZQ036", "50000.00");
         insertHolding("capital-settlement-user", "ZQ036", 40L, "50000.00");
-        stockBatchJobLauncher.settlePortfoliosForce(2L);
+        assertThatThrownBy(stockBatchJobLauncher::settlePortfolios)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires LEDGER_FROZEN");
 
         assertThat(beforeListing + "|" + snapshotTotalAndReturn("capital-settlement-user"))
                 .isEqualTo("10000000.00:0.0000|10000000.00:0.0000");
@@ -227,23 +346,37 @@ class PortfolioSettlementJobIntegrationTest {
     void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
         insertAccount("stock-listing-zq001", "1.00", "1.00");
 
-        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
+        int settledCount = freezeAndSettle();
 
         assertThat(settledCount).isZero();
         assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
     }
 
     @Test
-    void settleToday_withoutCompletedMarketCloseRun_skipsCurrentDateSnapshot() {
+    void settleToday_withoutFrozenCycle_rejectsSettlement() {
         // given
         jdbcTemplate.update("delete from stock_market_close_run");
+        jdbcTemplate.update(
+                """
+                insert into stock_market_business_state(
+                    state_id, active_business_date, preparing_business_date,
+                    raw_simulation_date, version, created_at, updated_at
+                )
+                values ('DEFAULT', ?, null, ?, 0, ?, ?)
+                """,
+                TEST_SIMULATION_DATE,
+                TEST_SIMULATION_DATE,
+                TEST_SETTLEMENT_AT,
+                TEST_SETTLEMENT_AT
+        );
         insertAccount("not-closed-ranker", "100000.00", "200000.00");
 
         // when
-        int settledCount = stockBatchJobLauncher.settlePortfolios().processedCount();
+        assertThatThrownBy(stockBatchJobLauncher::settlePortfolios)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("post-close cycle does not exist");
 
         // then
-        assertThat(settledCount).isZero();
         assertThat(queryLong("select count(*) from portfolio_snapshot")).isZero();
     }
 
@@ -265,20 +398,15 @@ class PortfolioSettlementJobIntegrationTest {
         );
     }
 
-    private void insertCompletedFullCloseRun(LocalDate businessDate, LocalDateTime completedAt) {
-        jdbcTemplate.update(
-                """
-                insert into stock_market_close_run(
-                    symbol, business_date, closed_at, status,
-                    cancelled_order_count, holding_snapshot_count, price_rollover_count,
-                    created_at, completed_at
-                )
-                values (null, ?, ?, 'COMPLETED', 0, 0, 0, ?, ?)
-                """,
-                businessDate,
-                completedAt,
-                completedAt,
-                completedAt
+    private int freezeAndSettle() {
+        freezeLedgerOnly();
+        return stockBatchJobLauncher.settlePortfolios().processedCount();
+    }
+
+    private void freezeLedgerOnly() {
+        marketCloseRolloverService.rolloverClosingPrices(
+                TEST_SIMULATION_DATE,
+                TEST_SIMULATION_DATE.atTime(18, 0)
         );
     }
 
@@ -395,9 +523,9 @@ class PortfolioSettlementJobIntegrationTest {
         jdbcTemplate.update(
                 """
                 insert into stock_order(
-                  client_order_id, account_id, symbol, side, order_type, status, limit_price,
+                  client_order_id, account_id, symbol, market_type, side, order_type, status, limit_price,
                   quantity, filled_quantity, reserved_cash, created_at, updated_at
-                ) values (?, ?, ?, 'BUY', 'LIMIT', 'PENDING', 70000.00, 2, 0, ?, ?, ?)
+                ) values (?, ?, ?, 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING', 70000.00, 2, 0, ?, ?, ?)
                 """,
                 clientOrderId,
                 accountId,

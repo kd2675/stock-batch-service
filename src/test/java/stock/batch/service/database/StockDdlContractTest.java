@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,6 +99,7 @@ class StockDdlContractTest {
             "BATCH_STEP_EXECUTION",
             "BATCH_STEP_EXECUTION_CONTEXT",
             "BATCH_JOB_EXECUTION_CONTEXT",
+            "STOCK_BATCH_JOB_METADATA_ARCHIVE",
             "BATCH_STEP_EXECUTION_SEQ",
             "BATCH_JOB_EXECUTION_SEQ",
             "BATCH_JOB_INSTANCE_SEQ"
@@ -108,6 +110,25 @@ class StockDdlContractTest {
             "db/schema/batch-metadata-h2.sql"
     );
 
+    private static final List<String> EOD_ALTER_DDL_FILES = List.of(
+            "stock_eod_session_fence_alter.sql",
+            "stock_eod_cycle_alter.sql",
+            "stock_eod_immutable_snapshot_alter.sql",
+            "stock_eod_report_participant_snapshot_alter.sql",
+            "stock_batch_job_signal_lease_alter.sql",
+            "stock_corporate_action_processing_alter.sql",
+            "stock_corporate_action_chunking_alter.sql",
+            "stock_execution_daily_account_last_executed_at_alter.sql",
+            "stock_execution_profit_summary_alter.sql",
+            "stock_eod_volume_indexes_alter.sql",
+            "stock_auto_participant_cash_flow_run_alter.sql"
+    );
+
+    private static final Pattern HOT_LEDGER_INDEX_DDL = Pattern.compile(
+            "(?is)\\bALTER\\s+TABLE\\s+stock_(?:order|execution)\\b"
+                    + "|\\bCREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+\\S+\\s+ON\\s+stock_(?:order|execution)\\b"
+    );
+
     private static final List<String> BATCH_OPERATION_TABLE_MARKERS = List.of(
             "stock_batch_job_control",
             "stock_batch_job_lock",
@@ -115,7 +136,13 @@ class StockDdlContractTest {
     );
 
     private static final List<String> SIMULATION_CLOCK_TABLE_MARKERS = List.of(
-            "stock_simulation_clock"
+            "stock_simulation_clock",
+            "stock_market_business_state",
+            "stock_market_session_fence",
+            "idx_stock_market_session_fence_state",
+            "chk_stock_market_session_fence_market_type",
+            "chk_stock_market_session_fence_state",
+            "chk_stock_market_session_fence_epoch"
     );
 
     private static final List<String> ADMIN_QUERY_INDEX_MARKERS = List.of(
@@ -143,15 +170,54 @@ class StockDdlContractTest {
     );
 
     private static final List<String> MARKET_CLOSE_SNAPSHOT_TABLE_MARKERS = List.of(
+            "stock_post_close_cycle",
+            "stock_post_close_phase_attempt",
+            "stock_post_close_cycle_metric",
+            "released_buy_cash",
+            "released_sell_quantity",
+            "chk_stock_post_close_cycle_metric_releases",
+            "next_retry_at",
+            "uk_stock_post_close_cycle_scope",
+            "uk_stock_post_close_phase_attempt",
+            "idx_stock_post_close_cycle_scope_date_status",
+            "idx_stock_post_close_cycle_scope_status_date",
+            "idx_stock_post_close_phase_attempt_cycle_id",
+            "idx_stock_post_close_cycle_metric_run",
             "stock_market_close_run",
             "stock_holding_snapshot",
             "stock_order_book_daily_snapshot",
             "stock_execution_daily_account_snapshot",
             "stock_execution_account_day_summary",
+            "buy_gross_amount",
+            "sell_gross_amount",
+            "buy_net_amount",
+            "sell_net_amount",
+            "fee_amount",
+            "tax_amount",
+            "realized_profit",
+            "stock_close_account_snapshot",
+            "participant_category",
+            "stock_close_price_snapshot",
+            "stock_close_open_order_summary",
+            "stock_close_open_order_snapshot",
             "open_price",
             "first_executed_at",
             "uk_stock_order_book_daily_snapshot_run_symbol",
-            "holding_snapshot_run_id"
+            "holding_snapshot_run_id",
+            "uk_stock_close_account_snapshot_cycle_account",
+            "idx_stock_close_account_snapshot_cycle_target",
+            "idx_stock_close_account_snapshot_cycle_reconciliation",
+            "idx_stock_close_open_order_snapshot_cycle_release_order",
+            "idx_stock_close_open_order_snapshot_cycle_stream",
+            "source_order_status",
+            "uk_stock_close_price_snapshot_cycle_symbol",
+            "uk_stock_close_open_order_summary_cycle_symbol",
+            "uk_stock_close_open_order_snapshot_cycle_order",
+            "uk_portfolio_snapshot_cycle_account",
+            "holding_market_value",
+            "input_hash",
+            "calculation_version",
+            "data_quality_status"
     );
 
     @Test
@@ -181,6 +247,297 @@ class StockDdlContractTest {
     }
 
     @Test
+    void eodSessionFenceAlterDdl_isFailClosedAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_eod_session_fence_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_eod_session_fence_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "CREATE TABLE IF NOT EXISTS stock_market_business_state",
+                "CREATE TABLE IF NOT EXISTS stock_market_session_fence",
+                "PRIMARY KEY (market_type, symbol)",
+                "session_epoch BIGINT NOT NULL",
+                "session_state VARCHAR(20) NOT NULL",
+                "SET @stock_market_open_time = COALESCE(@stock_market_open_time, TIME('06:00:00'))",
+                "source.accumulated_real_seconds",
+                "source.last_started_at",
+                "source.last_heartbeat_at",
+                "TIMESTAMPDIFF(",
+                "simulation_seconds_in_day",
+                "'CLOSED'",
+                "INSERT IGNORE INTO stock_market_session_fence"
+        );
+        assertThat(batchDdl).doesNotContain(
+                "SELECT base_simulation_date\n                 FROM stock_simulation_clock"
+        );
+        assertThat(batchDdl).doesNotContain("symbol VARCHAR(20) NULL");
+    }
+
+    @Test
+    void eodCycleAlterDdl_hasLogicalUniquenessAttemptHistoryAndSyncedBackCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_eod_cycle_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_eod_cycle_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "UNIQUE KEY uk_stock_post_close_cycle_scope (business_date, scope_type, scope_key)",
+                "UNIQUE KEY uk_stock_post_close_phase_attempt (cycle_id, phase, attempt_no)",
+                "KEY idx_stock_post_close_cycle_scope_date_status (scope_type, scope_key, business_date, status, id)",
+                "KEY idx_stock_post_close_phase_attempt_cycle_id (cycle_id, id)",
+                "next_retry_at DATETIME NULL",
+                "ADD COLUMN next_retry_at DATETIME NULL AFTER lease_until",
+                "Legacy close runs predate the immutable close-cycle input tables",
+                "'FULL_MARKET'",
+                "'ALL'",
+                "symbol IS NULL",
+                "ON DUPLICATE KEY UPDATE"
+        );
+        assertThat(batchDdl).doesNotContain("portfolio_snapshot");
+    }
+
+    @Test
+    void eodImmutableSnapshotAlterDdl_freezesSettlementInputsAndMatchesBackCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_eod_immutable_snapshot_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_eod_immutable_snapshot_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "information_schema.columns",
+                "information_schema.statistics",
+                "information_schema.table_constraints",
+                "PREPARE stock_eod_immutable_statement",
+                "CREATE TABLE IF NOT EXISTS stock_close_account_snapshot",
+                "participant_category VARCHAR(30) NOT NULL DEFAULT 'MANUAL_PARTICIPANT'",
+                "chk_stock_close_account_snapshot_participant_category",
+                "CREATE TABLE IF NOT EXISTS stock_post_close_cycle_metric",
+                "released_buy_cash DECIMAL(19,2) NOT NULL DEFAULT 0.00",
+                "released_sell_quantity BIGINT NOT NULL DEFAULT 0",
+                "chk_stock_post_close_cycle_metric_releases",
+                "CREATE TABLE IF NOT EXISTS stock_close_price_snapshot",
+                "CREATE TABLE IF NOT EXISTS stock_close_open_order_summary",
+                "CREATE TABLE IF NOT EXISTS stock_close_open_order_snapshot",
+                "UNIQUE KEY uk_stock_close_account_snapshot_cycle_account (close_cycle_id, account_id)",
+                "holding_market_value DECIMAL(19,2) NOT NULL DEFAULT 0.00",
+                "holding_quantity BIGINT NOT NULL DEFAULT 0",
+                "reserved_sell_quantity BIGINT NOT NULL DEFAULT 0",
+                "holding_position_count BIGINT NOT NULL DEFAULT 0",
+                "UNIQUE KEY uk_stock_close_price_snapshot_cycle_symbol (close_cycle_id, symbol)",
+                "UNIQUE KEY uk_stock_close_open_order_snapshot_cycle_order (close_cycle_id, order_id)",
+                "ADD UNIQUE KEY uk_portfolio_snapshot_cycle_account (close_cycle_id, account_id)",
+                "ADD COLUMN input_hash VARCHAR(64) NULL",
+                "ADD COLUMN calculation_version VARCHAR(40) NULL",
+                "ADD COLUMN data_quality_status VARCHAR(20) NULL"
+        );
+        assertThat(batchDdl)
+                .doesNotContain("FOREIGN KEY")
+                .doesNotContain("ADD COLUMN IF NOT EXISTS");
+    }
+
+    @Test
+    void eodReportParticipantSnapshotAlterDdl_freezesClassificationWithoutScanningHotLedgers()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_eod_report_participant_snapshot_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_eod_report_participant_snapshot_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "information_schema.columns",
+                "information_schema.table_constraints",
+                "ADD COLUMN participant_category VARCHAR(30) NULL AFTER account_status",
+                "chk_stock_close_account_snapshot_participant_category",
+                "stock_auto_participant participant",
+                "snapshot.user_key LIKE 'stock-listing-%'"
+        );
+        assertThat(batchDdl).doesNotContain(
+                "ALTER TABLE stock_order",
+                "ALTER TABLE stock_execution",
+                "FROM stock_order",
+                "JOIN stock_order",
+                "FROM stock_execution",
+                "JOIN stock_execution",
+                "ADD COLUMN IF NOT EXISTS"
+        );
+    }
+
+    @Test
+    void executionProfitSummaryAlterDdl_backfillsOnlyInMaintenanceWindowAndMatchesBackCopy()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_execution_profit_summary_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_execution_profit_summary_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "stock_execution_profit_summary_columns_were_missing",
+                "stock_execution_profit_summary_requires_backfill",
+                "ALTER TABLE stock_execution_account_day_summary",
+                "ADD COLUMN buy_gross_amount",
+                "ADD COLUMN sell_net_amount",
+                "ADD COLUMN realized_profit",
+                "gross_amount <> buy_gross_amount + sell_gross_amount",
+                "FROM stock_execution",
+                "GROUP BY DATE(executed_at), account_id"
+        );
+        assertThat(batchDdl)
+                .doesNotContain("ALTER TABLE stock_execution ")
+                .doesNotContain("CREATE INDEX")
+                .doesNotContain("ADD COLUMN IF NOT EXISTS");
+    }
+
+    @Test
+    void eodVolumeIndexesAlterDdl_isIdempotentAvoidsHotLedgersAndMatchesBackCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_eod_volume_indexes_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_eod_volume_indexes_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "information_schema.statistics",
+                "idx_stock_close_account_snapshot_cycle_target",
+                "idx_stock_close_account_snapshot_cycle_reconciliation",
+                "idx_stock_close_open_order_snapshot_cycle_release_order",
+                "idx_stock_close_open_order_snapshot_cycle_stream",
+                "idx_stock_account_cash_flow_account_id",
+                "idx_stock_corporate_action_entitlement_account_status",
+                "idx_stock_post_close_cycle_scope_status_date",
+                "idx_stock_batch_job_signal_cycle_id",
+                "source_order_status",
+                "ALTER TABLE stock_close_account_snapshot",
+                "ALTER TABLE stock_close_open_order_snapshot"
+        );
+        assertThat(batchDdl)
+                .contains(
+                        "'UPDATE stock_close_open_order_snapshot snapshot LEFT JOIN stock_order orders",
+                        "AND is_nullable = 'YES'"
+                )
+                .doesNotContain("\nUPDATE stock_close_open_order_snapshot snapshot");
+        assertThat(HOT_LEDGER_INDEX_DDL.matcher(batchDdl).find()).isFalse();
+    }
+
+    @Test
+    void batchJobSignalLeaseAlterDdl_hasClaimBackoffFieldsAndSyncedBackCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_batch_job_signal_lease_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_batch_job_signal_lease_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "information_schema.columns",
+                "information_schema.check_constraints",
+                "PREPARE stock_batch_signal_statement",
+                "requested_business_date DATE NULL",
+                "requested_session_epoch BIGINT NULL",
+                "expected_cycle_id BIGINT NULL",
+                "eligible_at DATETIME NULL",
+                "next_attempt_at DATETIME NOT NULL",
+                "claim_token VARCHAR(64) NULL",
+                "lease_until DATETIME NULL",
+                "'DEFERRED'",
+                "'DEAD_LETTER'",
+                "idx_stock_batch_job_signal_claim",
+                "idx_stock_batch_job_signal_lease",
+                "UPDATE stock_batch_job_signal job_signal"
+        );
+        assertThat(batchDdl)
+                .doesNotContain("UPDATE stock_batch_job_signal signal")
+                .doesNotContain("ADD COLUMN IF NOT EXISTS");
+    }
+
+    @Test
+    void eodAlterDdl_doesNotAddOrderOrExecutionWriteIndexes() throws IOException {
+        for (String fileName : EOD_ALTER_DDL_FILES) {
+            String batchDdl = Files.readString(
+                    Path.of("src/main/resources/db/ddl", fileName),
+                    StandardCharsets.UTF_8
+            );
+            String backDdl = Files.readString(
+                    Path.of("../stock-back-service/src/main/resources/db/ddl", fileName),
+                    StandardCharsets.UTF_8
+            );
+
+            assertThat(normalizeSqlBlock(backDdl)).as(fileName + " mirrored DDL").isEqualTo(normalizeSqlBlock(batchDdl));
+            assertThat(HOT_LEDGER_INDEX_DDL.matcher(batchDdl).find())
+                    .as(fileName + " must not increase regular-session ledger index writes")
+                    .isFalse();
+            assertThat(batchDdl)
+                    .as(fileName + " must use MySQL 8-compatible conditional DDL")
+                    .doesNotContain("ADD COLUMN IF NOT EXISTS");
+        }
+    }
+
+    @Test
+    void recurringCashRunAlterDdl_isRestartableBoundedAndSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_auto_participant_cash_flow_run_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_auto_participant_cash_flow_run_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "CREATE TABLE IF NOT EXISTS stock_auto_participant_cash_flow_run",
+                "PRIMARY KEY (run_key)",
+                "last_account_id BIGINT NOT NULL DEFAULT 0",
+                "processed_count BIGINT NOT NULL DEFAULT 0",
+                "idx_stock_auto_participant_cash_flow_run_completed"
+        );
+        assertThat(batchDdl).doesNotContain(
+                "stock_order ",
+                "stock_execution "
+        );
+    }
+
+    @Test
     void batchMetadataDdlResources_defineSpringBatchSixJobRepositorySchema() throws IOException {
         for (String resourcePath : BATCH_METADATA_DDL_RESOURCES) {
             String ddl = readDdlResource(resourcePath);
@@ -197,6 +554,20 @@ class StockDdlContractTest {
         assertThat(firstExecutableSqlLine(ddl)).isEqualTo("CREATE SCHEMA IF NOT EXISTS STOCK_BATCH_METADATA;");
         assertThat(ddl).contains("USE STOCK_BATCH_METADATA;");
         assertThat(ddl).doesNotContain("USE STOCK_SERVICE;");
+    }
+
+    @Test
+    void batchMetadataRetentionMysqlDdl_isMetadataOnlyAndIdempotent() throws IOException {
+        String ddl = readDdlResource("db/schema/batch-metadata-retention-mysql.sql");
+
+        assertThat(firstExecutableSqlLine(ddl)).isEqualTo("CREATE SCHEMA IF NOT EXISTS STOCK_BATCH_METADATA;");
+        assertThat(ddl)
+                .contains(
+                        "USE STOCK_BATCH_METADATA;",
+                        "CREATE TABLE IF NOT EXISTS STOCK_BATCH_JOB_METADATA_ARCHIVE",
+                        "idx_batch_job_execution_retention"
+                )
+                .doesNotContain("USE STOCK_SERVICE;", "stock_order", "stock_execution(");
     }
 
     @Test
@@ -290,6 +661,16 @@ class StockDdlContractTest {
                         "execution_mode VARCHAR(120) NOT NULL",
                         "status VARCHAR(20) NOT NULL DEFAULT 'PENDING'",
                         "requested_at TIMESTAMP NOT NULL",
+                        "requested_business_date DATE",
+                        "requested_session_epoch BIGINT",
+                        "expected_cycle_id BIGINT",
+                        "eligible_at TIMESTAMP",
+                        "next_attempt_at TIMESTAMP NOT NULL",
+                        "attempt_count INT NOT NULL DEFAULT 0",
+                        "max_attempts INT NOT NULL DEFAULT 8",
+                        "claim_token VARCHAR(64)",
+                        "lease_until TIMESTAMP",
+                        "failure_class VARCHAR(40)",
                         "CONSTRAINT chk_stock_batch_job_signal_type CHECK (signal_type <> '')",
                         "CONSTRAINT chk_stock_batch_job_signal_job CHECK (job_name <> '')",
                         "CONSTRAINT chk_stock_batch_job_signal_mode CHECK (execution_mode <> '')",

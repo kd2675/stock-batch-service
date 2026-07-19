@@ -12,6 +12,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 public class AutoMarketGenerationExecutorConfig {
 
     public static final String AUTO_MARKET_GENERATION_TASK_EXECUTOR = "autoMarketGenerationTaskExecutor";
+    static final int MAX_GENERATION_POOL_SIZE = 16;
 
     @Bean(name = AUTO_MARKET_GENERATION_TASK_EXECUTOR)
     public Executor autoMarketGenerationTaskExecutor(
@@ -19,14 +20,22 @@ public class AutoMarketGenerationExecutorConfig {
             @Value("${stock.batch.auto-market.thread-pool.max-size:12}") int maxSize,
             @Value("${stock.batch.auto-market.thread-pool.queue-capacity:0}") int queueCapacity
     ) {
-        if (coreSize <= 0) {
-            throw new IllegalArgumentException("stock.batch.auto-market.thread-pool.core-size must be positive");
+        if (coreSize <= 0 || coreSize > MAX_GENERATION_POOL_SIZE) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.thread-pool.core-size must be between 1 and %d"
+                            .formatted(MAX_GENERATION_POOL_SIZE)
+            );
         }
-        if (maxSize < coreSize) {
-            throw new IllegalArgumentException("stock.batch.auto-market.thread-pool.max-size must be greater than or equal to core-size");
+        if (maxSize < coreSize || maxSize > MAX_GENERATION_POOL_SIZE) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.thread-pool.max-size must be between core-size and %d"
+                            .formatted(MAX_GENERATION_POOL_SIZE)
+            );
         }
-        if (queueCapacity < 0) {
-            throw new IllegalArgumentException("stock.batch.auto-market.thread-pool.queue-capacity must not be negative");
+        if (queueCapacity != 0) {
+            throw new IllegalArgumentException(
+                    "stock.batch.auto-market.thread-pool.queue-capacity must be 0 to reject stale generation work"
+            );
         }
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setThreadNamePrefix("stock-auto-market-gen-");

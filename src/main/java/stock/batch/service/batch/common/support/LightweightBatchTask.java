@@ -11,4 +11,8 @@ public interface LightweightBatchTask {
     }
 
     int run();
+
+    default int runForPostCloseCycle(long closeCycleId) {
+        return run();
+    }
 }

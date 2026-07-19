@@ -55,6 +55,9 @@ class BatchJobRuntimeCatalogContractTest {
                 false,
                 false,
                 false,
+                false,
+                false,
+                false,
                 false
         );
 
@@ -114,6 +117,9 @@ class BatchJobRuntimeCatalogContractTest {
                 true,
                 marketCloseConfigured,
                 settlementConfigured,
+                true,
+                true,
+                true,
                 true
         );
     }

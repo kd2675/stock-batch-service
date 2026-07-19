@@ -26,8 +26,18 @@ public class OrderBookExecutionWriter {
         }
         long lowerAccountId = Math.min(firstAccountId, secondAccountId);
         long higherAccountId = Math.max(firstAccountId, secondAccountId);
-        lockAccountForUpdate(lowerAccountId);
-        lockAccountForUpdate(higherAccountId);
+        int lockedAccountCount = jdbcTemplate.queryForList(
+                "select id from stock_account where id in (?, ?) order by id asc for update",
+                Long.class,
+                lowerAccountId,
+                higherAccountId
+        ).size();
+        if (lockedAccountCount != 2) {
+            throw new IllegalStateException(
+                    "Order-book execution account lock count mismatch: expected=2, actual="
+                            + lockedAccountCount
+            );
+        }
     }
 
     private void lockAccountForUpdate(long accountId) {

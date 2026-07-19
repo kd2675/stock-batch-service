@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,8 +21,7 @@ import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.automarket.reader.ListingAutoAccountReader;
-import stock.batch.service.simulation.SimulationClockService;
-import web.common.core.simulation.SimulationClockSnapshot;
+import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 class ListingAutoAccountOrderServiceTest {
 
@@ -30,12 +30,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -50,7 +48,6 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(
                 new BigDecimal("100.00"),
                 new BigDecimal("110.00"),
@@ -62,37 +59,41 @@ class ListingAutoAccountOrderServiceTest {
         when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
         when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(100L);
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(100L);
-        when(orderExecutor.placeOrder(
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("BUY"),
                 any(BigDecimal.class),
-                eq(5L)
+                eq(5L),
+                eq(sessionApproval())
         )).thenReturn(true);
-        when(orderExecutor.placeOrder(
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("SELL"),
                 any(BigDecimal.class),
-                eq(5L)
+                eq(5L),
+                eq(sessionApproval())
         )).thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).placeOrder(
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("BUY"),
                 argThat(price -> price.compareTo(new BigDecimal("100.00")) > 0),
-                eq(5L)
+                eq(5L),
+                eq(sessionApproval())
         );
-        verify(orderExecutor).placeOrder(
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("SELL"),
                 argThat(price -> price.compareTo(new BigDecimal("110.00")) < 0),
-                eq(5L)
+                eq(5L),
+                eq(sessionApproval())
         );
     }
 
@@ -101,12 +102,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -122,20 +121,23 @@ class ListingAutoAccountOrderServiceTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         AutoOrder buyOrder = new AutoOrder(1L, 10L, "LST001", "BUY", 10L, 0L, new BigDecimal("1000.00"));
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(121L);
         when(orderReader.findOpenListingAutoOrders(config, "BUY")).thenReturn(List.of(buyOrder));
         when(orderExecutor.expireOrders(List.of(buyOrder), now)).thenReturn(1);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
         when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(121L);
-        when(orderExecutor.placeOrder(10L, "LST001", "SELL", new BigDecimal("111.00"), 10L)).thenReturn(true);
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
+        )).thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
         verify(orderExecutor).expireOrders(List.of(buyOrder), now);
-        verify(orderExecutor).placeOrder(10L, "LST001", "SELL", new BigDecimal("111.00"), 10L);
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
+        );
     }
 
     @Test
@@ -143,12 +145,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -164,20 +164,23 @@ class ListingAutoAccountOrderServiceTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         AutoOrder sellOrder = new AutoOrder(2L, 10L, "LST001", "SELL", 10L, 0L, BigDecimal.ZERO);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(79L);
         when(orderReader.findOpenListingAutoOrders(config, "SELL")).thenReturn(List.of(sellOrder));
         when(orderExecutor.expireOrders(List.of(sellOrder), now)).thenReturn(1);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
         when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
-        when(orderExecutor.placeOrder(10L, "LST001", "BUY", new BigDecimal("99.00"), 10L)).thenReturn(true);
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
+        )).thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
         verify(orderExecutor).expireOrders(List.of(sellOrder), now);
-        verify(orderExecutor).placeOrder(10L, "LST001", "BUY", new BigDecimal("99.00"), 10L);
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
+        );
     }
 
     @Test
@@ -185,12 +188,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -205,20 +206,27 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(110L);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
         when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
         when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(110L);
-        when(orderExecutor.placeOrder(10L, "LST001", "BUY", new BigDecimal("99.00"), 10L)).thenReturn(true);
-        when(orderExecutor.placeOrder(10L, "LST001", "SELL", new BigDecimal("111.00"), 10L)).thenReturn(true);
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
+        )).thenReturn(true);
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
+        )).thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).placeOrder(10L, "LST001", "BUY", new BigDecimal("99.00"), 10L);
-        verify(orderExecutor).placeOrder(10L, "LST001", "SELL", new BigDecimal("111.00"), 10L);
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
+        );
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
+        );
     }
 
     @Test
@@ -226,12 +234,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 0L, 10L, "DOWN", "UP");
@@ -239,7 +245,6 @@ class ListingAutoAccountOrderServiceTest {
         AutoOrder first = new AutoOrder(1L, 10L, "LST001", "SELL", 8L, 0L, BigDecimal.ZERO);
         AutoOrder second = new AutoOrder(2L, 10L, "LST001", "SELL", 7L, 0L, BigDecimal.ZERO);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(orderReader.findOpenListingAutoOrders(config, "SELL")).thenReturn(List.of(first, second));
         when(orderExecutor.expireOrders(List.of(first), now)).thenReturn(1);
         when(orderExecutor.loadOrderBookState("LST001"))
@@ -247,24 +252,26 @@ class ListingAutoAccountOrderServiceTest {
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "SELL")).thenReturn(7L);
         when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(100L);
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(100L);
-        when(orderExecutor.placeOrder(
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("SELL"),
                 argThat(price -> price.compareTo(new BigDecimal("110.00")) > 0),
-                eq(3L)
+                eq(3L),
+                eq(sessionApproval())
         )).thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
         verify(orderExecutor).expireOrders(List.of(first), now);
-        verify(orderExecutor).placeOrder(
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
                 eq(10L),
                 eq("LST001"),
                 eq("SELL"),
                 argThat(price -> price.compareTo(new BigDecimal("110.00")) > 0),
-                eq(3L)
+                eq(3L),
+                eq(sessionApproval())
         );
     }
 
@@ -273,12 +280,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = new ListingAutoAccountConfig(
@@ -301,18 +306,21 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_181_248L);
         when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(2_181_248L);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
-        when(orderExecutor.placeOrder(10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L))
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L, sessionApproval()
+        ))
                 .thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(1);
-        verify(orderExecutor).placeOrder(10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L);
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L, sessionApproval()
+        );
     }
 
     @Test
@@ -320,12 +328,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -339,20 +345,20 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isZero();
-        verify(orderExecutor, org.mockito.Mockito.never()).placeOrder(
+        verify(orderExecutor, org.mockito.Mockito.never()).placeOrderWithOpenFenceHeld(
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyLong()
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(MarketSessionFenceService.MarketSessionApproval.class)
         );
     }
 
@@ -361,12 +367,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = new ListingAutoAccountConfig(
@@ -389,19 +393,22 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(1_800_000L);
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "BUY")).thenReturn(50_000L);
         when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("1000000000.00"));
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5160.00"), new BigDecimal("5170.00"), 50_000L, 0L));
-        when(orderExecutor.placeOrder(10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L))
+        when(orderExecutor.placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L, sessionApproval()
+        ))
                 .thenReturn(true);
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(1);
-        verify(orderExecutor).placeOrder(10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L);
+        verify(orderExecutor).placeOrderWithOpenFenceHeld(
+                10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L, sessionApproval()
+        );
     }
 
     @Test
@@ -409,12 +416,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -428,20 +433,20 @@ class ListingAutoAccountOrderServiceTest {
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isZero();
-        verify(orderExecutor, org.mockito.Mockito.never()).placeOrder(
+        verify(orderExecutor, org.mockito.Mockito.never()).placeOrderWithOpenFenceHeld(
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyLong()
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(MarketSessionFenceService.MarketSessionApproval.class)
         );
     }
 
@@ -450,12 +455,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig config = listingConfig(
@@ -478,14 +481,13 @@ class ListingAutoAccountOrderServiceTest {
                 new BigDecimal("258000000.00")
         );
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
         when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
         when(orderReader.findOpenListingAutoOrders(config, "BUY")).thenReturn(List.of(remainingBuyOrder));
         when(orderExecutor.expireOrders(List.of(remainingBuyOrder), now)).thenReturn(1);
         when(orderExecutor.loadOrderBookState("LST001"))
                 .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(1);
         verify(orderExecutor).expireOrders(List.of(remainingBuyOrder), now);
@@ -496,12 +498,10 @@ class ListingAutoAccountOrderServiceTest {
         ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        SimulationClockService clockService = mock(SimulationClockService.class);
         ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
                 listingReader,
                 orderReader,
-                orderExecutor,
-                clockService
+                orderExecutor
         );
         AutoMarketConfig marketConfig = marketConfig("LST001");
         ListingAutoAccountConfig firstConfig = listingConfig(10L);
@@ -511,8 +511,6 @@ class ListingAutoAccountOrderServiceTest {
         AutoOrder secondOrder = new AutoOrder(2L, 20L, "LST001", "SELL", 2, 0, BigDecimal.ZERO);
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig))
                 .thenReturn(List.of(firstConfig, secondConfig));
-        when(clockService.currentSnapshot()).thenReturn(snapshot(now));
-        when(clockService.currentMarketDateTime()).thenReturn(now);
         when(orderReader.findExpiredListingAutoOrders(firstConfig, now.minusSeconds(90)))
                 .thenReturn(List.of(firstOrder));
         when(orderReader.findExpiredListingAutoOrders(secondConfig, now.minusSeconds(90)))
@@ -520,7 +518,7 @@ class ListingAutoAccountOrderServiceTest {
         when(orderExecutor.expireOrders(List.of(firstOrder, secondOrder), now)).thenReturn(2);
         when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
 
-        int processed = service.run(marketConfig);
+        int processed = service.run(marketConfig, sessionApproval());
 
         assertThat(processed).isEqualTo(2);
         verify(orderExecutor).expireOrders(List.of(firstOrder, secondOrder), now);
@@ -628,19 +626,11 @@ class ListingAutoAccountOrderServiceTest {
         );
     }
 
-    private SimulationClockSnapshot snapshot(LocalDateTime now) {
-        return new SimulationClockSnapshot(
+    private MarketSessionFenceService.MarketSessionApproval sessionApproval() {
+        return new MarketSessionFenceService.MarketSessionApproval(
                 LocalDate.of(2026, 7, 3),
-                now,
-                now.toLocalDate().atStartOfDay(),
-                now,
-                now.toLocalDate().atStartOfDay(),
-                7200,
-                true,
-                false,
-                0,
-                now,
-                now
+                Map.of("LST001", 1L),
+                LocalDateTime.of(2026, 7, 3, 9, 0)
         );
     }
 }
