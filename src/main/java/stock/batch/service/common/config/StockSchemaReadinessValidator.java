@@ -38,6 +38,7 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
 
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
     private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.of(
+            "portfolio_snapshot", Set.of("pending_subscription_asset"),
             "stock_close_open_order_snapshot", Set.of("source_order_status")
     );
     private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.of(
@@ -294,7 +295,8 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 "lease_until", "failure_class"
         ));
         requirements.put("portfolio_snapshot", Set.of(
-                "close_cycle_id", "close_run_id", "holding_quantity", "reserved_sell_quantity",
+                "close_cycle_id", "close_run_id", "pending_subscription_asset",
+                "holding_quantity", "reserved_sell_quantity",
                 "holding_position_count", "input_hash", "calculation_version", "data_quality_status",
                 "source_build_version"
         ));

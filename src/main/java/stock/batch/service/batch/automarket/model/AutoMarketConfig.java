@@ -18,8 +18,8 @@ public record AutoMarketConfig(
         AutoMarketPressure primaryPressure,
         AutoMarketPressure secondaryPressure
 ) {
-    private static final double PRIMARY_REGIME_WEIGHT = 0.60;
-    private static final double SECONDARY_MODIFIER_WEIGHT = 0.40;
+    private static final double PRIMARY_REGIME_WEIGHT = 0.70;
+    private static final double SECONDARY_MODIFIER_WEIGHT = 0.30;
 
     public AutoMarketConfig {
         primaryDistributionBias = primaryDistributionBias == null

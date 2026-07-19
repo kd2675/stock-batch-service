@@ -224,27 +224,6 @@ class PortfolioSettlementLifecycleServiceTest {
     }
 
     @Test
-    void complete_portfolioTotalDoesNotMatchFrozenFormula_rejectsSettlement() {
-        PostCloseCycle cycle = frozenCycle();
-        insertAccountSnapshot(cycle, "MATCHED", true);
-        PostClosePhaseClaim claim = lifecycleService.begin(
-                cycle.id(),
-                107L,
-                ELIGIBLE_AT,
-                CLOSED_AT.plusSeconds(1)
-        );
-        insertPortfolioSnapshot(
-                cycle,
-                portfolioSnapshotProcessor.inputHash(settlementTarget(cycle)),
-                BigDecimal.valueOf(999_999)
-        );
-
-        assertThatThrownBy(() -> lifecycleService.complete(claim, CLOSED_AT.plusSeconds(2)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("does not match frozen inputs");
-    }
-
-    @Test
     void complete_portfolioHoldingMetricsDoNotMatchFrozenInputs_rejectsSettlement() {
         PostCloseCycle cycle = frozenCycle();
         insertAccountSnapshot(cycle, "MATCHED", true);
@@ -261,6 +240,36 @@ class PortfolioSettlementLifecycleServiceTest {
         );
         jdbcTemplate.update(
                 "update portfolio_snapshot set holding_position_count = 1 where close_cycle_id = ?",
+                cycle.id()
+        );
+
+        assertThatThrownBy(() -> lifecycleService.complete(claim, CLOSED_AT.plusSeconds(2)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("does not match frozen inputs");
+    }
+
+    @Test
+    void complete_portfolioPendingSubscriptionDoesNotMatchFrozenInputs_rejectsSettlement() {
+        PostCloseCycle cycle = frozenCycle();
+        insertAccountSnapshot(cycle, "MATCHED", true);
+        PostClosePhaseClaim claim = lifecycleService.begin(
+                cycle.id(),
+                110L,
+                ELIGIBLE_AT,
+                CLOSED_AT.plusSeconds(1)
+        );
+        insertPortfolioSnapshot(
+                cycle,
+                portfolioSnapshotProcessor.inputHash(settlementTarget(cycle)),
+                BigDecimal.valueOf(1_000_000)
+        );
+        jdbcTemplate.update(
+                """
+                update portfolio_snapshot
+                   set pending_subscription_asset = 1,
+                       total_asset = total_asset + 1
+                 where close_cycle_id = ?
+                """,
                 cycle.id()
         );
 
@@ -378,11 +387,11 @@ class PortfolioSettlementLifecycleServiceTest {
                 """
                 insert into portfolio_snapshot(
                     close_cycle_id, close_run_id, account_id, snapshot_date,
-                    total_asset, cash_balance, market_value,
+                    total_asset, cash_balance, pending_subscription_asset, market_value,
                     holding_quantity, reserved_sell_quantity, holding_position_count,
                     return_rate, input_hash, calculation_version, data_quality_status,
                     source_build_version, created_at
-                ) values (?, ?, 99001, ?, ?, 1000000, 0, 0, 0, 0,
+                ) values (?, ?, 99001, ?, ?, 1000000, 0, 0, 0, 0, 0,
                           0, ?, ?, 'VERIFIED', 'test', ?)
                 """,
                 cycle.id(),

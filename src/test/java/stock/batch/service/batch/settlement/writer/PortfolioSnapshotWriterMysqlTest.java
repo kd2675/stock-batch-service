@@ -55,7 +55,7 @@ class PortfolioSnapshotWriterMysqlTest {
                 + ":" + sqlCaptor.getValue().contains("as incoming")
                 + ":" + sqlCaptor.getValue().contains("values(close_cycle_id)")
                 + ":" + parametersCaptor.getValue().length;
-        assertThat(outcome).isEqualTo("true:true:false:32");
+        assertThat(outcome).isEqualTo("true:true:false:34");
     }
 
     private PortfolioSnapshotCommand command(long accountId) {
@@ -65,11 +65,12 @@ class PortfolioSnapshotWriterMysqlTest {
                 accountId,
                 "user-" + accountId,
                 new BigDecimal("1000.00"),
+                new BigDecimal("100.00"),
                 new BigDecimal("2000.00"),
                 10L,
                 1L,
                 1L,
-                new BigDecimal("3000.00"),
+                new BigDecimal("3100.00"),
                 new BigDecimal("0.10"),
                 "hash-" + accountId,
                 "v1",

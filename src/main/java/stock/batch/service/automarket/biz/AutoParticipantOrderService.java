@@ -67,6 +67,7 @@ class AutoParticipantOrderService {
         Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config, businessEffectiveAt);
         AutoMarketOrderBookState orderBookState = autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         double initialOrderPressure = orderBookState.orderPressure();
+        boolean atLowerPriceLimit = isAtLowerPriceLimit(config);
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
         EnumMap<AutoMarketOrderDropReason, Integer> planningDropCounts = new EnumMap<>(AutoMarketOrderDropReason.class);
         int decisionCount = 0;
@@ -79,7 +80,8 @@ class AutoParticipantOrderService {
             ProfilePolicy policy = autoProfileBehaviorSupport.policy(profilePolicies, strategy.profileType());
             int effectiveIntensity = behavior.effectiveIntensity(strategy, config, policy);
             double unrealizedReturn = unrealizedReturn(tradingState, config);
-            ProfileSignalContext baseContext = profileContext(
+            double profileNoise = noise(policy.noiseWeight(), 0.18);
+            ProfileSignalContext initialContext = profileContext(
                     strategy,
                     config,
                     policy,
@@ -88,18 +90,36 @@ class AutoParticipantOrderService {
                     unrealizedReturn,
                     0,
                     tradingState,
-                    orderBookState
+                    orderBookState,
+                    profileNoise,
+                    atLowerPriceLimit
             );
-            int orderCount = scaledOrderCount(behavior.orderCount(baseContext), config);
+            int orderCount = scaledOrderCount(behavior.orderCount(initialContext), config);
             decisionCount += orderCount;
             for (int index = 0; index < orderCount; index++) {
-                ProfileSignalContext context = baseContext.withOrderIndex(index);
+                ProfileSignalContext context = profileContext(
+                        strategy,
+                        config,
+                        policy,
+                        effectiveIntensity,
+                        momentumPressure,
+                        unrealizedReturn,
+                        index,
+                        tradingState,
+                        orderBookState,
+                        profileNoise,
+                        atLowerPriceLimit
+                );
                 String side = behavior.chooseSide(context);
                 if (side == null) {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.SIDE_NOT_SELECTED);
                     continue;
                 }
                 BigDecimal price = autoParticipantOrderPricing.createAutoPrice(config, effectiveIntensity, side, policy, orderBookState);
+                if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+                    incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.INVALID_PRICE);
+                    continue;
+                }
                 price = autoParticipantOrderPricing.avoidSelfCross(
                         config,
                         side,
@@ -107,6 +127,10 @@ class AutoParticipantOrderService {
                         tradingState.ownBestBid(),
                         tradingState.ownBestAsk()
                 );
+                if (price.compareTo(BigDecimal.ZERO) <= 0) {
+                    incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.INVALID_PRICE);
+                    continue;
+                }
                 QuantityDecision quantityDecision = createQuantity(
                         tradingState,
                         side,
@@ -163,7 +187,9 @@ class AutoParticipantOrderService {
             double unrealizedReturn,
             int orderIndex,
             AutoParticipantTradingState tradingState,
-            AutoMarketOrderBookState orderBookState
+            AutoMarketOrderBookState orderBookState,
+            double profileNoise,
+            boolean atLowerPriceLimit
     ) {
         return new ProfileSignalContext(
                 strategy,
@@ -176,9 +202,9 @@ class AutoParticipantOrderService {
                 tradingState.availableQuantity(),
                 tradingState.cashBalance(),
                 tradingState.recentDividendCashAmount(),
-                isAtLowerPriceLimit(config),
+                atLowerPriceLimit,
                 orderIndex,
-                noise(policy.noiseWeight(), 0.18)
+                profileNoise
         );
     }
 

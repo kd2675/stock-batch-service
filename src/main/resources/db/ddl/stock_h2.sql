@@ -1399,6 +1399,7 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshot (
   snapshot_date DATE NOT NULL,
   total_asset DECIMAL(19,2) NOT NULL,
   cash_balance DECIMAL(19,2) NOT NULL,
+  pending_subscription_asset DECIMAL(19,2) NOT NULL DEFAULT 0.00,
   market_value DECIMAL(19,2) NOT NULL,
   holding_quantity BIGINT NULL,
   reserved_sell_quantity BIGINT NULL,
@@ -1413,7 +1414,13 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshot (
   CONSTRAINT uk_portfolio_snapshot_cycle_account UNIQUE (close_cycle_id, account_id),
   CONSTRAINT chk_portfolio_snapshot_total_asset_non_negative CHECK (total_asset >= 0),
   CONSTRAINT chk_portfolio_snapshot_cash_balance_non_negative CHECK (cash_balance >= 0),
+  CONSTRAINT chk_portfolio_snapshot_pending_subscription_non_negative CHECK (
+    pending_subscription_asset >= 0
+  ),
   CONSTRAINT chk_portfolio_snapshot_market_value_non_negative CHECK (market_value >= 0),
+  CONSTRAINT chk_portfolio_snapshot_asset_composition CHECK (
+    total_asset = cash_balance + pending_subscription_asset + market_value
+  ),
   CONSTRAINT chk_portfolio_snapshot_holding_metrics_complete CHECK (
     (holding_quantity IS NULL AND reserved_sell_quantity IS NULL AND holding_position_count IS NULL)
     OR (

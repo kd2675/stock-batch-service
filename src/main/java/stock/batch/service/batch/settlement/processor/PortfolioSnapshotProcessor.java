@@ -15,11 +15,11 @@ import stock.batch.service.batch.settlement.model.PortfolioSnapshotCommand;
 @Component
 public class PortfolioSnapshotProcessor {
 
-    public static final String CALCULATION_VERSION = "portfolio-v2-frozen-close";
+    public static final String CALCULATION_VERSION = "portfolio-v4-explicit-subscription-asset";
 
     public PortfolioSnapshotCommand process(AccountSettlementTarget target) {
         BigDecimal totalAsset = target.cashBalance()
-                .add(target.reservedBuyCash())
+                .add(target.pendingSubscriptionAsset())
                 .add(target.marketValue());
         BigDecimal returnRate = BigDecimal.ZERO;
         if (target.netCashFlow().compareTo(BigDecimal.ZERO) > 0) {
@@ -33,6 +33,7 @@ public class PortfolioSnapshotProcessor {
                 target.accountId(),
                 target.userKey(),
                 target.cashBalance(),
+                target.pendingSubscriptionAsset(),
                 target.marketValue(),
                 target.holdingQuantity(),
                 target.reservedSellQuantity(),
@@ -54,7 +55,7 @@ public class PortfolioSnapshotProcessor {
                 decimal(target.cashBalance()),
                 decimal(target.netCashFlow()),
                 decimal(target.marketValue()),
-                decimal(target.reservedBuyCash()),
+                decimal(target.pendingSubscriptionAsset()),
                 Long.toString(target.holdingQuantity()),
                 Long.toString(target.reservedSellQuantity()),
                 Long.toString(target.holdingPositionCount())

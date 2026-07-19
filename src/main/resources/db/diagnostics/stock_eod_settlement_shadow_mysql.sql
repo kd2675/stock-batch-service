@@ -162,14 +162,12 @@ WITH target_account AS (
     JOIN stock_account account ON account.id = target.account_id
 ), comparison AS (
   SELECT legacy.*,
-         legacy.pre_cancel_cash
-           + legacy.pre_cancel_order_reserved_cash
-           + legacy.subscription_reserved_cash AS frozen_cash_and_reservations,
+         legacy.post_cancel_cash
+           + legacy.subscription_reserved_cash AS frozen_cash_and_pending_asset,
          legacy.legacy_cash_balance
            + legacy.legacy_open_order_reserved_cash
-           + legacy.legacy_subscription_reserved_cash AS legacy_cash_and_reservations,
-         legacy.pre_cancel_cash
-           + legacy.pre_cancel_order_reserved_cash
+           + legacy.legacy_subscription_reserved_cash AS legacy_cash_and_pending_asset,
+         legacy.post_cancel_cash
            + legacy.subscription_reserved_cash
            + legacy.holding_market_value AS frozen_total_asset,
          legacy.legacy_cash_balance
@@ -177,6 +175,7 @@ WITH target_account AS (
            + legacy.legacy_subscription_reserved_cash
            + legacy.legacy_holding_market_value AS legacy_total_asset,
          portfolio.cash_balance AS stored_cash_balance,
+         portfolio.pending_subscription_asset AS stored_pending_subscription_asset,
          portfolio.market_value AS stored_market_value,
          portfolio.holding_quantity AS stored_holding_quantity,
          portfolio.reserved_sell_quantity AS stored_reserved_sell_quantity,
@@ -212,7 +211,7 @@ WITH target_account AS (
   SELECT result.*,
          CASE
            WHEN result.post_cancel_cash = result.legacy_cash_balance
-            AND result.frozen_cash_and_reservations = result.legacy_cash_and_reservations
+            AND result.frozen_cash_and_pending_asset = result.legacy_cash_and_pending_asset
             AND result.external_net_cash_flow = result.legacy_external_net_cash_flow
             AND result.holding_market_value = result.legacy_holding_market_value
             AND result.holding_quantity = result.legacy_holding_quantity
@@ -220,14 +219,15 @@ WITH target_account AS (
             AND result.holding_position_count = result.legacy_holding_position_count
             AND result.frozen_total_asset = result.legacy_total_asset
             AND result.frozen_return_rate = result.legacy_return_rate
-            AND result.stored_cash_balance = result.pre_cancel_cash
+            AND result.stored_cash_balance = result.post_cancel_cash
+            AND result.stored_pending_subscription_asset = result.subscription_reserved_cash
             AND result.stored_market_value = result.holding_market_value
             AND result.stored_holding_quantity = result.holding_quantity
             AND result.stored_reserved_sell_quantity = result.reserved_sell_quantity
             AND result.stored_holding_position_count = result.holding_position_count
             AND result.stored_total_asset = result.frozen_total_asset
             AND result.stored_return_rate = result.frozen_return_rate
-            AND result.calculation_version = 'portfolio-v2-frozen-close'
+            AND result.calculation_version = 'portfolio-v4-explicit-subscription-asset'
             AND result.data_quality_status = 'VERIFIED'
            THEN 'MATCHED'
            ELSE 'MISMATCHED'
@@ -241,15 +241,16 @@ SELECT classified.close_cycle_id,
        MAX(classified.account_id) OVER () AS next_after_account_id,
        SUM(CASE WHEN classified.shadow_status = 'MISMATCHED' THEN 1 ELSE 0 END)
          OVER () AS page_mismatch_count,
-       classified.pre_cancel_cash AS frozen_cash_balance,
+       classified.pre_cancel_cash AS frozen_pre_cancel_cash,
        classified.post_cancel_cash AS frozen_post_cancel_cash,
        classified.legacy_cash_balance,
        classified.pre_cancel_order_reserved_cash AS frozen_order_reserved_cash,
        classified.legacy_open_order_reserved_cash,
        classified.subscription_reserved_cash AS frozen_subscription_reserved_cash,
+       classified.stored_pending_subscription_asset,
        classified.legacy_subscription_reserved_cash,
-       classified.frozen_cash_and_reservations,
-       classified.legacy_cash_and_reservations,
+       classified.frozen_cash_and_pending_asset,
+       classified.legacy_cash_and_pending_asset,
        classified.external_net_cash_flow AS frozen_external_net_cash_flow,
        classified.legacy_external_net_cash_flow,
        classified.holding_market_value AS frozen_holding_market_value,

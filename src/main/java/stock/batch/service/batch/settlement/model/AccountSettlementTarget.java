@@ -10,7 +10,7 @@ public record AccountSettlementTarget(
         BigDecimal cashBalance,
         BigDecimal netCashFlow,
         BigDecimal marketValue,
-        BigDecimal reservedBuyCash,
+        BigDecimal pendingSubscriptionAsset,
         long holdingQuantity,
         long reservedSellQuantity,
         long holdingPositionCount

@@ -1,12 +1,12 @@
 package stock.batch.service.automarket.biz;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -14,7 +14,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
@@ -25,508 +27,323 @@ import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 class ListingAutoAccountOrderServiceTest {
 
+    private ListingAutoAccountReader listingReader;
+    private AutoMarketOrderReader orderReader;
+    private AutoMarketOrderExecutor orderExecutor;
+    private ListingAutoAccountOrderService service;
+
+    @BeforeEach
+    void setUp() {
+        listingReader = mock(ListingAutoAccountReader.class);
+        orderReader = mock(AutoMarketOrderReader.class);
+        orderExecutor = mock(AutoMarketOrderExecutor.class);
+        service = new ListingAutoAccountOrderService(listingReader, orderReader, orderExecutor);
+    }
+
     @Test
     void run_twoSidedAtTarget_placesBothQuoteDeficitsWithinInventoryBand() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "TWO_SIDED",
-                25L,
-                12L,
-                100L,
-                25L,
-                "UP",
-                "DOWN"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(
-                new BigDecimal("100.00"),
-                new BigDecimal("110.00"),
-                100,
-                100
-        ));
+        ListingAutoAccountConfig config = listingConfig(10L, "TWO_SIDED", 10, 25L, 12L, 100L, 25L, "UP", "DOWN");
+        prepare(config, 100L, 100L, new BigDecimal("100000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "BUY")).thenReturn(20L);
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "SELL")).thenReturn(7L);
-        when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
-        when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(100L);
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(100L);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("BUY"),
-                any(BigDecimal.class),
-                eq(5L),
-                eq(sessionApproval())
-        )).thenReturn(true);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("SELL"),
-                any(BigDecimal.class),
-                eq(5L),
-                eq(sessionApproval())
-        )).thenReturn(true);
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
         assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("BUY"),
-                argThat(price -> price.compareTo(new BigDecimal("100.00")) > 0),
-                eq(5L),
-                eq(sessionApproval())
-        );
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("SELL"),
-                argThat(price -> price.compareTo(new BigDecimal("110.00")) < 0),
-                eq(5L),
-                eq(sessionApproval())
-        );
+        assertThat(orders)
+                .extracting(AutoMarketPlannedOrder::side, AutoMarketPlannedOrder::quantity)
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple("BUY", 5L),
+                        org.assertj.core.groups.Tuple.tuple("SELL", 5L)
+                );
+        assertThat(orders.stream().filter(order -> "BUY".equals(order.side())).findFirst().orElseThrow().price())
+                .isBetween(new BigDecimal("100.01"), new BigDecimal("109.99"));
+        assertThat(orders.stream().filter(order -> "SELL".equals(order.side())).findFirst().orElseThrow().price())
+                .isBetween(new BigDecimal("100.01"), new BigDecimal("109.99"));
     }
 
     @Test
-    void run_twoSidedAboveUpperBand_cancelsBuyAndKeepsSellQuote() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "TWO_SIDED",
-                20L,
-                20L,
-                100L,
-                20L,
-                "DOWN",
-                "UP"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+    void run_twoSidedAboveUpperBand_cancelsBuyAndRefillsSellTarget() {
+        ListingAutoAccountConfig config = listingConfig(10L, "TWO_SIDED", 10, 20L, 20L, 100L, 20L, "DOWN", "UP");
         AutoOrder buyOrder = new AutoOrder(1L, 10L, "LST001", "BUY", 10L, 0L, new BigDecimal("1000.00"));
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(121L);
+        prepare(config, 121L, 121L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("110.00"));
         when(orderReader.findOpenListingAutoOrders(config, "BUY")).thenReturn(List.of(buyOrder));
-        when(orderExecutor.expireOrders(List.of(buyOrder), now)).thenReturn(1);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
-        when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(121L);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
-        )).thenReturn(true);
+        when(orderExecutor.expireOrders(List.of(buyOrder), now())).thenReturn(1);
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
-        assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).expireOrders(List.of(buyOrder), now);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
-        );
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(processed).isEqualTo(3);
+        assertThat(orders).hasSize(2).allSatisfy(order -> {
+            assertThat(order.side()).isEqualTo("SELL");
+            assertThat(order.quantity()).isEqualTo(10L);
+        });
+        verify(orderExecutor).expireOrders(List.of(buyOrder), now());
     }
 
     @Test
-    void run_twoSidedBelowLowerBand_cancelsSellAndKeepsBuyQuote() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "TWO_SIDED",
-                20L,
-                20L,
-                100L,
-                20L,
-                "DOWN",
-                "UP"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+    void run_twoSidedBelowLowerBand_cancelsSellAndRefillsBuyTarget() {
+        ListingAutoAccountConfig config = listingConfig(10L, "TWO_SIDED", 10, 20L, 20L, 100L, 20L, "DOWN", "UP");
         AutoOrder sellOrder = new AutoOrder(2L, 10L, "LST001", "SELL", 10L, 0L, BigDecimal.ZERO);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(79L);
+        prepare(config, 79L, 79L, new BigDecimal("100000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
         when(orderReader.findOpenListingAutoOrders(config, "SELL")).thenReturn(List.of(sellOrder));
-        when(orderExecutor.expireOrders(List.of(sellOrder), now)).thenReturn(1);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
-        when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
-        )).thenReturn(true);
+        when(orderExecutor.expireOrders(List.of(sellOrder), now())).thenReturn(1);
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
-        assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).expireOrders(List.of(sellOrder), now);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
-        );
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(processed).isEqualTo(3);
+        assertThat(orders).hasSize(2).allSatisfy(order -> {
+            assertThat(order.side()).isEqualTo("BUY");
+            assertThat(order.quantity()).isEqualTo(10L);
+        });
+        verify(orderExecutor).expireOrders(List.of(sellOrder), now());
     }
 
     @Test
-    void run_twoSidedInsideBand_capsBuyByUpperWorstCaseAndKeepsBothSides() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "TWO_SIDED",
-                20L,
-                20L,
-                100L,
-                20L,
-                "DOWN",
-                "UP"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(110L);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 0));
-        when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("100000.00"));
-        when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(110L);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
-        )).thenReturn(true);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
-        )).thenReturn(true);
+    void run_twoSidedInsideBand_capsEachSideByWorstCaseInventoryLimit() {
+        ListingAutoAccountConfig config = listingConfig(10L, "TWO_SIDED", 10, 20L, 20L, 100L, 20L, "DOWN", "UP");
+        prepare(config, 110L, 110L, new BigDecimal("100000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
-        assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("99.00"), 10L, sessionApproval()
-        );
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("111.00"), 10L, sessionApproval()
-        );
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(processed).isEqualTo(3);
+        assertThat(orders.stream().filter(order -> "BUY".equals(order.side())).mapToLong(AutoMarketPlannedOrder::quantity).sum())
+                .isEqualTo(10L);
+        assertThat(orders.stream().filter(order -> "SELL".equals(order.side())).mapToLong(AutoMarketPlannedOrder::quantity).sum())
+                .isEqualTo(20L);
     }
 
     @Test
     void run_targetReduced_cancelsExcessOrderThenRefillsExactDeficit() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 0L, 10L, "DOWN", "UP");
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+        ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "UP");
         AutoOrder first = new AutoOrder(1L, 10L, "LST001", "SELL", 8L, 0L, BigDecimal.ZERO);
         AutoOrder second = new AutoOrder(2L, 10L, "LST001", "SELL", 7L, 0L, BigDecimal.ZERO);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
+        prepare(config, 100L, 100L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("110.00"));
         when(orderReader.findOpenListingAutoOrders(config, "SELL")).thenReturn(List.of(first, second));
-        when(orderExecutor.expireOrders(List.of(first), now)).thenReturn(1);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("100.00"), new BigDecimal("110.00"), 0, 7));
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "SELL")).thenReturn(7L);
-        when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(100L);
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(100L);
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("SELL"),
-                argThat(price -> price.compareTo(new BigDecimal("110.00")) > 0),
-                eq(3L),
-                eq(sessionApproval())
-        )).thenReturn(true);
+        when(orderExecutor.expireOrders(List.of(first), now())).thenReturn(1);
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
         assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).expireOrders(List.of(first), now);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                eq(10L),
-                eq("LST001"),
-                eq("SELL"),
-                argThat(price -> price.compareTo(new BigDecimal("110.00")) > 0),
-                eq(3L),
-                eq(sessionApproval())
-        );
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> assertThat(order.quantity()).isEqualTo(3L));
+        verify(orderExecutor).expireOrders(List.of(first), now());
     }
 
     @Test
     void run_holdingAboveTarget_capsTotalSellOrdersAtRemainingTargetGap() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "SELL_ONLY", 300_000, 0L, 300_000L, 2_000_000L, 0L, "DOWN", "UP"
         );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = new ListingAutoAccountConfig(
-                "LST001",
-                10L,
-                "listing-user-10",
-                "SELL_ONLY",
-                300_000,
-                90,
-                0,
-                0L,
-                300_000L,
-                2_000_000L,
-                "DOWN",
-                "UP",
-                BigDecimal.ONE,
-                new BigDecimal("5160.00"),
-                new BigDecimal("5160.00"),
-                BigDecimal.valueOf(30)
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_181_248L);
-        when(listingReader.getAvailableQuantity(10L, "LST001")).thenReturn(2_181_248L);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L, sessionApproval()
-        ))
-                .thenReturn(true);
+        prepare(config, 2_181_248L, 2_181_248L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
         assertThat(processed).isEqualTo(1);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "SELL", new BigDecimal("5160.00"), 181_248L, sessionApproval()
-        );
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> assertThat(order.quantity()).isEqualTo(181_248L));
     }
 
     @Test
-    void run_holdingAlreadyAtSellTarget_doesNotPlaceSellOrder() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
+    void run_holdingAlreadyAtDirectionalTarget_doesNotPlaceOrder() {
         ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "SELL_ONLY",
-                0L,
-                300_000L,
-                2_000_000L,
-                "DOWN",
-                "UP"
+                10L, "SELL_ONLY", 300_000, 0L, 300_000L, 2_000_000L, 0L, "DOWN", "UP"
         );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
+        prepare(config, 2_000_000L, 2_000_000L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("110.00"));
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
         assertThat(processed).isZero();
-        verify(orderExecutor, org.mockito.Mockito.never()).placeOrderWithOpenFenceHeld(
-                org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.any(MarketSessionFenceService.MarketSessionApproval.class)
-        );
+        verify(orderExecutor, never()).placeOrdersWithOpenFenceHeld(anyList(), eq(sessionApproval()));
+        verify(listingReader, never()).getAvailableQuantity(10L, "LST001");
+    }
+
+    @Test
+    void run_buyOnlyWithZeroTargetHolding_doesNotTreatZeroAsUnlimited() {
+        ListingAutoAccountConfig config = listingConfig(10L, "BUY_ONLY", 10, 10L, 0L, 0L, 0L, "DOWN", "UP");
+        prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+
+        int processed = service.run(marketConfig(), sessionApproval());
+
+        assertThat(processed).isZero();
+        verify(orderExecutor, never()).placeOrdersWithOpenFenceHeld(anyList(), eq(sessionApproval()));
+        verify(listingReader, never()).getCashBalance(10L);
     }
 
     @Test
     void run_holdingBelowTarget_capsBuyOrdersAtRemainingTargetGap() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "BUY_ONLY", 300_000, 300_000L, 0L, 2_000_000L, 0L, "DOWN", "UP"
         );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = new ListingAutoAccountConfig(
-                "LST001",
-                10L,
-                "listing-user-10",
-                "BUY_ONLY",
-                300_000,
-                90,
-                0,
-                300_000L,
-                0L,
-                2_000_000L,
-                "DOWN",
-                "UP",
-                BigDecimal.ONE,
-                new BigDecimal("5160.00"),
-                new BigDecimal("5160.00"),
-                BigDecimal.valueOf(30)
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(1_800_000L);
+        prepare(config, 1_800_000L, 0L, new BigDecimal("1000000000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
         when(orderReader.getOpenOrderQuantity(10L, "LST001", "BUY")).thenReturn(50_000L);
-        when(listingReader.getCashBalance(10L)).thenReturn(new BigDecimal("1000000000.00"));
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5160.00"), new BigDecimal("5170.00"), 50_000L, 0L));
-        when(orderExecutor.placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L, sessionApproval()
-        ))
-                .thenReturn(true);
+        acceptAllPlannedOrders();
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
         assertThat(processed).isEqualTo(1);
-        verify(orderExecutor).placeOrderWithOpenFenceHeld(
-                10L, "LST001", "BUY", new BigDecimal("5160.00"), 150_000L, sessionApproval()
-        );
-    }
-
-    @Test
-    void run_holdingAlreadyAtBuyTarget_doesNotPlaceBuyOrder() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "BUY_ONLY",
-                300_000L,
-                0L,
-                2_000_000L,
-                "DOWN",
-                "UP"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
-
-        int processed = service.run(marketConfig, sessionApproval());
-
-        assertThat(processed).isZero();
-        verify(orderExecutor, org.mockito.Mockito.never()).placeOrderWithOpenFenceHeld(
-                org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.any(MarketSessionFenceService.MarketSessionApproval.class)
-        );
-    }
-
-    @Test
-    void run_holdingReachesBuyTarget_cancelsRemainingBuyOrder() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig config = listingConfig(
-                10L,
-                "BUY_ONLY",
-                300_000L,
-                0L,
-                2_000_000L,
-                "DOWN",
-                "UP"
-        );
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        AutoOrder remainingBuyOrder = new AutoOrder(
-                1L,
-                10L,
-                "LST001",
-                "BUY",
-                50_000L,
-                0L,
-                new BigDecimal("258000000.00")
-        );
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig)).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(10L, "LST001")).thenReturn(2_000_000L);
-        when(orderReader.findOpenListingAutoOrders(config, "BUY")).thenReturn(List.of(remainingBuyOrder));
-        when(orderExecutor.expireOrders(List.of(remainingBuyOrder), now)).thenReturn(1);
-        when(orderExecutor.loadOrderBookState("LST001"))
-                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("5150.00"), new BigDecimal("5160.00"), 0L, 0L));
-
-        int processed = service.run(marketConfig, sessionApproval());
-
-        assertThat(processed).isEqualTo(1);
-        verify(orderExecutor).expireOrders(List.of(remainingBuyOrder), now);
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> assertThat(order.quantity()).isEqualTo(150_000L));
     }
 
     @Test
     void run_collectsExpiredOrdersAndExpiresThemInOneBatch() {
-        ListingAutoAccountReader listingReader = mock(ListingAutoAccountReader.class);
-        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
-        AutoMarketOrderExecutor orderExecutor = mock(AutoMarketOrderExecutor.class);
-        ListingAutoAccountOrderService service = new ListingAutoAccountOrderService(
-                listingReader,
-                orderReader,
-                orderExecutor
-        );
-        AutoMarketConfig marketConfig = marketConfig("LST001");
-        ListingAutoAccountConfig firstConfig = listingConfig(10L);
-        ListingAutoAccountConfig secondConfig = listingConfig(20L);
-        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
-        AutoOrder firstOrder = new AutoOrder(1L, 10L, "LST001", "BUY", 1, 0, new BigDecimal("1000.00"));
-        AutoOrder secondOrder = new AutoOrder(2L, 20L, "LST001", "SELL", 2, 0, BigDecimal.ZERO);
-        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig))
-                .thenReturn(List.of(firstConfig, secondConfig));
-        when(orderReader.findExpiredListingAutoOrders(firstConfig, now.minusSeconds(90)))
-                .thenReturn(List.of(firstOrder));
-        when(orderReader.findExpiredListingAutoOrders(secondConfig, now.minusSeconds(90)))
-                .thenReturn(List.of(secondOrder));
-        when(orderExecutor.expireOrders(List.of(firstOrder, secondOrder), now)).thenReturn(2);
-        when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
+        ListingAutoAccountConfig firstConfig = listingConfig(10L, "NONE", 10, 0L, 0L, 0L, 0L, "DOWN", "UP");
+        ListingAutoAccountConfig secondConfig = listingConfig(20L, "NONE", 10, 0L, 0L, 0L, 0L, "DOWN", "UP");
+        AutoOrder firstOrder = new AutoOrder(1L, 10L, "LST001", "BUY", 1L, 0L, new BigDecimal("1000.00"));
+        AutoOrder secondOrder = new AutoOrder(2L, 20L, "LST001", "SELL", 2L, 0L, BigDecimal.ZERO);
+        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig())).thenReturn(List.of(firstConfig, secondConfig));
+        when(orderReader.findExpiredListingAutoOrders(firstConfig, now().minusSeconds(90))).thenReturn(List.of(firstOrder));
+        when(orderReader.findExpiredListingAutoOrders(secondConfig, now().minusSeconds(90))).thenReturn(List.of(secondOrder));
+        when(orderExecutor.expireOrders(List.of(firstOrder, secondOrder), now())).thenReturn(2);
+        when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(null, null, 0L, 0L));
 
-        int processed = service.run(marketConfig, sessionApproval());
+        int processed = service.run(marketConfig(), sessionApproval());
 
         assertThat(processed).isEqualTo(2);
-        verify(orderExecutor).expireOrders(List.of(firstOrder, secondOrder), now);
+        verify(orderExecutor).expireOrders(List.of(firstOrder, secondOrder), now());
     }
 
-    private AutoMarketConfig marketConfig(String symbol) {
+    @Test
+    void run_targetThirtyThousandWithThreeThousandMax_replenishesTenOrdersPerSideInOneBatch() {
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "TWO_SIDED", 3_000, 30_000L, 30_000L, 200_000L, 30_000L, "DOWN", "UP"
+        );
+        prepare(config, 200_000L, 200_000L, new BigDecimal("1000000000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
+
+        int processed = service.run(marketConfig(), sessionApproval());
+
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(processed).isEqualTo(20);
+        assertThat(orders).hasSize(20).allSatisfy(order -> assertThat(order.quantity()).isLessThanOrEqualTo(3_000L));
+        assertThat(orders.stream().filter(order -> "BUY".equals(order.side())).mapToLong(AutoMarketPlannedOrder::quantity).sum())
+                .isEqualTo(30_000L);
+        assertThat(orders.stream().filter(order -> "SELL".equals(order.side())).mapToLong(AutoMarketPlannedOrder::quantity).sum())
+                .isEqualTo(30_000L);
+    }
+
+    @Test
+    void run_oversizedDeficit_limitsNewOrdersPerSide() {
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "BUY_ONLY", 10, 1_000L, 0L, 1_000L, 0L, "DOWN", "UP"
+        );
+        prepare(config, 0L, 0L, new BigDecimal("1000000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
+
+        int processed = service.run(marketConfig(), sessionApproval());
+
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(processed).isEqualTo(ListingAutoAccountOrderService.MAX_NEW_ORDERS_PER_SIDE_PER_RUN);
+        assertThat(orders).hasSize(ListingAutoAccountOrderService.MAX_NEW_ORDERS_PER_SIDE_PER_RUN);
+        assertThat(orders).allSatisfy(order -> assertThat(order.quantity()).isEqualTo(10L));
+    }
+
+    @Test
+    void run_buyUpDirection_neverCrossesMarketBestAsk() {
+        ListingAutoAccountConfig config = listingConfig(10L, "BUY_ONLY", 10, 10L, 0L, 10L, 0L, "UP", "UP");
+        prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("102.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
+            assertThat(order.price()).isLessThan(new BigDecimal("102.00"));
+            assertThat(order.side()).isEqualTo("BUY");
+        });
+    }
+
+    @Test
+    void run_sellDownDirection_neverCrossesMarketBestBid() {
+        ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "DOWN");
+        prepare(config, 10L, 10L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("102.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
+            assertThat(order.price()).isGreaterThan(new BigDecimal("100.00"));
+            assertThat(order.side()).isEqualTo("SELL");
+        });
+    }
+
+    @Test
+    void run_twoSidedRandomDirections_neverCrossMarketOrEachOther() {
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "TWO_SIDED", 1, 10L, 10L, 100L, 10L, "RANDOM", "RANDOM"
+        );
+        prepare(config, 100L, 100L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        BigDecimal highestBuy = orders.stream()
+                .filter(order -> "BUY".equals(order.side()))
+                .map(AutoMarketPlannedOrder::price)
+                .max(BigDecimal::compareTo)
+                .orElseThrow();
+        BigDecimal lowestSell = orders.stream()
+                .filter(order -> "SELL".equals(order.side()))
+                .map(AutoMarketPlannedOrder::price)
+                .min(BigDecimal::compareTo)
+                .orElseThrow();
+        assertThat(orders).hasSize(20);
+        assertThat(highestBuy).isLessThan(new BigDecimal("110.00"));
+        assertThat(lowestSell).isGreaterThan(new BigDecimal("100.00"));
+        assertThat(highestBuy).isLessThan(lowestSell);
+    }
+
+    private void prepare(
+            ListingAutoAccountConfig config,
+            long holdingQuantity,
+            long availableQuantity,
+            BigDecimal cashBalance,
+            BigDecimal bestBid,
+            BigDecimal bestAsk
+    ) {
+        when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig())).thenReturn(List.of(config));
+        when(listingReader.getHoldingQuantity(config.accountId(), config.symbol())).thenReturn(holdingQuantity);
+        when(listingReader.getAvailableQuantity(config.accountId(), config.symbol())).thenReturn(availableQuantity);
+        when(listingReader.getCashBalance(config.accountId())).thenReturn(cashBalance);
+        when(orderExecutor.loadOrderBookState(config.symbol()))
+                .thenReturn(new AutoMarketOrderBookState(bestBid, bestAsk, 0L, 0L));
+    }
+
+    private void acceptAllPlannedOrders() {
+        when(orderExecutor.placeOrdersWithOpenFenceHeld(anyList(), eq(sessionApproval())))
+                .thenAnswer(invocation -> {
+                    List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
+                    int buyCount = (int) orders.stream().filter(order -> "BUY".equals(order.side())).count();
+                    int sellCount = orders.size() - buyCount;
+                    return AutoParticipantOrderGenerationResult.execution(
+                            orders.size(),
+                            orders.size(),
+                            buyCount,
+                            sellCount,
+                            0,
+                            0
+                    );
+                });
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private List<AutoMarketPlannedOrder> capturePlannedOrders() {
+        ArgumentCaptor<List<AutoMarketPlannedOrder>> captor = ArgumentCaptor.forClass((Class) List.class);
+        verify(orderExecutor).placeOrdersWithOpenFenceHeld(captor.capture(), eq(sessionApproval()));
+        return captor.getValue();
+    }
+
+    private AutoMarketConfig marketConfig() {
         return new AutoMarketConfig(
-                symbol,
+                "LST001",
                 10,
                 90,
                 100_000L,
@@ -538,66 +355,10 @@ class ListingAutoAccountOrderServiceTest {
         );
     }
 
-    private ListingAutoAccountConfig listingConfig(long accountId) {
-        return new ListingAutoAccountConfig(
-                "LST001",
-                accountId,
-                "listing-user-" + accountId,
-                "NONE",
-                10,
-                90,
-                1,
-                BigDecimal.ONE,
-                new BigDecimal("100.00"),
-                new BigDecimal("100.00"),
-                BigDecimal.valueOf(30)
-        );
-    }
-
     private ListingAutoAccountConfig listingConfig(
             long accountId,
             String positionSide,
-            long targetBuyQuantity,
-            long targetSellQuantity,
-            String buyDirection,
-            String sellDirection
-    ) {
-        return listingConfig(
-                accountId,
-                positionSide,
-                targetBuyQuantity,
-                targetSellQuantity,
-                0L,
-                0L,
-                buyDirection,
-                sellDirection
-        );
-    }
-
-    private ListingAutoAccountConfig listingConfig(
-            long accountId,
-            String positionSide,
-            long targetBuyQuantity,
-            long targetSellQuantity,
-            long targetHoldingQuantity,
-            String buyDirection,
-            String sellDirection
-    ) {
-        return listingConfig(
-                accountId,
-                positionSide,
-                targetBuyQuantity,
-                targetSellQuantity,
-                targetHoldingQuantity,
-                0L,
-                buyDirection,
-                sellDirection
-        );
-    }
-
-    private ListingAutoAccountConfig listingConfig(
-            long accountId,
-            String positionSide,
+            int maxOrderQuantity,
             long targetBuyQuantity,
             long targetSellQuantity,
             long targetHoldingQuantity,
@@ -610,9 +371,9 @@ class ListingAutoAccountOrderServiceTest {
                 accountId,
                 "listing-user-" + accountId,
                 positionSide,
-                10,
+                maxOrderQuantity,
                 90,
-                1,
+                5,
                 targetBuyQuantity,
                 targetSellQuantity,
                 targetHoldingQuantity,
@@ -626,11 +387,15 @@ class ListingAutoAccountOrderServiceTest {
         );
     }
 
+    private LocalDateTime now() {
+        return LocalDateTime.of(2026, 7, 3, 9, 0);
+    }
+
     private MarketSessionFenceService.MarketSessionApproval sessionApproval() {
         return new MarketSessionFenceService.MarketSessionApproval(
                 LocalDate.of(2026, 7, 3),
                 Map.of("LST001", 1L),
-                LocalDateTime.of(2026, 7, 3, 9, 0)
+                now()
         );
     }
 }

@@ -1,6 +1,7 @@
 package stock.batch.service.mysql;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +20,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.batch.settlement.model.AccountSettlementTarget;
+import stock.batch.service.batch.settlement.processor.PortfolioSnapshotProcessor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -30,6 +33,7 @@ class StockMysqlDdlMigrationTest {
             "stock_eod_session_fence_alter.sql",
             "stock_eod_cycle_alter.sql",
             "stock_eod_immutable_snapshot_alter.sql",
+            "stock_portfolio_snapshot_post_close_cash_data_fix.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
             "stock_corporate_action_processing_alter.sql",
@@ -139,6 +143,164 @@ class StockMysqlDdlMigrationTest {
                         rangeEnd
                 )
         )).containsExactly(0, 0, 0);
+    }
+
+    @Test
+    void portfolioPostCloseCashDataFix_rewritesOnlyReconciledSnapshotsAndReappliesAsNoOp()
+            throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute(
+                """
+                alter table portfolio_snapshot
+                  drop check chk_portfolio_snapshot_pending_subscription_non_negative,
+                  drop check chk_portfolio_snapshot_asset_composition,
+                  drop column pending_subscription_asset
+                """
+        );
+
+        jdbcTemplate.update(
+                """
+                insert into stock_close_account_snapshot(
+                    close_cycle_id, close_run_id, account_id, user_key, account_status,
+                    settlement_target, pre_cancel_cash, pre_cancel_order_reserved_cash,
+                    subscription_reserved_cash, post_cancel_cash, external_net_cash_flow,
+                    holding_market_value, holding_quantity, reserved_sell_quantity,
+                    holding_position_count, reconciliation_status, snapshot_at, created_at
+                ) values (
+                    9001, 9002, 9101, 'data-fix-v2', 'ACTIVE', true,
+                    600.00, 150.00, 50.00, 750.00, 500.00,
+                    200.00, 10, 2, 1, 'MATCHED',
+                    '2026-07-19 18:00:00', '2026-07-19 18:00:00'
+                )
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                    close_cycle_id, close_run_id, account_id, snapshot_date,
+                    total_asset, cash_balance, market_value,
+                    holding_quantity, reserved_sell_quantity, holding_position_count,
+                    return_rate, input_hash, calculation_version, data_quality_status, created_at
+                ) values (
+                    9001, 9002, 9101, '2026-07-19',
+                    1000.00, 600.00, 200.00, 10, 2, 1,
+                    100.0000, repeat('a', 64), 'portfolio-v2-frozen-close', 'VERIFIED',
+                    '2026-07-19 18:00:00'
+                )
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                    account_id, snapshot_date, total_asset, cash_balance, market_value,
+                    return_rate, created_at
+                ) values (
+                    9103, '2026-07-18', 1500.00, 1000.00, 300.00,
+                    50.0000, '2026-07-18 18:00:00'
+                )
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                    action_id, account_id, symbol, quantity, share_quantity,
+                    subscribed_share_quantity, subscribed_cash_amount, status,
+                    created_at, subscribed_at, paid_at
+                ) values (
+                    9901, 9103, 'DATAFIX', 1, 1,
+                    1, 50.00, 'PAID',
+                    '2026-07-17 09:00:00', '2026-07-17 09:00:00', '2026-07-19 09:00:00'
+                )
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                    account_id, snapshot_date, total_asset, cash_balance, market_value,
+                    return_rate, created_at
+                ) values (
+                    9102, '2026-07-18', 1500.00, 1000.00, 300.00,
+                    50.0000, '2026-07-18 18:00:00'
+                )
+                """
+        );
+
+        executeScript(
+                dataSource,
+                ddlPath("stock_portfolio_snapshot_post_close_cash_data_fix.sql"),
+                false
+        );
+        executeScript(
+                dataSource,
+                ddlPath("stock_portfolio_snapshot_post_close_cash_data_fix.sql"),
+                false
+        );
+
+        String expectedV4Hash = new PortfolioSnapshotProcessor().inputHash(
+                new AccountSettlementTarget(
+                        9001L,
+                        9002L,
+                        9101L,
+                        "data-fix-v2",
+                        new BigDecimal("750.00"),
+                        new BigDecimal("500.00"),
+                        new BigDecimal("200.00"),
+                        new BigDecimal("50.00"),
+                        10L,
+                        2L,
+                        1L
+                )
+        );
+        List<PortfolioCorrectionRow> corrected = jdbcTemplate.query(
+                """
+                select account_id, cash_balance, pending_subscription_asset,
+                       input_hash, calculation_version, data_quality_status
+                  from portfolio_snapshot
+                 where account_id in (9101, 9102, 9103)
+                 order by account_id
+                """,
+                (resultSet, rowNumber) -> new PortfolioCorrectionRow(
+                        resultSet.getLong("account_id"),
+                        resultSet.getBigDecimal("cash_balance"),
+                        resultSet.getBigDecimal("pending_subscription_asset"),
+                        resultSet.getString("input_hash"),
+                        resultSet.getString("calculation_version"),
+                        resultSet.getString("data_quality_status")
+                )
+        );
+
+        assertThat(corrected).containsExactly(
+                new PortfolioCorrectionRow(
+                        9101L,
+                        new BigDecimal("750.00"),
+                        new BigDecimal("50.00"),
+                        expectedV4Hash,
+                        "portfolio-v4-explicit-subscription-asset",
+                        "VERIFIED"
+                ),
+                new PortfolioCorrectionRow(
+                        9102L,
+                        new BigDecimal("1200.00"),
+                        new BigDecimal("0.00"),
+                        null,
+                        "portfolio-v1-explicit-asset-backfill",
+                        "WARNING"
+                ),
+                new PortfolioCorrectionRow(
+                        9103L,
+                        new BigDecimal("1150.00"),
+                        new BigDecimal("50.00"),
+                        null,
+                        "portfolio-v1-explicit-asset-backfill",
+                        "WARNING"
+                )
+        );
     }
 
     @Test
@@ -498,6 +660,8 @@ class StockMysqlDdlMigrationTest {
         jdbcTemplate.execute(
                 """
                 alter table portfolio_snapshot
+                  drop check chk_portfolio_snapshot_pending_subscription_non_negative,
+                  drop check chk_portfolio_snapshot_asset_composition,
                   drop check chk_portfolio_snapshot_input_hash,
                   drop check chk_portfolio_snapshot_data_quality,
                   drop index uk_portfolio_snapshot_cycle_account,
@@ -507,7 +671,8 @@ class StockMysqlDdlMigrationTest {
                   drop column calculation_version,
                   drop column input_hash,
                   drop column close_run_id,
-                  drop column close_cycle_id
+                  drop column close_cycle_id,
+                  drop column pending_subscription_asset
                 """
         );
         jdbcTemplate.execute(
@@ -701,5 +866,15 @@ class StockMysqlDdlMigrationTest {
         Integer count = jdbcTemplate.queryForObject(sql, Integer.class, arguments);
         assertThat(count).isNotNull();
         return count;
+    }
+
+    private record PortfolioCorrectionRow(
+            long accountId,
+            BigDecimal cashBalance,
+            BigDecimal pendingSubscriptionAsset,
+            String inputHash,
+            String calculationVersion,
+            String dataQualityStatus
+    ) {
     }
 }

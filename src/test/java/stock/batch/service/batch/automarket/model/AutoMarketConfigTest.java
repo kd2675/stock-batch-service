@@ -10,17 +10,17 @@ import static org.assertj.core.data.Offset.offset;
 class AutoMarketConfigTest {
 
     @Test
-    void pressure_primaryAndSecondary_blendsEveryAxisAtSixtyForty() {
+    void pressure_primaryAndSecondary_blendsEveryAxisAtSeventyThirty() {
         AutoMarketConfig config = config(
                 new AutoMarketPressure(100, -100, 50, -50, 25),
                 new AutoMarketPressure(-100, 100, -50, 50, -25)
         );
 
-        assertThat(config.dailyPricePressure()).isCloseTo(0.2, offset(0.000001));
-        assertThat(config.assetPreferencePressure()).isCloseTo(-0.2, offset(0.000001));
-        assertThat(config.volatilityPressure()).isCloseTo(0.1, offset(0.000001));
-        assertThat(config.liquidityPressure()).isCloseTo(-0.1, offset(0.000001));
-        assertThat(config.executionAggressionPressure()).isCloseTo(0.05, offset(0.000001));
+        assertThat(config.dailyPricePressure()).isCloseTo(0.4, offset(0.000001));
+        assertThat(config.assetPreferencePressure()).isCloseTo(-0.4, offset(0.000001));
+        assertThat(config.volatilityPressure()).isCloseTo(0.2, offset(0.000001));
+        assertThat(config.liquidityPressure()).isCloseTo(-0.2, offset(0.000001));
+        assertThat(config.executionAggressionPressure()).isCloseTo(0.1, offset(0.000001));
     }
 
     @Test

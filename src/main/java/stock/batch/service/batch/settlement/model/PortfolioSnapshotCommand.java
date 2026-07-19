@@ -8,6 +8,7 @@ public record PortfolioSnapshotCommand(
         long accountId,
         String userKey,
         BigDecimal cashBalance,
+        BigDecimal pendingSubscriptionAsset,
         BigDecimal marketValue,
         long holdingQuantity,
         long reservedSellQuantity,

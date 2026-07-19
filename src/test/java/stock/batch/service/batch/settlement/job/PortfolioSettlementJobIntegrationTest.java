@@ -269,14 +269,16 @@ class PortfolioSettlementJobIntegrationTest {
     }
 
     @Test
-    void settleToday_pendingBuyOrder_includesReservedCashInTotalAsset() {
+    void settleToday_pendingBuyOrder_storesReleasedCashAsAvailableCash() {
         insertAccount("buyer", "9860000.00", "10000000.00");
         insertPendingBuyOrder("buyer-order", "buyer", "005930", "140000.00");
 
         freezeAndSettle();
 
         assertThat(queryDecimal("select ps.cash_balance from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
-                .isEqualByComparingTo(new BigDecimal("9860000.00"));
+                .isEqualByComparingTo(new BigDecimal("10000000.00"));
+        assertThat(queryDecimal("select ps.pending_subscription_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
+                .isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(queryDecimal("select total_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
                 .isEqualByComparingTo(new BigDecimal("10000000.00"));
         assertThat(queryDecimal("select return_rate from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'buyer'"))
@@ -325,6 +327,10 @@ class PortfolioSettlementJobIntegrationTest {
         );
 
         freezeAndSettle();
+        assertThat(queryDecimal("select ps.cash_balance from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'capital-settlement-user'"))
+                .isEqualByComparingTo(new BigDecimal("8000000.00"));
+        assertThat(queryDecimal("select ps.pending_subscription_asset from portfolio_snapshot ps join stock_account a on a.id = ps.account_id where a.user_key = 'capital-settlement-user'"))
+                .isEqualByComparingTo(new BigDecimal("2000000.00"));
         String beforeListing = snapshotTotalAndReturn("capital-settlement-user");
 
         jdbcTemplate.update(

@@ -245,10 +245,9 @@ public class PortfolioSettlementLifecycleService {
                                account_snapshot.close_run_id,
                                account_snapshot.account_id,
                                account_snapshot.user_key,
-                               account_snapshot.pre_cancel_cash,
+                               account_snapshot.post_cancel_cash,
                                account_snapshot.external_net_cash_flow,
                                account_snapshot.holding_market_value,
-                               account_snapshot.pre_cancel_order_reserved_cash,
                                account_snapshot.subscription_reserved_cash,
                                account_snapshot.holding_quantity,
                                account_snapshot.reserved_sell_quantity,
@@ -256,6 +255,7 @@ public class PortfolioSettlementLifecycleService {
                                portfolio.close_cycle_id as portfolio_cycle_id,
                                portfolio.close_run_id as portfolio_run_id,
                                portfolio.cash_balance as portfolio_cash_balance,
+                               portfolio.pending_subscription_asset as portfolio_pending_subscription_asset,
                                portfolio.market_value as portfolio_market_value,
                                portfolio.holding_quantity as portfolio_holding_quantity,
                                portfolio.reserved_sell_quantity as portfolio_reserved_sell_quantity,
@@ -284,11 +284,10 @@ public class PortfolioSettlementLifecycleService {
                                 resultSet.getLong("close_run_id"),
                                 resultSet.getLong("account_id"),
                                 resultSet.getString("user_key"),
-                                resultSet.getBigDecimal("pre_cancel_cash"),
+                                resultSet.getBigDecimal("post_cancel_cash"),
                                 nullToZero(resultSet.getBigDecimal("external_net_cash_flow")),
                                 nullToZero(resultSet.getBigDecimal("holding_market_value")),
-                                nullToZero(resultSet.getBigDecimal("pre_cancel_order_reserved_cash"))
-                                        .add(nullToZero(resultSet.getBigDecimal("subscription_reserved_cash"))),
+                                nullToZero(resultSet.getBigDecimal("subscription_reserved_cash")),
                                 resultSet.getLong("holding_quantity"),
                                 resultSet.getLong("reserved_sell_quantity"),
                                 resultSet.getLong("holding_position_count")
@@ -301,6 +300,10 @@ public class PortfolioSettlementLifecycleService {
                                 && portfolioRunId != null
                                 && portfolioRunId == target.closeRunId()
                                 && decimalEquals(expected.cashBalance(), resultSet.getBigDecimal("portfolio_cash_balance"))
+                                && decimalEquals(
+                                        expected.pendingSubscriptionAsset(),
+                                        resultSet.getBigDecimal("portfolio_pending_subscription_asset")
+                                )
                                 && decimalEquals(expected.marketValue(), resultSet.getBigDecimal("portfolio_market_value"))
                                 && longEquals(expected.holdingQuantity(),
                                 resultSet.getObject("portfolio_holding_quantity", Long.class))
@@ -312,8 +315,8 @@ public class PortfolioSettlementLifecycleService {
                                 && decimalEquals(expected.returnRate(), resultSet.getBigDecimal("portfolio_return_rate"))
                                 && expected.inputHash().equals(resultSet.getString("input_hash"))
                                 && PortfolioSnapshotProcessor.CALCULATION_VERSION.equals(
-                                resultSet.getString("calculation_version")
-                        )
+                                        resultSet.getString("calculation_version")
+                                )
                                 && "VERIFIED".equals(resultSet.getString("data_quality_status"));
                         if (verified) {
                             settledCount++;

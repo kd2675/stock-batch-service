@@ -23,14 +23,13 @@ public class AccountSettlementTargetReader {
                    account_snapshot.close_cycle_id,
                    account_snapshot.close_run_id,
                    account_snapshot.user_key,
-                   account_snapshot.pre_cancel_cash as cash_balance,
+                   account_snapshot.post_cancel_cash as cash_balance,
                    account_snapshot.external_net_cash_flow as net_cash_flow,
                    account_snapshot.holding_market_value as market_value,
                    account_snapshot.holding_quantity,
                    account_snapshot.reserved_sell_quantity,
                    account_snapshot.holding_position_count,
-                   account_snapshot.pre_cancel_order_reserved_cash
-                     + account_snapshot.subscription_reserved_cash as reserved_buy_cash
+                   account_snapshot.subscription_reserved_cash as pending_subscription_asset
             """;
     private static final String FROM_CLAUSE = """
             from stock_close_account_snapshot account_snapshot
@@ -72,7 +71,7 @@ public class AccountSettlementTargetReader {
                         rs.getBigDecimal("cash_balance"),
                         nullToZero(rs.getBigDecimal("net_cash_flow")),
                         nullToZero(rs.getBigDecimal("market_value")),
-                        nullToZero(rs.getBigDecimal("reserved_buy_cash")),
+                        nullToZero(rs.getBigDecimal("pending_subscription_asset")),
                         rs.getLong("holding_quantity"),
                         rs.getLong("reserved_sell_quantity"),
                         rs.getLong("holding_position_count")

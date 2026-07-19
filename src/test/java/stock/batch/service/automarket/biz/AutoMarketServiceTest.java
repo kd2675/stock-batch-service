@@ -3206,11 +3206,12 @@ class AutoMarketServiceTest {
                     created_at, updated_at
                 )
                 values ('005930', 'stock-listing-005930', '삼성전자 상장주관사', true, ?, 7, 30, 0,
-                        ?, ?, 0, 0, 'DOWN', 'UP', current_timestamp, current_timestamp)
+                        ?, ?, ?, 0, 'DOWN', 'UP', current_timestamp, current_timestamp)
                 """,
                 positionSide,
                 "BUY_ONLY".equals(positionSide) ? 7L : 0L,
-                "SELL_ONLY".equals(positionSide) ? 7L : 0L
+                "SELL_ONLY".equals(positionSide) ? 7L : 0L,
+                "BUY_ONLY".equals(positionSide) ? 7L : 0L
         );
     }
 

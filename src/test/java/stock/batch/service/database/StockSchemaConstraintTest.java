@@ -249,6 +249,34 @@ class StockSchemaConstraintTest {
     }
 
     @Test
+    void portfolioSnapshot_negativePendingSubscriptionAsset_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                  account_id, snapshot_date, total_asset, cash_balance,
+                  pending_subscription_asset, market_value, return_rate, created_at
+                ) values (1, ?, 1000, 500, -1, 501, 0, ?)
+                """,
+                LocalDate.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void portfolioSnapshot_assetCompositionMismatch_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into portfolio_snapshot(
+                  account_id, snapshot_date, total_asset, cash_balance,
+                  pending_subscription_asset, market_value, return_rate, created_at
+                ) values (1, ?, 1000, 500, 100, 399, 0, ?)
+                """,
+                LocalDate.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void stockCorporateAction_unknownType_isRejectedBySchema() {
         assertThatThrownBy(() -> jdbcTemplate.update(
                 stockCorporateActionInsertSql(),

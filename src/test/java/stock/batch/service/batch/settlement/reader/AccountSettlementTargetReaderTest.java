@@ -31,11 +31,11 @@ class AccountSettlementTargetReaderTest {
     @Test
     void create_readsTargetsInStableAccountIdOrder() throws Exception {
         insertAccountSnapshot(
-                2L, "user-b", "200000.00", "0.00", "0.00", "200000.00",
+                2L, "user-b", "200000.00", "0.00", "0.00", "0.00", "200000.00",
                 "0.00", 0L, 0L, 0L
         );
         insertAccountSnapshot(
-                1L, "user-a", "100000.00", "90000.00", "30000.00", "130000.00",
+                1L, "user-a", "100000.00", "90000.00", "30000.00", "20000.00", "130000.00",
                 "150000.00", 5L, 3L, 2L
         );
 
@@ -47,10 +47,10 @@ class AccountSettlementTargetReaderTest {
         reader.close();
 
         assertThat(first.accountId()).isEqualTo(1L);
-        assertThat(first.cashBalance()).isEqualByComparingTo(new BigDecimal("100000.00"));
+        assertThat(first.cashBalance()).isEqualByComparingTo(new BigDecimal("130000.00"));
         assertThat(first.netCashFlow()).isEqualByComparingTo(new BigDecimal("90000.00"));
         assertThat(first.marketValue()).isEqualByComparingTo(new BigDecimal("150000.00"));
-        assertThat(first.reservedBuyCash()).isEqualByComparingTo(new BigDecimal("30000.00"));
+        assertThat(first.pendingSubscriptionAsset()).isEqualByComparingTo(new BigDecimal("20000.00"));
         assertThat(first.holdingQuantity()).isEqualTo(5L);
         assertThat(first.reservedSellQuantity()).isEqualTo(3L);
         assertThat(first.holdingPositionCount()).isEqualTo(2L);
@@ -64,7 +64,7 @@ class AccountSettlementTargetReaderTest {
     @Test
     void create_whenFrozenInputReconciliationFailed_returnsNoRows() throws Exception {
         insertAccountSnapshot(
-                1L, "user-a", "100000.00", "100000.00", "0.00", "100000.00",
+                1L, "user-a", "100000.00", "100000.00", "0.00", "0.00", "100000.00",
                 "0.00", 0L, 0L, 0L
         );
         jdbcTemplate.update(
@@ -96,7 +96,8 @@ class AccountSettlementTargetReaderTest {
             String userKey,
             String cashBalance,
             String netCashFlow,
-            String reservedBuyCash,
+            String orderReservedCash,
+            String subscriptionReservedCash,
             String postCancelCash,
             String holdingMarketValue,
             long holdingQuantity,
@@ -111,12 +112,13 @@ class AccountSettlementTargetReaderTest {
                     post_cancel_cash, external_net_cash_flow, holding_market_value,
                     holding_quantity, reserved_sell_quantity, holding_position_count,
                     reconciliation_status
-                ) values (10, 20, ?, ?, true, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'MATCHED')
+                ) values (10, 20, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MATCHED')
                 """,
                 accountId,
                 userKey,
                 new BigDecimal(cashBalance),
-                new BigDecimal(reservedBuyCash),
+                new BigDecimal(orderReservedCash),
+                new BigDecimal(subscriptionReservedCash),
                 new BigDecimal(postCancelCash),
                 new BigDecimal(netCashFlow),
                 new BigDecimal(holdingMarketValue),

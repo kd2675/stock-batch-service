@@ -114,6 +114,7 @@ class StockDdlContractTest {
             "stock_eod_session_fence_alter.sql",
             "stock_eod_cycle_alter.sql",
             "stock_eod_immutable_snapshot_alter.sql",
+            "stock_portfolio_snapshot_post_close_cash_data_fix.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
             "stock_corporate_action_processing_alter.sql",
@@ -214,6 +215,9 @@ class StockDdlContractTest {
             "uk_stock_close_open_order_summary_cycle_symbol",
             "uk_stock_close_open_order_snapshot_cycle_order",
             "uk_portfolio_snapshot_cycle_account",
+            "pending_subscription_asset",
+            "chk_portfolio_snapshot_pending_subscription_non_negative",
+            "chk_portfolio_snapshot_asset_composition",
             "holding_market_value",
             "input_hash",
             "calculation_version",
@@ -384,6 +388,43 @@ class StockDdlContractTest {
                 "FROM stock_execution",
                 "JOIN stock_execution",
                 "ADD COLUMN IF NOT EXISTS"
+        );
+    }
+
+    @Test
+    void portfolioPostCloseCashDataFix_isGuardedIdempotentAndMatchesBackCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_portfolio_snapshot_post_close_cash_data_fix.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_portfolio_snapshot_post_close_cash_data_fix.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "stock_portfolio_asset_fix_guard",
+                "pending_subscription_asset",
+                "portfolio-v2-frozen-close",
+                "portfolio-v3-post-close-cash",
+                "portfolio-v4-explicit-subscription-asset",
+                "portfolio-v1-explicit-asset-backfill",
+                "account_snapshot.post_cancel_cash",
+                "entitlement.subscribed_at <= legacy.created_at",
+                "chk_portfolio_snapshot_asset_composition",
+                "SHA2(",
+                "START TRANSACTION;",
+                "COMMIT;"
+        );
+        assertThat(batchDdl).doesNotContain(
+                "FROM stock_order ",
+                "JOIN stock_order ",
+                "UPDATE stock_order ",
+                "FROM stock_execution ",
+                "JOIN stock_execution ",
+                "UPDATE stock_execution "
         );
     }
 

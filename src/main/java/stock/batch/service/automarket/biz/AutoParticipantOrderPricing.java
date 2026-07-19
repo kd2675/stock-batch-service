@@ -18,6 +18,11 @@ class AutoParticipantOrderPricing {
 
     private static final String BUY = "BUY";
     private static final String SELL = "SELL";
+    private static final double BASE_DIRECTIONAL_PRICE_MOVE_RATE = 0.006;
+    private static final double MAX_DIRECTIONAL_PRICE_MOVE_RATE = 0.008;
+    private static final double DIRECTIONAL_CROSSING_ADJUSTMENT = 0.25;
+    private static final double MIN_CROSSING_CHANCE = 0.02;
+    private static final double MAX_CROSSING_CHANCE = 0.85;
 
     BigDecimal createAutoPrice(
             AutoMarketConfig config,
@@ -36,43 +41,79 @@ class AutoParticipantOrderPricing {
         double directionalPressure = config.dailyPricePressure()
                 + config.reportPricePressure() * policy.newsWeight() * 0.55;
         double pressure = Math.clamp(directionalPressure * activityStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
-        double pressureStrength = Math.abs(pressure);
         double volatility = config.volatilityMultiplier();
-        double executionAggression = config.executionAggressionStrength();
-        double aggressiveChance = Math.clamp(
-                (0.18 + pressureStrength * 0.35 * volatility + executionAggression * 0.38)
-                        * config.executionAggressionMultiplier()
-                        * policy.aggressionMultiplier(),
-                0.05,
-                config.effectiveExecutionAggressionLevel() >= 10 ? 1.0 : 0.95
-        );
-        double crossingChance = Math.clamp(
-                (executionAggression * 0.58 + config.effectiveLiquidityLevel() / 10.0 * 0.18 + pressureStrength * 0.10)
-                        * policy.aggressionMultiplier(),
-                0.02,
-                config.effectiveExecutionAggressionLevel() >= 10 ? 1.0 : 0.85
-        );
-        boolean upwardAggressive = pressure > 0 && chance(aggressiveChance);
-        boolean downwardAggressive = pressure < 0 && chance(aggressiveChance);
-        boolean executionAggressive = chance(crossingChance);
+        boolean crossesOppositeQuote = chance(crossingChance(config, side, policy, pressure));
 
-        if (BUY.equals(side) && (upwardAggressive || executionAggressive) && bestAsk != null) {
+        if (BUY.equals(side) && crossesOppositeQuote && bestAsk != null) {
             return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestAsk, nextInt(0, 1)), config, tick);
         }
-        if (SELL.equals(side) && (downwardAggressive || executionAggressive) && bestBid != null) {
+        if (SELL.equals(side) && crossesOppositeQuote && bestBid != null) {
             return normalizePriceWithinDailyLimit(moveByTicks(config.market(), bestBid, -nextInt(0, 1)), config, tick);
         }
 
+        return createPassivePrice(config, side, pressure, volatility, orderBookState);
+    }
+
+    double crossingChance(
+            AutoMarketConfig config,
+            String side,
+            ProfilePolicy policy,
+            double pressure
+    ) {
+        double profileAggression = Math.max(0.0, policy.aggressionMultiplier());
+        if (profileAggression == 0.0) {
+            return 0.0;
+        }
+        double pressureStrength = Math.abs(pressure);
+        double baseChance = config.executionAggressionStrength() * 0.58
+                + config.effectiveLiquidityLevel() / 10.0 * 0.18
+                + pressureStrength * 0.10;
+        double sideDirection = BUY.equals(side) ? 1.0 : SELL.equals(side) ? -1.0 : 0.0;
+        double directionalAdjustment = sideDirection
+                * pressure
+                * DIRECTIONAL_CROSSING_ADJUSTMENT
+                * config.executionAggressionMultiplier()
+                * Math.min(1.0, profileAggression);
+        double maximumChance = config.effectiveExecutionAggressionLevel() >= 10
+                ? 1.0
+                : MAX_CROSSING_CHANCE;
+        double scaledBaseChance = Math.clamp(
+                baseChance * profileAggression,
+                MIN_CROSSING_CHANCE,
+                maximumChance
+        );
+        return Math.clamp(
+                scaledBaseChance + directionalAdjustment,
+                MIN_CROSSING_CHANCE,
+                maximumChance
+        );
+    }
+
+    BigDecimal createPassivePrice(
+            AutoMarketConfig config,
+            String side,
+            double pressure,
+            double volatility,
+            AutoMarketOrderBookState orderBookState
+    ) {
+        BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
+        double pressureStrength = Math.abs(pressure);
         int maxSpreadTicks = 2 + (int) Math.ceil(pressureStrength * 6 * volatility);
         BigDecimal spread = tick.multiply(BigDecimal.valueOf(nextInt(1, maxSpreadTicks)));
-        BigDecimal directionalOffset = tick.multiply(BigDecimal.valueOf(Math.round(pressure * 2)));
+        double directionalMoveRate = Math.clamp(
+                pressure * BASE_DIRECTIONAL_PRICE_MOVE_RATE * volatility,
+                -MAX_DIRECTIONAL_PRICE_MOVE_RATE,
+                MAX_DIRECTIONAL_PRICE_MOVE_RATE
+        );
+        BigDecimal directionalOffset = config.currentPrice().multiply(BigDecimal.valueOf(directionalMoveRate));
         BigDecimal rawPrice;
         if (BUY.equals(side)) {
             rawPrice = config.currentPrice().add(directionalOffset).subtract(pressure < 0 ? spread : BigDecimal.ZERO);
         } else {
             rawPrice = config.currentPrice().add(directionalOffset).add(pressure > 0 ? spread : BigDecimal.ZERO);
         }
-        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        return keepOutsideOppositeQuote(config, side, normalizedPrice, orderBookState, tick);
     }
 
     BigDecimal avoidSelfCross(
@@ -90,7 +131,14 @@ class AutoParticipantOrderPricing {
             adjustedPrice = moveByTicks(config.market(), ownBestBid, 1);
         }
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), adjustedPrice);
-        return normalizePriceWithinDailyLimit(adjustedPrice.max(tick), config, tick);
+        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(adjustedPrice.max(tick), config, tick);
+        if (BUY.equals(side) && ownBestAsk != null && normalizedPrice.compareTo(ownBestAsk) >= 0) {
+            return BigDecimal.ZERO;
+        }
+        if (SELL.equals(side) && ownBestBid != null && normalizedPrice.compareTo(ownBestBid) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return normalizedPrice;
     }
 
     private BigDecimal createMarketMakingPrice(
@@ -112,7 +160,36 @@ class AutoParticipantOrderPricing {
             }
         }
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
-        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        if (BUY.equals(side) && bestAsk != null && normalizedPrice.compareTo(bestAsk) >= 0) {
+            return BigDecimal.ZERO;
+        }
+        if (SELL.equals(side) && bestBid != null && normalizedPrice.compareTo(bestBid) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return normalizedPrice;
+    }
+
+    private BigDecimal keepOutsideOppositeQuote(
+            AutoMarketConfig config,
+            String side,
+            BigDecimal proposedPrice,
+            AutoMarketOrderBookState orderBookState,
+            BigDecimal tick
+    ) {
+        BigDecimal bestBid = orderBookState.bestBid();
+        BigDecimal bestAsk = orderBookState.bestAsk();
+        if (BUY.equals(side) && bestAsk != null && proposedPrice.compareTo(bestAsk) >= 0) {
+            BigDecimal passivePrice = moveByTicks(config.market(), bestAsk, -1);
+            BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(passivePrice, config, tick);
+            return normalizedPrice.compareTo(bestAsk) < 0 ? normalizedPrice : BigDecimal.ZERO;
+        }
+        if (SELL.equals(side) && bestBid != null && proposedPrice.compareTo(bestBid) <= 0) {
+            BigDecimal passivePrice = moveByTicks(config.market(), bestBid, 1);
+            BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(passivePrice, config, tick);
+            return normalizedPrice.compareTo(bestBid) > 0 ? normalizedPrice : BigDecimal.ZERO;
+        }
+        return proposedPrice;
     }
 
 }

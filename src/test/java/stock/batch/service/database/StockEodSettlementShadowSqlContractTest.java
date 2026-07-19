@@ -44,7 +44,8 @@ class StockEodSettlementShadowSqlContractTest {
                 "force index (idx_stock_account_cash_flow_account_id)",
                 "force index (idx_stock_order_account_status_created)",
                 "force index (idx_stock_corporate_action_entitlement_account_status)",
-                "portfolio-v2-frozen-close",
+                "stored_pending_subscription_asset = result.subscription_reserved_cash",
+                "portfolio-v4-explicit-subscription-asset",
                 "end as shadow_status",
                 "as page_mismatch_count",
                 "commit;"

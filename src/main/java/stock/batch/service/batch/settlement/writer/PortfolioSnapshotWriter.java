@@ -23,7 +23,7 @@ public class PortfolioSnapshotWriter {
     private static final String MYSQL_UPSERT_SQL = """
             insert into portfolio_snapshot(
                 close_cycle_id, close_run_id, account_id, snapshot_date,
-                total_asset, cash_balance, market_value,
+                total_asset, cash_balance, pending_subscription_asset, market_value,
                 holding_quantity, reserved_sell_quantity, holding_position_count,
                 return_rate, input_hash, calculation_version, data_quality_status,
                 source_build_version, created_at
@@ -34,6 +34,7 @@ public class PortfolioSnapshotWriter {
                 close_run_id = incoming.close_run_id,
                 total_asset = incoming.total_asset,
                 cash_balance = incoming.cash_balance,
+                pending_subscription_asset = incoming.pending_subscription_asset,
                 market_value = incoming.market_value,
                 holding_quantity = incoming.holding_quantity,
                 reserved_sell_quantity = incoming.reserved_sell_quantity,
@@ -48,12 +49,12 @@ public class PortfolioSnapshotWriter {
     private static final String H2_MERGE_SQL = """
             merge into portfolio_snapshot(
                 close_cycle_id, close_run_id, account_id, snapshot_date,
-                total_asset, cash_balance, market_value,
+                total_asset, cash_balance, pending_subscription_asset, market_value,
                 holding_quantity, reserved_sell_quantity, holding_position_count,
                 return_rate, input_hash, calculation_version, data_quality_status,
                 source_build_version, created_at
             ) key(account_id, snapshot_date)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private final JdbcTemplate jdbcTemplate;
@@ -102,9 +103,9 @@ public class PortfolioSnapshotWriter {
             List<? extends PortfolioSnapshotCommand> chunk = commands.subList(start, end);
             String values = String.join(",", Collections.nCopies(
                     chunk.size(),
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ));
-            List<Object> parameters = new ArrayList<>(chunk.size() * 16);
+            List<Object> parameters = new ArrayList<>(chunk.size() * 17);
             for (PortfolioSnapshotCommand command : chunk) {
                 Collections.addAll(parameters, parameters(command, snapshotDate, snapshotAt));
             }
@@ -124,6 +125,7 @@ public class PortfolioSnapshotWriter {
                 snapshotDate,
                 command.totalAsset(),
                 command.cashBalance(),
+                command.pendingSubscriptionAsset(),
                 command.marketValue(),
                 command.holdingQuantity(),
                 command.reservedSellQuantity(),
