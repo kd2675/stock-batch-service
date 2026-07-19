@@ -56,7 +56,7 @@ public class PostCloseReadinessService {
                 preparingBusinessDate
         );
         QueueCheck queueCheck = checkProfileQueue();
-        long identityFailures = postCloseCycleService.matchesRuntimeIdentity(closeCycleId) ? 0L : 1L;
+        long identityFailures = postCloseCycleService.isRuntimeCompatible(closeCycleId) ? 0L : 1L;
 
         LocalDateTime checkedAt = LocalDateTime.now();
         List<ReadinessCheckResult> checks = List.of(
@@ -83,7 +83,7 @@ public class PostCloseReadinessService {
                         truncate(queueCheck.message())
                 ),
                 result("RUNTIME_IDENTITY", identityFailures,
-                        "Cycle build and schema versions match the running service")
+                        "Cycle and completed phase schemas are compatible; builds remain auditable")
         );
         replaceReadinessChecks(closeCycleId, checks, checkedAt);
 

@@ -769,27 +769,39 @@ public class PostCloseCycleService {
     }
 
     /**
-     * Readiness must not open a cycle created by a different build or schema contract. This is a
-     * single primary-key lookup on the cycle control row and never reaches trading ledgers.
+     * A restart or rolling deployment may continue an existing cycle with a different build SHA.
+     * The cycle keeps its creator build for audit, while every phase attempt records the build that
+     * actually executed it. Readiness therefore gates on the durable schema contract, not exact
+     * build equality or whether a local IDE build could resolve a SHA. This bounded control-table
+     * lookup never reaches trading ledgers.
      */
-    public boolean matchesRuntimeIdentity(long cycleId) {
-        Boolean matches = jdbcClient.sql(
+    public boolean isRuntimeCompatible(long cycleId) {
+        Boolean compatible = jdbcClient.sql(
                         """
                         select exists (
                             select 1
-                              from stock_post_close_cycle
-                             where id = ?
-                               and build_version = ?
-                               and schema_version = ?
+                             from stock_post_close_cycle cycle
+                             where cycle.id = ?
+                               and cycle.schema_version = ?
+                               and not exists (
+                                   select 1
+                                     from stock_post_close_phase_attempt attempt
+                                    where attempt.cycle_id = cycle.id
+                                      and attempt.status = 'COMPLETED'
+                                      and (
+                                          attempt.schema_version is null
+                                          or attempt.schema_version <> ?
+                                      )
+                               )
                         )
                         """
                 )
                 .param(cycleId)
-                .param(buildVersion)
+                .param(schemaVersion)
                 .param(schemaVersion)
                 .query(Boolean.class)
                 .single();
-        return Boolean.TRUE.equals(matches);
+        return Boolean.TRUE.equals(compatible);
     }
 
     private PostCloseCycle ensureCycle(

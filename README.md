@@ -226,7 +226,7 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.post-close.readiness.enabled`: 다음 장 개장 전 스냅샷·일별 보고서·일일 regime·시장 상태 누락을 검사하는 Spring Batch Job을 제어합니다. 실패하면 `READY_TO_OPEN`으로 이동하지 않아 개장이 차단됩니다.
 - 전용 scheduler는 종료 신호 뒤 아직 시작하지 않은 delayed/periodic polling trigger를 취소하고, 이미 실행 중인 업무만 `stock.batch.scheduler-pools.shutdown-await-seconds` 범위에서 기다립니다. 따라서 서버 종료 중 새 EOD·자동시장 조회가 시작되거나 미래 trigger 때문에 종료가 지연되지 않습니다.
 - 장마감·정산 처리량은 `stock_post_close_cycle_metric`의 cycle별 한 행에 기록합니다. 관리자 EOD 화면과 `GET /api/stock/v1/markets/batch-jobs/eod/overview`는 이 요약과 제어 테이블만 조회하며 `stock_order`, `stock_execution`, 현금흐름 원장을 폴링 때마다 다시 집계하지 않습니다.
-- 05:30 개장 readiness는 포트폴리오·거래일·시장·종목 fence·가격·기업행사·regime·프로필 큐·runtime identity의 고정 10개 결과를 `stock_post_close_readiness_check`에 cycle당 최대 10행으로 저장합니다. 실패 Step도 진단행은 별도 트랜잭션으로 보존하며 관리자 화면은 이 PK 범위만 읽어, 15초 polling이 주문·체결·기업행사 원장을 다시 집계하지 않습니다.
+- 05:30 개장 readiness는 포트폴리오·거래일·시장·종목 fence·가격·기업행사·regime·프로필 큐·runtime compatibility의 고정 10개 결과를 `stock_post_close_readiness_check`에 cycle당 최대 10행으로 저장합니다. 서버 재시작·배포로 build SHA가 달라져도 동일한 schema contract이면 기존 cycle을 이어가며, cycle의 최초 build와 phase별 실제 실행 build는 감사 이력으로 각각 보존합니다. 실패 Step도 진단행은 별도 트랜잭션으로 보존하며 관리자 화면은 이 PK 범위만 읽어, 15초 polling이 주문·체결·기업행사 원장을 다시 집계하지 않습니다.
 - 외부 순입금 스냅샷은 직전 거래일 full-market cycle의 전역 cash-flow PK watermark 이후 범위만 집계합니다. 복구로 cycle ID와 거래일 생성 순서가 달라져도 `business_date` 기준 직전 cycle을 선택하며, 이 선행 조회는 EOD 제어 인덱스만 사용하고 주문·체결 원장을 읽지 않습니다.
 - 자동 월급이 꺼져 있으면 야간 현금 phase는 지급 0건으로 정상 완료되어 다음 장 준비를 막지 않습니다. 수동 월급 signal은 해당 거래일 cycle이 `PORTFOLIO_SETTLED`에 도달하기 전에는 claim·attempt·JobRepository 이력을 만들지 않으며, 이 대기 조건은 소형 cycle 유일키만 조회합니다.
 - 관리자 EOD 조회는 `/admin/system/eod` 화면이 열려 있을 때만 기본 15초 주기로 실행하고 백그라운드 폴링을 하지 않습니다. 10초 미만 주기로 조정하려면 실제 주문·체결 동시 부하에서 DB CPU, lock wait, 주문 API p95 회귀를 먼저 검증해야 합니다.

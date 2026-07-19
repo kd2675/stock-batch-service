@@ -59,7 +59,7 @@ class PostCloseReadinessServiceTest {
         );
         createSchema();
         seedReadyState();
-        when(postCloseCycleService.matchesRuntimeIdentity(41L)).thenReturn(true);
+        when(postCloseCycleService.isRuntimeCompatible(41L)).thenReturn(true);
         when(profileQueueReconcileService.isPreOpenQueueSynchronized()).thenReturn(true);
     }
 
@@ -143,6 +143,16 @@ class PostCloseReadinessServiceTest {
                 """,
                 String.class
         )).isEqualTo("FAILED");
+    }
+
+    @Test
+    void validateReadyToOpen_runtimeSchemaIncompatible_failsClosed() {
+        when(postCloseCycleService.findById(41L)).thenReturn(Optional.of(cycle(PostClosePhase.AUTO_MARKET_PREPARED)));
+        when(postCloseCycleService.isRuntimeCompatible(41L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.validateReadyToOpen(41L, LocalDate.of(2026, 7, 2)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RUNTIME_IDENTITY=1");
     }
 
     @Test

@@ -451,6 +451,75 @@ class PostCloseCycleServiceTest {
         assertThat(postCloseCycleService.isReadyToOpen(NOW.toLocalDate())).isTrue();
     }
 
+    @Test
+    void isRuntimeCompatible_unknownAndDifferentBuildsWithSameSchema_returnsTrue() {
+        PostCloseCycle cycle = postCloseCycleService.ensureFullMarketCycle(NOW.toLocalDate(), NOW);
+        String schemaVersion = queryString(
+                "select schema_version from stock_post_close_cycle where id = " + cycle.id()
+        );
+        jdbcTemplate.update(
+                "update stock_post_close_cycle set build_version = 'unknown' where id = ?",
+                cycle.id()
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_post_close_phase_attempt(
+                    cycle_id, phase, attempt_no, owner_id, status,
+                    started_at, completed_at, build_version, schema_version, created_at, updated_at
+                ) values (?, 'CLOSE_REQUESTED', 1, 'previous-node', 'COMPLETED',
+                          ?, ?, 'unknown', ?, ?, ?),
+                         (?, 'LEDGER_FROZEN', 2, 'current-node', 'COMPLETED',
+                          ?, ?, 'current-build', ?, ?, ?)
+                """,
+                cycle.id(),
+                NOW,
+                NOW.plusSeconds(1),
+                schemaVersion,
+                NOW,
+                NOW.plusSeconds(1),
+                cycle.id(),
+                NOW.plusSeconds(2),
+                NOW.plusSeconds(3),
+                schemaVersion,
+                NOW.plusSeconds(2),
+                NOW.plusSeconds(3)
+        );
+
+        assertThat(postCloseCycleService.isRuntimeCompatible(cycle.id())).isTrue();
+    }
+
+    @Test
+    void isRuntimeCompatible_completedAttemptWithDifferentSchema_returnsFalse() {
+        PostCloseCycle cycle = postCloseCycleService.ensureFullMarketCycle(NOW.toLocalDate(), NOW);
+        jdbcTemplate.update(
+                """
+                insert into stock_post_close_phase_attempt(
+                    cycle_id, phase, attempt_no, owner_id, status,
+                    started_at, completed_at, build_version, schema_version, created_at, updated_at
+                ) values (?, 'CLOSE_REQUESTED', 1, 'previous-node', 'COMPLETED',
+                          ?, ?, 'previous-build', 'previous-schema', ?, ?)
+                """,
+                cycle.id(),
+                NOW,
+                NOW.plusSeconds(1),
+                NOW,
+                NOW.plusSeconds(1)
+        );
+
+        assertThat(postCloseCycleService.isRuntimeCompatible(cycle.id())).isFalse();
+    }
+
+    @Test
+    void isRuntimeCompatible_cycleWithDifferentSchema_returnsFalse() {
+        PostCloseCycle cycle = postCloseCycleService.ensureFullMarketCycle(NOW.toLocalDate(), NOW);
+        jdbcTemplate.update(
+                "update stock_post_close_cycle set schema_version = 'previous-schema' where id = ?",
+                cycle.id()
+        );
+
+        assertThat(postCloseCycleService.isRuntimeCompatible(cycle.id())).isFalse();
+    }
+
     private long cycleCount() {
         return queryLong("select count(*) from stock_post_close_cycle");
     }
