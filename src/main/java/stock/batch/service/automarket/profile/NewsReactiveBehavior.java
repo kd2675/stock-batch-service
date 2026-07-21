@@ -12,10 +12,7 @@ public class NewsReactiveBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (!context.hasHolding()) {
-            return BUY;
-        }
-        if (context.effectiveIntensity() >= 8 && context.canBuyOne() && context.isFirstOrder()) {
+        if (context.effectiveIntensity() >= 8 && context.isFirstOrder()) {
             return BUY;
         }
         if (context.effectiveIntensity() <= 3 && context.isFirstOrder()) {

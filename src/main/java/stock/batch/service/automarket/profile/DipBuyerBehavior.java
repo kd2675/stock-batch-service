@@ -12,7 +12,7 @@ public class DipBuyerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if ((context.momentumPressure() < -0.35 || context.isLosing()) && context.canBuyOne() && context.isFirstOrder()) {
+        if ((context.momentumPressure() < -0.35 || context.isLosing()) && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);

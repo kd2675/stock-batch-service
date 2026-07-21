@@ -164,7 +164,7 @@ class AutoParticipantOrderServiceTest {
         when(behavior.chooseSide(any())).thenAnswer(invocation -> {
             ProfileSignalContext context = invocation.getArgument(0);
             observedStates.add(context.cashBalance().toPlainString() + ":" + context.herdPressure());
-            return context.canBuyOne() ? "BUY" : null;
+            return context.cashBalance().compareTo(context.config().currentPrice()) >= 0 ? "BUY" : null;
         });
         when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(pricing.createAutoPrice(eq(config), eq(5), eq("BUY"), eq(policy), any()))
@@ -273,7 +273,20 @@ class AutoParticipantOrderServiceTest {
         BigDecimal validPrice = new BigDecimal("100.00");
         return Stream.of(
                 Arguments.of(null, List.of(), validPrice, AutoMarketOrderDropReason.SIDE_NOT_SELECTED),
-                Arguments.of("BUY", List.of(), BigDecimal.ZERO, AutoMarketOrderDropReason.INVALID_PRICE),
+                Arguments.of(
+                        "BUY",
+                        List.of(new AutoParticipantTradingSnapshot(
+                                1L,
+                                new BigDecimal("100000.00"),
+                                0,
+                                BigDecimal.ZERO,
+                                BigDecimal.ZERO,
+                                0,
+                                0
+                        )),
+                        BigDecimal.ZERO,
+                        AutoMarketOrderDropReason.INVALID_PRICE
+                ),
                 Arguments.of("BUY", List.of(), validPrice, AutoMarketOrderDropReason.INSUFFICIENT_CASH),
                 Arguments.of("SELL", List.of(), validPrice, AutoMarketOrderDropReason.INSUFFICIENT_HOLDING),
                 Arguments.of(

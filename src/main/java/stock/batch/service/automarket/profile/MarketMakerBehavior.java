@@ -12,15 +12,6 @@ public class MarketMakerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (!context.canBuyOne() && !context.hasHolding()) {
-            return null;
-        }
-        if (!context.canBuyOne()) {
-            return SELL;
-        }
-        if (!context.hasHolding()) {
-            return BUY;
-        }
         return context.orderIndex() % 2 == 0 ? BUY : SELL;
     }
 }

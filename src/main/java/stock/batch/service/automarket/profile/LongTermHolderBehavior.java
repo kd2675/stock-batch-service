@@ -18,12 +18,12 @@ public class LongTermHolderBehavior extends AbstractAutoProfileBehavior {
     @Override
     public String chooseSide(ProfileSignalContext context) {
         if (context.isDeepLoss()) {
-            return context.canBuyOne() ? BUY : null;
+            return BUY;
         }
-        if (context.unrealizedReturn() >= 0.35 && context.hasHolding() && context.isAdditionalOrder()) {
+        if (context.unrealizedReturn() >= 0.35 && context.isAdditionalOrder()) {
             return SELL;
         }
-        if (context.unrealizedReturn() >= 0.15 && context.hasHolding()) {
+        if (context.unrealizedReturn() >= 0.15) {
             return null;
         }
         return super.chooseSide(context);

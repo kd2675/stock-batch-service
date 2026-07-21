@@ -12,7 +12,7 @@ public class StopLossTraderBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if ((context.isLosing() || context.momentumPressure() < -0.35) && context.hasHolding()) {
+        if (context.isLosing() || context.momentumPressure() < -0.35) {
             return SELL;
         }
         return super.chooseSide(context);

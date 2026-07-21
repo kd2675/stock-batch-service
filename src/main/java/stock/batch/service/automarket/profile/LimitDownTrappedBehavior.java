@@ -13,7 +13,7 @@ public class LimitDownTrappedBehavior extends AbstractAutoProfileBehavior {
     @Override
     public String chooseSide(ProfileSignalContext context) {
         if (context.atLowerPriceLimit() || context.isDeepLoss()) {
-            return context.canBuyOne() ? BUY : null;
+            return BUY;
         }
         return super.chooseSide(context);
     }

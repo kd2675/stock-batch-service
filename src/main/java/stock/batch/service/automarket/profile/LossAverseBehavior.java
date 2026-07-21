@@ -13,7 +13,7 @@ public class LossAverseBehavior extends AbstractAutoProfileBehavior {
     @Override
     public String chooseSide(ProfileSignalContext context) {
         if (context.isLosing()) {
-            return context.canBuyOne() ? BUY : null;
+            return BUY;
         }
         return super.chooseSide(context);
     }

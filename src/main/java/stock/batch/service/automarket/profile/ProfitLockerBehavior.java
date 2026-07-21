@@ -12,7 +12,7 @@ public class ProfitLockerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.unrealizedReturn() >= 0.05 && context.hasHolding()) {
+        if (context.unrealizedReturn() >= 0.05) {
             return SELL;
         }
         return super.chooseSide(context);

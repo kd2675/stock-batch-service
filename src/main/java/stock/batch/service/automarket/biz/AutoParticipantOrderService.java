@@ -117,6 +117,11 @@ class AutoParticipantOrderService {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.SIDE_NOT_SELECTED);
                     continue;
                 }
+                AutoMarketOrderDropReason infeasibleReason = infeasibleIntentReason(context, side);
+                if (infeasibleReason != null) {
+                    incrementDropCount(planningDropCounts, infeasibleReason);
+                    continue;
+                }
                 BigDecimal price = autoParticipantOrderPricing.createAutoPrice(
                         config,
                         effectiveIntensity,
@@ -251,6 +256,16 @@ class AutoParticipantOrderService {
             AutoMarketOrderDropReason reason
     ) {
         dropCounts.merge(reason, 1, Integer::sum);
+    }
+
+    private AutoMarketOrderDropReason infeasibleIntentReason(ProfileSignalContext context, String side) {
+        if (SELL.equals(side) && !context.hasHolding()) {
+            return AutoMarketOrderDropReason.INSUFFICIENT_HOLDING;
+        }
+        if (BUY.equals(side) && (context.cashBalance() == null || context.cashBalance().signum() <= 0)) {
+            return AutoMarketOrderDropReason.INSUFFICIENT_CASH;
+        }
+        return null;
     }
 
     private long adjustQuantityForOrderPressure(String side, long quantity, double orderPressure) {

@@ -33,15 +33,6 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (!context.hasHolding()) {
-            return BUY;
-        }
-        if (!context.canBuyOne() && shouldHoldInsteadOfSell(context)) {
-            return null;
-        }
-        if (!context.canBuyOne()) {
-            return SELL;
-        }
         String dominantConfiguredSide = chooseDominantConfiguredSide(context);
         if (dominantConfiguredSide != null) {
             return dominantConfiguredSide;
@@ -126,16 +117,16 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
             return null;
         }
         ProfilePolicy policy = context.policy();
-        if (context.isWinning() && context.hasHolding() && policy.profitTakingWeight() >= 0.90) {
+        if (context.isWinning() && policy.profitTakingWeight() >= 0.90) {
             return SELL;
         }
         if (context.momentumPressure() > 0.35 && policy.momentumWeight() >= 0.90) {
             return BUY;
         }
-        if (context.momentumPressure() < -0.35 && policy.momentumWeight() >= 0.90 && context.hasHolding()) {
+        if (context.momentumPressure() < -0.35 && policy.momentumWeight() >= 0.90) {
             return SELL;
         }
-        if (context.momentumPressure() > 0.35 && policy.contrarianWeight() >= 0.90 && context.hasHolding()) {
+        if (context.momentumPressure() > 0.35 && policy.contrarianWeight() >= 0.90) {
             return SELL;
         }
         if (context.momentumPressure() < -0.35 && policy.contrarianWeight() >= 0.90) {
@@ -149,13 +140,11 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         double pressure = context.pricePressure() + context.assetPreferencePressure() * 0.5;
         if (context.effectiveIntensity() >= 9
                 && pressure > 0.35
-                && policy.contrarianWeight() < 0.50
-                && context.canBuyOne()) {
+                && policy.contrarianWeight() < 0.50) {
             return BUY;
         }
         if (context.effectiveIntensity() >= 9
                 && pressure < -0.35
-                && context.hasHolding()
                 && policy.contrarianWeight() < 0.35
                 && policy.dipBuyWeight() < 0.50
                 && policy.lossAversionWeight() < 0.70

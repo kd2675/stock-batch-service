@@ -13,7 +13,7 @@ public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
     @Override
     public int orderCount(ProfileSignalContext context) {
         int baseCount = standardOrderCount(context, false);
-        if (context.hasRecentDividendPayment() && context.canBuyOne()) {
+        if (context.hasRecentDividendPayment()) {
             return Math.clamp(baseCount + 1, 1, 8);
         }
         return baseCount;
@@ -21,17 +21,11 @@ public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.hasRecentDividendPayment() && context.canBuyOne()) {
+        if (context.hasRecentDividendPayment()) {
             return BUY;
         }
-        if ((context.isLosing() || context.momentumPressure() < -0.30) && context.canBuyOne()) {
+        if (context.isLosing() || context.momentumPressure() < -0.30) {
             return BUY;
-        }
-        if (!context.hasHolding()) {
-            return context.canBuyOne() ? BUY : null;
-        }
-        if (!context.canBuyOne()) {
-            return shouldHoldInsteadOfSell(context) ? null : SELL;
         }
         if (shouldHoldInsteadOfSell(context)) {
             return null;

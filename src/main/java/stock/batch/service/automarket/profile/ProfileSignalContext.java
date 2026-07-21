@@ -55,10 +55,6 @@ public record ProfileSignalContext(
         return availableQuantity > 0;
     }
 
-    public boolean canBuyOne() {
-        return cashBalance != null && config != null && cashBalance.compareTo(config.currentPrice()) >= 0;
-    }
-
     public boolean isWinning() {
         return unrealizedReturn > 0;
     }

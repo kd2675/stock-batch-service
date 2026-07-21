@@ -1597,8 +1597,9 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'WHALE' where user_key = 'stock-auto-001'");
-        jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 1 where user_key = 'stock-auto-001' and symbol = '005930'");
+        jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 10 where symbol = '005930'");
+        insertDailyRegime("005930", "DOWN", "CASH", 10, 5, 5, 1601L);
         jdbcTemplate.update(
                 """
                 insert into stock_account(user_key, cash_balance, created_at, updated_at)
@@ -2954,7 +2955,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_participantIntensityOneDoesNotCreateSellPressureByItself() {
+    void runAutoMarketStep_participantIntensityOneAndNoHolding_doesNotCreateExecutableSellOrder() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-001'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 1 where user_key = 'stock-auto-002' and symbol = '005930'");
@@ -2975,8 +2976,6 @@ class AutoMarketServiceTest {
 
         runAutoMarketStep();
 
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and side = 'BUY'"))
-                .isPositive();
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002' and side = 'SELL'"))
                 .isZero();
     }

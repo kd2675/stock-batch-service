@@ -12,10 +12,7 @@ public class MomentumFollowerBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (!context.hasHolding()) {
-            return BUY;
-        }
-        if (context.momentumPressure() > 0.35 && context.canBuyOne() && context.isFirstOrder()) {
+        if (context.momentumPressure() > 0.35 && context.isFirstOrder()) {
             return BUY;
         }
         if (context.momentumPressure() < -0.35 && context.isFirstOrder()) {

@@ -12,10 +12,10 @@ public class ScalperBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.unrealizedReturn() >= 0.08 && context.hasHolding() && context.isFirstOrder()) {
+        if (context.unrealizedReturn() >= 0.08 && context.isFirstOrder()) {
             return SELL;
         }
-        if (context.momentumPressure() > 0.45 && context.canBuyOne() && context.isFirstOrder()) {
+        if (context.momentumPressure() > 0.45 && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);

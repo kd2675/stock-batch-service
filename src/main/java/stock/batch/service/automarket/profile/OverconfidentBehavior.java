@@ -21,7 +21,7 @@ public class OverconfidentBehavior extends AbstractAutoProfileBehavior {
 
     @Override
     public String chooseSide(ProfileSignalContext context) {
-        if (context.isWinning() && context.canBuyOne() && context.isFirstOrder()) {
+        if (context.isWinning() && context.isFirstOrder()) {
             return BUY;
         }
         return super.chooseSide(context);
