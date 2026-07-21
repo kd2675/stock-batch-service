@@ -27,15 +27,22 @@ public class ListingAutoAccountReader {
                        a.id as account_id,
                        c.user_key,
                        c.position_side,
+                       c.operation_mode,
+                       c.strategy_profile,
+                       c.initial_inventory_quantity,
+                       c.initial_issue_price,
                        c.max_order_quantity,
                        c.order_ttl_seconds,
                        c.price_offset_ticks,
+                       c.target_spread_ticks,
+                       c.inventory_skew_ticks,
+                       c.minimum_profit_rate,
+                       c.aggressive_unwind_threshold,
+                       c.aggressive_order_ratio,
                        c.target_buy_quantity,
                        c.target_sell_quantity,
                        c.target_holding_quantity,
                        c.inventory_band_quantity,
-                       c.buy_price_offset_direction,
-                       c.sell_price_offset_direction,
                        i.tick_size,
                        i.price_limit_rate,
                        p.current_price,
@@ -91,5 +98,43 @@ public class ListingAutoAccountReader {
                 .query(BigDecimal.class)
                 .single();
         return cash == null ? BigDecimal.ZERO : cash;
+    }
+
+    public ListingAutoInventoryState getInventoryState(long accountId, String symbol) {
+        return jdbcClient.sql(
+                """
+                select coalesce(a.cash_balance, 0) as cash_balance,
+                       coalesce(h.quantity, 0) as holding_quantity,
+                       coalesce(h.reserved_quantity, 0) as reserved_quantity,
+                       coalesce(h.average_price, 0) as average_price
+                  from stock_account a
+                  left join stock_holding h on h.account_id = a.id and h.symbol = ?
+                 where a.id = ?
+                """
+        )
+                .params(symbol, accountId)
+                .query((rs, rowNum) -> new ListingAutoInventoryState(
+                        rs.getBigDecimal("cash_balance"),
+                        Math.max(0L, rs.getLong("holding_quantity")),
+                        Math.max(0L, rs.getLong("reserved_quantity")),
+                        rs.getBigDecimal("average_price")
+                ))
+                .optional()
+                .orElse(ListingAutoInventoryState.EMPTY);
+    }
+
+    public record ListingAutoInventoryState(
+            BigDecimal cashBalance,
+            long holdingQuantity,
+            long reservedQuantity,
+            BigDecimal averagePrice
+    ) {
+        private static final ListingAutoInventoryState EMPTY = new ListingAutoInventoryState(
+                BigDecimal.ZERO, 0L, 0L, BigDecimal.ZERO
+        );
+
+        public long availableQuantity() {
+            return Math.max(0L, holdingQuantity - reservedQuantity);
+        }
     }
 }

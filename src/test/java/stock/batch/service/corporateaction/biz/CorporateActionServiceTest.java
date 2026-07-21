@@ -65,6 +65,7 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_price_tick where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_price where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_listing_auto_account_config where symbol like 'ZQ%'");
+        jdbcTemplate.update("delete from stock_account where user_key like 'stock-listing-zq%'");
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_auto_participant_event_profile_config");
         jdbcTemplate.update("delete from stock_auto_market_config where symbol like 'ZQ%'");
@@ -1616,11 +1617,17 @@ class CorporateActionServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_listing_auto_account_config(
-                    symbol, user_key, display_name, enabled, position_side, max_order_quantity,
-                    order_ttl_seconds, price_offset_ticks, target_buy_quantity, target_sell_quantity, target_holding_quantity,
-                    inventory_band_quantity,
-                    buy_price_offset_direction, sell_price_offset_direction, created_at, updated_at
-                ) values (?, ?, '상장주관사', true, 'SELL_ONLY', 10, 30, 3, 0, 10, 0, 0, 'DOWN', 'UP', ?, ?)
+                    symbol, user_key, display_name, enabled, position_side,
+                    operation_mode, strategy_profile, initial_inventory_quantity, initial_issue_price,
+                    max_order_quantity, order_ttl_seconds, price_offset_ticks,
+                    target_spread_ticks, inventory_skew_ticks, minimum_profit_rate,
+                    aggressive_unwind_threshold, aggressive_order_ratio,
+                    target_buy_quantity, target_sell_quantity, target_holding_quantity, inventory_band_quantity,
+                    created_at, updated_at
+                ) values (?, ?, '상장주관사', true, 'SELL_ONLY',
+                          'UNDERWRITER_RETURN', 'RETURN_FIRST', 1000000, 70000.00,
+                          10, 30, 3, 8, 3, 1.0, 1.0, 0.0,
+                          0, 10, 0, 0, ?, ?)
                 """,
                 symbol,
                 "stock-listing-" + symbol.toLowerCase(Locale.ROOT),

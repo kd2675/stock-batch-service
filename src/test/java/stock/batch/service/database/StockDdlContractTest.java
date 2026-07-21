@@ -740,8 +740,12 @@ class StockDdlContractTest {
                         "target_sell_quantity BIGINT NOT NULL",
                         "target_holding_quantity BIGINT NOT NULL",
                         "inventory_band_quantity BIGINT NOT NULL",
-                        "buy_price_offset_direction VARCHAR(10) NOT NULL",
-                        "sell_price_offset_direction VARCHAR(10) NOT NULL",
+                        "operation_mode VARCHAR(30) NOT NULL",
+                        "strategy_profile VARCHAR(30) NOT NULL",
+                        "initial_inventory_quantity BIGINT NOT NULL",
+                        "initial_issue_price DECIMAL(19,2) NOT NULL",
+                        "target_spread_ticks INT NOT NULL",
+                        "aggressive_order_ratio DECIMAL(8,4) NOT NULL",
                         "WHEN 'TWO_SIDED' THEN 1",
                         "chk_stock_listing_auto_account_target_buy",
                         "chk_stock_listing_auto_account_target_sell",
@@ -833,6 +837,29 @@ class StockDdlContractTest {
         );
 
         assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+    }
+
+    @Test
+    void listingAutoStrategyPolicyAlterDdl_repairsIssueBasisAndIsSyncedWithBackServiceCopy() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_listing_auto_strategy_policy_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_strategy_policy_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "USE STOCK_SERVICE;",
+                "operation_mode VARCHAR(30) NOT NULL",
+                "initial_inventory_quantity BIGINT NOT NULL",
+                "MIN(candidate.id)",
+                "COALESCE(initial_issue.share_quantity, instrument.issued_shares)",
+                "DROP COLUMN buy_price_offset_direction",
+                "DROP COLUMN sell_price_offset_direction"
+        );
     }
 
     @Test

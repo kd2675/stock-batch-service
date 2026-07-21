@@ -41,6 +41,15 @@ class AutoMarketOrderExecutor {
         );
     }
 
+    AutoMarketOrderBookState loadExternalOrderBookState(String symbol, long excludedAccountId) {
+        return new AutoMarketOrderBookState(
+                autoMarketOrderReader.findBestExternalPrice(symbol, BUY, excludedAccountId),
+                autoMarketOrderReader.findBestExternalPrice(symbol, SELL, excludedAccountId),
+                0L,
+                0L
+        );
+    }
+
     void expireOrder(AutoOrder order, LocalDateTime now) {
         expireOrders(List.of(order), now);
     }

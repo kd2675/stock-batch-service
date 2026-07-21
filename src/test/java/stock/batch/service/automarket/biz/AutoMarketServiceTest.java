@@ -3173,13 +3173,17 @@ class AutoMarketServiceTest {
                 """
                 insert into stock_listing_auto_account_config(
                     symbol, user_key, display_name, enabled, position_side,
+                    operation_mode, strategy_profile, initial_inventory_quantity, initial_issue_price,
                     max_order_quantity, order_ttl_seconds, price_offset_ticks,
+                    target_spread_ticks, inventory_skew_ticks, minimum_profit_rate,
+                    aggressive_unwind_threshold, aggressive_order_ratio,
                     target_buy_quantity, target_sell_quantity, target_holding_quantity, inventory_band_quantity,
-                    buy_price_offset_direction, sell_price_offset_direction,
                     created_at, updated_at
                 )
-                values ('005930', 'stock-listing-005930', '삼성전자 상장주관사', true, ?, 7, 30, 0,
-                        ?, ?, ?, 0, 'DOWN', 'UP', current_timestamp, current_timestamp)
+                values ('005930', 'stock-listing-005930', '삼성전자 상장주관사', true, ?,
+                        'UNDERWRITER_RETURN', 'RETURN_FIRST', 1000000, 70000.00,
+                        7, 30, 0, 8, 3, 1.0, 1.0, 0.0,
+                        ?, ?, ?, 0, current_timestamp, current_timestamp)
                 """,
                 positionSide,
                 "BUY_ONLY".equals(positionSide) ? 7L : 0L,

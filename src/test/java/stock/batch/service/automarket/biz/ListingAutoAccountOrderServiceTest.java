@@ -235,7 +235,14 @@ class ListingAutoAccountOrderServiceTest {
         when(orderReader.findExpiredListingAutoOrders(firstConfig, now().minusSeconds(90))).thenReturn(List.of(firstOrder));
         when(orderReader.findExpiredListingAutoOrders(secondConfig, now().minusSeconds(90))).thenReturn(List.of(secondOrder));
         when(orderExecutor.expireOrders(List.of(firstOrder, secondOrder), now())).thenReturn(2);
-        when(orderExecutor.loadOrderBookState("LST001")).thenReturn(new AutoMarketOrderBookState(null, null, 0L, 0L));
+        when(listingReader.getInventoryState(10L, "LST001")).thenReturn(
+                new ListingAutoAccountReader.ListingAutoInventoryState(BigDecimal.ZERO, 0L, 0L, BigDecimal.ZERO)
+        );
+        when(listingReader.getInventoryState(20L, "LST001")).thenReturn(
+                new ListingAutoAccountReader.ListingAutoInventoryState(BigDecimal.ZERO, 0L, 0L, BigDecimal.ZERO)
+        );
+        when(orderExecutor.loadExternalOrderBookState("LST001", 10L)).thenReturn(new AutoMarketOrderBookState(null, null, 0L, 0L));
+        when(orderExecutor.loadExternalOrderBookState("LST001", 20L)).thenReturn(new AutoMarketOrderBookState(null, null, 0L, 0L));
 
         int processed = service.run(marketConfig(), sessionApproval());
 
@@ -279,7 +286,7 @@ class ListingAutoAccountOrderServiceTest {
     }
 
     @Test
-    void run_buyUpDirection_canCrossMarketBestAsk() {
+    void run_normalBuyQuote_doesNotCrossExternalBestAsk() {
         ListingAutoAccountConfig config = listingConfig(10L, "BUY_ONLY", 10, 10L, 0L, 10L, 0L, "UP", "UP");
         prepare(config, 0L, 0L, new BigDecimal("10000.00"), new BigDecimal("100.00"), new BigDecimal("100.00"));
         acceptAllPlannedOrders();
@@ -287,13 +294,13 @@ class ListingAutoAccountOrderServiceTest {
         service.run(marketConfig(), sessionApproval());
 
         assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
-            assertThat(order.price()).isGreaterThan(new BigDecimal("100.00"));
+            assertThat(order.price()).isLessThan(new BigDecimal("100.00"));
             assertThat(order.side()).isEqualTo("BUY");
         });
     }
 
     @Test
-    void run_sellDownDirection_canCrossMarketBestBid() {
+    void run_normalSellQuote_doesNotCrossExternalBestBid() {
         ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "DOWN");
         prepare(config, 10L, 10L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("100.00"));
         acceptAllPlannedOrders();
@@ -301,9 +308,47 @@ class ListingAutoAccountOrderServiceTest {
         service.run(marketConfig(), sessionApproval());
 
         assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
-            assertThat(order.price()).isLessThan(new BigDecimal("100.00"));
+            assertThat(order.price()).isGreaterThan(new BigDecimal("100.00"));
             assertThat(order.side()).isEqualTo("SELL");
         });
+    }
+
+    @Test
+    void run_underwriterReturn_passiveSellRespectsAverageCostProfitFloor() {
+        ListingAutoAccountConfig config = policyConfig(
+                "SELL_ONLY", "UNDERWRITER_RETURN", "RETURN_FIRST",
+                10, 0L, 10L, 0L, 0L,
+                new BigDecimal("5.0"), BigDecimal.ONE, BigDecimal.ZERO
+        );
+        prepare(config, 10L, 10L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("101.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        assertThat(capturePlannedOrders()).singleElement().satisfies(order -> {
+            assertThat(order.side()).isEqualTo("SELL");
+            assertThat(order.price()).isGreaterThanOrEqualTo(new BigDecimal("105.00"));
+        });
+    }
+
+    @Test
+    void run_inventoryAtLimit_crossesOnlyConfiguredCorrectiveBudget() {
+        ListingAutoAccountConfig config = policyConfig(
+                "TWO_SIDED", "LIQUIDITY_PROVIDER", "BALANCED",
+                10, 20L, 20L, 100L, 20L,
+                BigDecimal.ZERO, new BigDecimal("0.5"), new BigDecimal("0.25")
+        );
+        prepare(config, 120L, 120L, BigDecimal.ZERO, new BigDecimal("100.00"), new BigDecimal("110.00"));
+        acceptAllPlannedOrders();
+
+        service.run(marketConfig(), sessionApproval());
+
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        assertThat(orders.stream().filter(order -> order.price().compareTo(new BigDecimal("100.00")) == 0)
+                .mapToLong(AutoMarketPlannedOrder::quantity).sum()).isEqualTo(5L);
+        assertThat(orders.stream().filter(order -> order.price().compareTo(new BigDecimal("100.00")) > 0)
+                .mapToLong(AutoMarketPlannedOrder::quantity).sum()).isEqualTo(15L);
+        assertThat(orders).allSatisfy(order -> assertThat(order.side()).isEqualTo("SELL"));
     }
 
     @Test
@@ -313,15 +358,22 @@ class ListingAutoAccountOrderServiceTest {
                 10L,
                 "listing-user-10",
                 "BUY_ONLY",
+                "UNDERWRITER_RETURN",
+                "RETURN_FIRST",
+                3L,
+                new BigDecimal("100.00"),
                 1,
                 90,
                 1,
+                2,
+                3,
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                BigDecimal.ZERO,
                 3L,
                 0L,
                 3L,
                 0L,
-                "UP",
-                "UP",
                 BigDecimal.ONE,
                 new BigDecimal("100.00"),
                 new BigDecimal("100.00"),
@@ -335,7 +387,7 @@ class ListingAutoAccountOrderServiceTest {
         assertThat(capturePlannedOrders())
                 .hasSize(3)
                 .extracting(AutoMarketPlannedOrder::price)
-                .containsOnly(new BigDecimal("101.00"));
+                .containsOnly(new BigDecimal("100.00"));
     }
 
     private void prepare(
@@ -347,10 +399,15 @@ class ListingAutoAccountOrderServiceTest {
             BigDecimal bestAsk
     ) {
         when(listingReader.findEnabledListingAutoAccountConfigs(marketConfig())).thenReturn(List.of(config));
-        when(listingReader.getHoldingQuantity(config.accountId(), config.symbol())).thenReturn(holdingQuantity);
-        when(listingReader.getAvailableQuantity(config.accountId(), config.symbol())).thenReturn(availableQuantity);
-        when(listingReader.getCashBalance(config.accountId())).thenReturn(cashBalance);
-        when(orderExecutor.loadOrderBookState(config.symbol()))
+        when(listingReader.getInventoryState(config.accountId(), config.symbol())).thenReturn(
+                new ListingAutoAccountReader.ListingAutoInventoryState(
+                        cashBalance,
+                        holdingQuantity,
+                        Math.max(0L, holdingQuantity - availableQuantity),
+                        config.initialIssuePrice()
+                )
+        );
+        when(orderExecutor.loadExternalOrderBookState(config.symbol(), config.accountId()))
                 .thenReturn(new AutoMarketOrderBookState(bestBid, bestAsk, 0L, 0L));
     }
 
@@ -408,15 +465,63 @@ class ListingAutoAccountOrderServiceTest {
                 accountId,
                 "listing-user-" + accountId,
                 positionSide,
+                "LIQUIDITY_PROVIDER",
+                "BALANCED",
+                1_000L,
+                new BigDecimal("100.00"),
                 maxOrderQuantity,
                 90,
                 5,
+                2,
+                4,
+                BigDecimal.ZERO,
+                BigDecimal.ONE,
+                BigDecimal.ZERO,
                 targetBuyQuantity,
                 targetSellQuantity,
                 targetHoldingQuantity,
                 inventoryBandQuantity,
-                buyDirection,
-                sellDirection,
+                BigDecimal.ONE,
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                BigDecimal.valueOf(30)
+        );
+    }
+
+    private ListingAutoAccountConfig policyConfig(
+            String positionSide,
+            String operationMode,
+            String strategyProfile,
+            int maxOrderQuantity,
+            long targetBuyQuantity,
+            long targetSellQuantity,
+            long targetHoldingQuantity,
+            long inventoryBandQuantity,
+            BigDecimal minimumProfitRate,
+            BigDecimal aggressiveUnwindThreshold,
+            BigDecimal aggressiveOrderRatio
+    ) {
+        return new ListingAutoAccountConfig(
+                "LST001",
+                10L,
+                "listing-user-10",
+                positionSide,
+                operationMode,
+                strategyProfile,
+                1_000L,
+                new BigDecimal("100.00"),
+                maxOrderQuantity,
+                90,
+                5,
+                4,
+                4,
+                minimumProfitRate,
+                aggressiveUnwindThreshold,
+                aggressiveOrderRatio,
+                targetBuyQuantity,
+                targetSellQuantity,
+                targetHoldingQuantity,
+                inventoryBandQuantity,
                 BigDecimal.ONE,
                 new BigDecimal("100.00"),
                 new BigDecimal("100.00"),
