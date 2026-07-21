@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
 class AutoProfileSideSelectionTest {
 
@@ -97,12 +98,21 @@ class AutoProfileSideSelectionTest {
     }
 
     @Test
-    void newsReactive_noHoldingAndLowIntensity_expressesSellIntent() {
+    void newsReactive_strongNegativeReport_expressesSellIntentRegardlessOfActivityLevel() {
         NewsReactiveBehavior behavior = new NewsReactiveBehavior();
 
-        String side = behavior.chooseSide(context(behavior, 2, 0, 0, BigDecimal.valueOf(1_000), 0));
+        String side = behavior.chooseSide(contextWithReportScore(behavior, 10, 1));
 
         assertThat(side).isEqualTo(AutoProfileBehavior.SELL);
+    }
+
+    @Test
+    void newsReactive_strongPositiveReport_expressesBuyIntentRegardlessOfActivityLevel() {
+        NewsReactiveBehavior behavior = new NewsReactiveBehavior();
+
+        String side = behavior.chooseSide(contextWithReportScore(behavior, 1, 10));
+
+        assertThat(side).isEqualTo(AutoProfileBehavior.BUY);
     }
 
     @Test
@@ -124,19 +134,93 @@ class AutoProfileSideSelectionTest {
     }
 
     @Test
-    void marketMaker_noHoldingAndCashAvailable_keepsSecondAskIntentForFeasibilityFiltering() {
+    void marketMaker_lowStockAllocation_keepsBuyingUntilInventoryBand() {
         MarketMakerBehavior behavior = new MarketMakerBehavior();
 
         String side = behavior.chooseSide(
                 context(behavior, 5, 0, 0, BigDecimal.valueOf(1_000), 0).withOrderIndex(1)
         );
 
+        assertThat(side).isEqualTo(AutoProfileBehavior.BUY);
+    }
+
+    @Test
+    void marketMaker_highStockAllocation_selectsSell() {
+        MarketMakerBehavior behavior = new MarketMakerBehavior();
+
+        String side = behavior.chooseSide(context(behavior, 5, 0, 100, BigDecimal.valueOf(1_000), 0));
+
         assertThat(side).isEqualTo(AutoProfileBehavior.SELL);
+    }
+
+    @Test
+    void marketMaker_balancedStockAllocation_alternatesSides() {
+        MarketMakerBehavior behavior = new MarketMakerBehavior();
+        ProfileSignalContext context = context(behavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0);
+
+        assertThat(behavior.chooseSide(context)).isEqualTo(AutoProfileBehavior.BUY);
+        assertThat(behavior.chooseSide(context.withOrderIndex(1))).isEqualTo(AutoProfileBehavior.SELL);
+    }
+
+    @Test
+    void lossAverse_losingPosition_staysIdleInsteadOfAveragingDown() {
+        LossAverseBehavior behavior = new LossAverseBehavior();
+
+        String side = behavior.chooseSide(context(
+                behavior, 5, 0, 0, -0.10, 10, BigDecimal.valueOf(1_000), 0, false, 0
+        ));
+
+        assertThat(side).isNull();
+    }
+
+    @Test
+    void stopLoss_smallLoss_staysIdleUntilThreshold() {
+        StopLossTraderBehavior behavior = new StopLossTraderBehavior();
+
+        String side = behavior.chooseSide(context(
+                behavior, 5, 0, 0, -0.01, 10, BigDecimal.valueOf(1_000), 0, false, 0
+        ));
+
+        assertThat(side).isNull();
+    }
+
+    @Test
+    void stopLoss_thresholdLoss_selectsSell() {
+        StopLossTraderBehavior behavior = new StopLossTraderBehavior();
+
+        String side = behavior.chooseSide(context(
+                behavior, 5, 0, 0, -0.05, 10, BigDecimal.valueOf(1_000), 0, false, 0
+        ));
+
+        assertThat(side).isEqualTo(AutoProfileBehavior.SELL);
+    }
+
+    @Test
+    void buyBias_recurringFundingMetadataDoesNotChangeTradingPreference() {
+        ProfilePolicy basePolicy = new NoiseTraderBehavior().defaultPolicy();
+        ProfilePolicy fundedPolicy = withRecurringDeposit(basePolicy, new BigDecimal("100000000.00"));
+        PolicyBehavior baseBehavior = new PolicyBehavior(basePolicy);
+        PolicyBehavior fundedBehavior = new PolicyBehavior(fundedPolicy);
+
+        double baseBias = baseBehavior.buyBias(context(baseBehavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0));
+        double fundedBias = fundedBehavior.buyBias(context(fundedBehavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0));
+
+        assertThat(fundedBias).isEqualTo(baseBias);
+    }
+
+    @Test
+    void buyBias_inventoryPenaltyScalesWithInstrumentOrderCapacity() {
+        NoiseTraderBehavior behavior = new NoiseTraderBehavior();
+
+        double smallInventoryBias = behavior.buyBias(context(behavior, 5, 0, 20, BigDecimal.valueOf(1_000), 0));
+        double largeInventoryBias = behavior.buyBias(context(behavior, 5, 0, 10_000, BigDecimal.valueOf(1_000), 0));
+
+        assertThat(largeInventoryBias).isLessThan(smallInventoryBias);
     }
 
     private ProfileSignalContext context(
             AutoProfileBehavior behavior,
-            int effectiveIntensity,
+            int activityLevel,
             double momentumPressure,
             long availableQuantity,
             BigDecimal cashBalance,
@@ -144,7 +228,7 @@ class AutoProfileSideSelectionTest {
     ) {
         return context(
                 behavior,
-                effectiveIntensity,
+                activityLevel,
                 momentumPressure,
                 0,
                 0,
@@ -156,9 +240,47 @@ class AutoProfileSideSelectionTest {
         );
     }
 
+    private ProfileSignalContext contextWithReportScore(
+            AutoProfileBehavior behavior,
+            int activityLevel,
+            int reportScore
+    ) {
+        AutoMarketConfig config = new AutoMarketConfig(
+                "STOCK001",
+                100,
+                1200,
+                1_000_000L,
+                BigDecimal.ONE,
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                reportScore
+        );
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                "auto-001",
+                1L,
+                activityLevel,
+                behavior.type()
+        );
+        return new ProfileSignalContext(
+                strategy,
+                config,
+                behavior.defaultPolicy(),
+                activityLevel,
+                0,
+                0,
+                0,
+                10,
+                BigDecimal.valueOf(1_000),
+                BigDecimal.ZERO,
+                false,
+                0,
+                0
+        );
+    }
+
     private ProfileSignalContext context(
             AutoProfileBehavior behavior,
-            int effectiveIntensity,
+            int activityLevel,
             double momentumPressure,
             double herdPressure,
             double unrealizedReturn,
@@ -181,14 +303,14 @@ class AutoProfileSideSelectionTest {
         AutoParticipantStrategy strategy = new AutoParticipantStrategy(
                 "auto-001",
                 1L,
-                effectiveIntensity,
+                activityLevel,
                 behavior.type()
         );
         return new ProfileSignalContext(
                 strategy,
                 config,
                 behavior.defaultPolicy(),
-                effectiveIntensity,
+                activityLevel,
                 momentumPressure,
                 herdPressure,
                 unrealizedReturn,
@@ -212,9 +334,7 @@ class AutoProfileSideSelectionTest {
                 Arguments.of("herd follower", new HerdFollowerBehavior(), 5, 0, 0.80, 0, 0, false),
                 Arguments.of("limit down trapped", new LimitDownTrappedBehavior(), 5, 0, 0, 0, 0, true),
                 Arguments.of("long term holder", new LongTermHolderBehavior(), 5, 0, 0, -0.30, 0, false),
-                Arguments.of("loss averse", new LossAverseBehavior(), 5, 0, 0, -0.10, 0, false),
                 Arguments.of("momentum follower", new MomentumFollowerBehavior(), 5, 0.80, 0, 0, 0, false),
-                Arguments.of("news reactive", new NewsReactiveBehavior(), 8, 0, 0, 0, 0, false),
                 Arguments.of("overconfident", new OverconfidentBehavior(), 5, 0, 0, 0.10, 0, false),
                 Arguments.of("payday accumulator", new PaydayAccumulatorBehavior(), 5, 0, 0, -0.10, 0, false),
                 Arguments.of("scalper", new ScalperBehavior(), 5, 0.80, 0, 0, 0, false),
@@ -229,10 +349,35 @@ class AutoProfileSideSelectionTest {
                 Arguments.of("day trader", new DayTraderBehavior(), 5, -0.80, 0),
                 Arguments.of("herd follower", new HerdFollowerBehavior(), 5, 0, -0.80),
                 Arguments.of("momentum follower", new MomentumFollowerBehavior(), 5, -0.80, 0),
-                Arguments.of("news reactive", new NewsReactiveBehavior(), 2, 0, 0),
                 Arguments.of("panic seller", new PanicSellerBehavior(), 5, -0.80, 0),
                 Arguments.of("stop loss trader", new StopLossTraderBehavior(), 5, -0.80, 0),
                 Arguments.of("value anchor", new ValueAnchorBehavior(), 5, 0.80, 0)
+        );
+    }
+
+    private static ProfilePolicy withRecurringDeposit(ProfilePolicy policy, BigDecimal amount) {
+        return new ProfilePolicy(
+                policy.newsWeight(),
+                policy.momentumWeight(),
+                policy.contrarianWeight(),
+                policy.lossAversionWeight(),
+                policy.herdingWeight(),
+                policy.marketMakingWeight(),
+                policy.overconfidenceWeight(),
+                policy.profitTakingWeight(),
+                policy.orderMultiplier(),
+                policy.aggressionMultiplier(),
+                policy.pricePressureSensitivity(),
+                policy.orderTtlMultiplier(),
+                policy.noiseWeight(),
+                policy.quantityMultiplier(),
+                policy.panicSellWeight(),
+                policy.dipBuyWeight(),
+                policy.holdingPatienceWeight(),
+                policy.deepLossHoldWeight(),
+                amount,
+                BigDecimal.ONE,
+                RecurringCashIntervalUnit.DAY
         );
     }
 
@@ -248,6 +393,13 @@ class AutoProfileSideSelectionTest {
         @Override
         public double buyBias(ProfileSignalContext context) {
             return fixedBuyBias;
+        }
+    }
+
+    private static final class PolicyBehavior extends AbstractAutoProfileBehavior {
+
+        private PolicyBehavior(ProfilePolicy policy) {
+            super(AutoParticipantProfileType.NOISE_TRADER, policy);
         }
     }
 }

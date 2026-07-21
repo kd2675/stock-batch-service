@@ -9,7 +9,7 @@ public record ProfileSignalContext(
         AutoParticipantStrategy strategy,
         AutoMarketConfig config,
         ProfilePolicy policy,
-        int effectiveIntensity,
+        int activityLevel,
         double momentumPressure,
         double herdPressure,
         double unrealizedReturn,
@@ -24,7 +24,7 @@ public record ProfileSignalContext(
             AutoParticipantStrategy strategy,
             AutoMarketConfig config,
             ProfilePolicy policy,
-            int effectiveIntensity,
+            int activityLevel,
             double momentumPressure,
             double herdPressure,
             double unrealizedReturn,
@@ -38,7 +38,7 @@ public record ProfileSignalContext(
                 strategy,
                 config,
                 policy,
-                effectiveIntensity,
+                activityLevel,
                 momentumPressure,
                 herdPressure,
                 unrealizedReturn,
@@ -83,6 +83,28 @@ public record ProfileSignalContext(
         return recentDividendCashAmount != null && recentDividendCashAmount.compareTo(BigDecimal.ZERO) > 0;
     }
 
+    public double inventoryToOrderCapacityRatio() {
+        if (availableQuantity <= 0) {
+            return 0.0;
+        }
+        long capacity = config == null ? 1L : Math.max(1L, config.maxOrderQuantity());
+        return (double) availableQuantity / capacity;
+    }
+
+    public double stockAllocationRatio() {
+        if (availableQuantity <= 0 || config == null || config.currentPrice() == null) {
+            return 0.0;
+        }
+        BigDecimal stockValue = config.currentPrice().max(BigDecimal.ZERO)
+                .multiply(BigDecimal.valueOf(availableQuantity));
+        BigDecimal availableCash = cashBalance == null ? BigDecimal.ZERO : cashBalance.max(BigDecimal.ZERO);
+        BigDecimal total = stockValue.add(availableCash);
+        if (total.signum() <= 0) {
+            return 0.0;
+        }
+        return Math.clamp(stockValue.divide(total, 8, java.math.RoundingMode.HALF_UP).doubleValue(), 0.0, 1.0);
+    }
+
     public double pricePressure() {
         if (config == null) {
             return 0.0;
@@ -104,7 +126,7 @@ public record ProfileSignalContext(
                 strategy,
                 config,
                 policy,
-                effectiveIntensity,
+                activityLevel,
                 momentumPressure,
                 herdPressure,
                 unrealizedReturn,

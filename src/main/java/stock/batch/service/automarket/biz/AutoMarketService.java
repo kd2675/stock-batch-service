@@ -921,31 +921,27 @@ public class AutoMarketService {
                 == SimulationMarketSession.REGULAR;
     }
 
-    int effectiveIntensity(AutoParticipantStrategy strategy, AutoMarketConfig config) {
-        return autoProfileBehaviorSupport.behavior(strategy.profileType()).effectiveIntensity(strategy, config, profilePolicy(strategy.profileType()));
+    int activityLevel(AutoParticipantStrategy strategy) {
+        return autoProfileBehaviorSupport.behavior(strategy.profileType()).activityLevel(strategy);
     }
 
     double buyBiasForProfile(
             AutoParticipantProfileType profileType,
-            int effectiveIntensity,
+            int activityLevel,
             double momentumPressure,
             double herdPressure,
             double unrealizedReturn,
             long availableQuantity
     ) {
         ProfilePolicy policy = profilePolicy(profileType);
-        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, effectiveIntensity, momentumPressure, herdPressure, unrealizedReturn, availableQuantity, BigDecimal.ZERO, false, 0, 0);
+        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, activityLevel, momentumPressure, herdPressure, unrealizedReturn, availableQuantity, BigDecimal.ZERO, false, 0, 0);
         return autoProfileBehaviorSupport.behavior(profileType).buyBias(context);
     }
 
-    int orderCountForProfile(AutoParticipantProfileType profileType, int effectiveIntensity, double unrealizedReturn) {
+    int orderCountForProfile(AutoParticipantProfileType profileType, int activityLevel, double unrealizedReturn) {
         ProfilePolicy policy = profilePolicy(profileType);
-        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, effectiveIntensity, 0, 0, unrealizedReturn, 0, BigDecimal.ZERO, false, 0, 0);
+        ProfileSignalContext context = new ProfileSignalContext(null, null, policy, activityLevel, 0, 0, unrealizedReturn, 0, BigDecimal.ZERO, false, 0, 0);
         return autoProfileBehaviorSupport.behavior(profileType).orderCount(context);
-    }
-
-    int quantityUpperBoundForProfile(AutoParticipantProfileType profileType, int maxOrderQuantity) {
-        return autoProfileBehaviorSupport.behavior(profileType).quantityUpperBound(Math.max(1, maxOrderQuantity), profilePolicy(profileType));
     }
 
     int orderTtlSecondsForProfile(AutoParticipantProfileType profileType, int baseTtlSeconds) {

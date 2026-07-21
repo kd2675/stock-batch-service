@@ -16,6 +16,7 @@ public record AutoParticipantProfileConfig(
         BigDecimal dipBuyWeight,
         BigDecimal orderMultiplier,
         BigDecimal aggressionMultiplier,
+        BigDecimal pricePressureSensitivity,
         BigDecimal orderTtlMultiplier,
         BigDecimal quantityMultiplier,
         BigDecimal holdingPatienceWeight,

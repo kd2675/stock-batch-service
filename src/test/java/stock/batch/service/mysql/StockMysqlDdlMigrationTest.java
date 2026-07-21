@@ -104,6 +104,72 @@ class StockMysqlDdlMigrationTest {
     }
 
     @Test
+    void profilePricePressureSensitivityAlter_backfillsProfileDefaultsAndReappliesAsNoOp() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute(
+                """
+                alter table stock_auto_participant_profile_config
+                  drop check chk_stock_auto_profile_price_pressure_sensitivity,
+                  drop column price_pressure_sensitivity
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, order_multiplier, aggression_multiplier,
+                    order_ttl_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days,
+                    recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
+                ) values
+                  ('NEWS_REACTIVE', 1, 1, 1, 1, 0, 0, 0, 0, 30, 30, 'DAY', current_timestamp),
+                  ('MARKET_MAKER', 1, 1, 1, 1, 0, 0, 0, 0, 30, 30, 'DAY', current_timestamp)
+                """
+        );
+
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_profile_price_pressure_sensitivity_alter.sql"),
+                false
+        );
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_profile_price_pressure_sensitivity_alter.sql"),
+                false
+        );
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_pressure_sensitivity from stock_auto_participant_profile_config where profile_type = 'NEWS_REACTIVE'",
+                BigDecimal.class
+        )).isEqualByComparingTo("1.3000");
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_pressure_sensitivity from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                BigDecimal.class
+        )).isEqualByComparingTo("0.3000");
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_profile_config",
+                "price_pressure_sensitivity"
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from information_schema.table_constraints
+                 where constraint_schema = database()
+                   and table_name = 'stock_auto_participant_profile_config'
+                   and constraint_name = 'chk_stock_auto_profile_price_pressure_sensitivity'
+                """,
+                Integer.class
+        )).isEqualTo(1);
+    }
+
+    @Test
     void postCloseReportQueries_mysqlIndexHintGrammar_executesAgainstCanonicalSchema() throws IOException {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
                 MYSQL.getJdbcUrl(),

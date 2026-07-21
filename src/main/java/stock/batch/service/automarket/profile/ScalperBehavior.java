@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class ScalperBehavior extends AbstractAutoProfileBehavior {
 
     public ScalperBehavior() {
-        super(AutoParticipantProfileType.SCALPER, new ProfilePolicy(0.25, 0.55, 0.00, 0.10, 0.35, 0.00, 0.20, 0.85, 1.15, 1.15, 0.65, 0.22, 0.65, 0.10, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.SCALPER, new ProfilePolicy(0.25, 0.55, 0.00, 0.10, 0.35, 0.00, 0.20, 0.85, 1.15, 1.15, 0.65, 0.22, 0.65, 0.10, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.05));
     }
 
     @Override

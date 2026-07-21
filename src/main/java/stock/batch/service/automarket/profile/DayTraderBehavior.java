@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class DayTraderBehavior extends AbstractAutoProfileBehavior {
 
     public DayTraderBehavior() {
-        super(AutoParticipantProfileType.DAY_TRADER, new ProfilePolicy(0.25, 0.62, 0.00, 0.08, 0.30, 0.00, 0.20, 0.80, 1.20, 1.15, 0.80, 0.18, 0.85, 0.12, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.DAY_TRADER, new ProfilePolicy(0.25, 0.62, 0.00, 0.08, 0.30, 0.00, 0.20, 0.80, 1.20, 1.15, 0.80, 0.18, 0.85, 0.12, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.10));
     }
 
     @Override

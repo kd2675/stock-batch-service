@@ -3,7 +3,6 @@ package stock.batch.service.automarket.biz;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -37,6 +36,18 @@ import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 
 class AutoParticipantOrderServiceTest {
+
+    @Test
+    void scaleProfileQuantity_multiplierScalesContinuouslyWithinHardLimit() {
+        assertThat(AutoParticipantOrderService.scaleProfileQuantity(50, 0.45, 100)).isEqualTo(23);
+        assertThat(AutoParticipantOrderService.scaleProfileQuantity(50, 1.20, 100)).isEqualTo(60);
+        assertThat(AutoParticipantOrderService.scaleProfileQuantity(80, 1.80, 100)).isEqualTo(100);
+    }
+
+    @Test
+    void scaleProfileQuantity_zeroMultiplier_disablesQuantity() {
+        assertThat(AutoParticipantOrderService.scaleProfileQuantity(50, 0, 100)).isZero();
+    }
 
     @Test
     void validateVolumeConfiguration_openOrderMultiplierAboveSafeMaximum_rejectsStartup() {
@@ -91,10 +102,9 @@ class AutoParticipantOrderServiceTest {
                 .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
         when(behaviorSupport.behavior(AutoParticipantProfileType.NOISE_TRADER)).thenReturn(behavior);
         when(behaviorSupport.policy(policies, AutoParticipantProfileType.NOISE_TRADER)).thenReturn(policy);
-        when(behavior.effectiveIntensity(strategy, config, policy)).thenReturn(5);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
         when(behavior.orderCount(any())).thenReturn(1);
         when(behavior.chooseSide(any())).thenReturn(side);
-        when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(pricing.createAutoPrice(eq(config), eq(5), anyString(), eq(policy), any()))
                 .thenReturn(orderPrice);
         when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
@@ -127,7 +137,7 @@ class AutoParticipantOrderServiceTest {
                 behaviorSupport
         );
         ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 10);
-        AutoMarketConfig config = config();
+        AutoMarketConfig config = config(1);
         AutoParticipantStrategy strategy = new AutoParticipantStrategy(
                 "auto-001",
                 1L,
@@ -158,7 +168,7 @@ class AutoParticipantOrderServiceTest {
                 ));
         when(behaviorSupport.behavior(AutoParticipantProfileType.NOISE_TRADER)).thenReturn(behavior);
         when(behaviorSupport.policy(policies, AutoParticipantProfileType.NOISE_TRADER)).thenReturn(policy);
-        when(behavior.effectiveIntensity(strategy, config, policy)).thenReturn(5);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
         when(behavior.orderCount(any())).thenReturn(2);
         List<String> observedStates = new ArrayList<>();
         when(behavior.chooseSide(any())).thenAnswer(invocation -> {
@@ -166,7 +176,6 @@ class AutoParticipantOrderServiceTest {
             observedStates.add(context.cashBalance().toPlainString() + ":" + context.herdPressure());
             return context.cashBalance().compareTo(context.config().currentPrice()) >= 0 ? "BUY" : null;
         });
-        when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(pricing.createAutoPrice(eq(config), eq(5), eq("BUY"), eq(policy), any()))
                 .thenReturn(new BigDecimal("100.00"));
         when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
@@ -241,12 +250,11 @@ class AutoParticipantOrderServiceTest {
                 .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
         when(behaviorSupport.behavior(AutoParticipantProfileType.NOISE_TRADER)).thenReturn(behavior);
         when(behaviorSupport.policy(policies, AutoParticipantProfileType.NOISE_TRADER)).thenReturn(policy);
-        when(behavior.effectiveIntensity(strategy, config, policy)).thenReturn(5);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
         when(behavior.orderCount(any())).thenReturn(1);
         when(behavior.chooseSide(any())).thenReturn("SELL");
         when(pricing.createAutoPrice(eq(config), eq(5), eq("SELL"), eq(policy), any()))
                 .thenReturn(new BigDecimal("100.00"));
-        when(behavior.quantityUpperBound(anyInt(), eq(policy))).thenReturn(1);
         when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
             List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
             return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 1, 0, 0);
@@ -307,9 +315,13 @@ class AutoParticipantOrderServiceTest {
     }
 
     private static AutoMarketConfig config() {
+        return config(100);
+    }
+
+    private static AutoMarketConfig config(int maxOrderQuantity) {
         return new AutoMarketConfig(
                 "STOCK001",
-                100,
+                maxOrderQuantity,
                 1200,
                 1_000_000L,
                 BigDecimal.ONE,

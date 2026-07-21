@@ -16,6 +16,7 @@ public record ProfilePolicy(
         double profitTakingWeight,
         double orderMultiplier,
         double aggressionMultiplier,
+        double pricePressureSensitivity,
         double orderTtlMultiplier,
         double noiseWeight,
         double quantityMultiplier,
@@ -27,6 +28,53 @@ public record ProfilePolicy(
         BigDecimal recurringDepositIntervalValue,
         RecurringCashIntervalUnit recurringDepositIntervalUnit
 ) {
+    public ProfilePolicy(
+            double newsWeight,
+            double momentumWeight,
+            double contrarianWeight,
+            double lossAversionWeight,
+            double herdingWeight,
+            double marketMakingWeight,
+            double overconfidenceWeight,
+            double profitTakingWeight,
+            double orderMultiplier,
+            double aggressionMultiplier,
+            double orderTtlMultiplier,
+            double noiseWeight,
+            double quantityMultiplier,
+            double panicSellWeight,
+            double dipBuyWeight,
+            double holdingPatienceWeight,
+            double deepLossHoldWeight,
+            BigDecimal recurringDepositAmount,
+            BigDecimal recurringDepositIntervalValue,
+            RecurringCashIntervalUnit recurringDepositIntervalUnit
+    ) {
+        this(
+                newsWeight,
+                momentumWeight,
+                contrarianWeight,
+                lossAversionWeight,
+                herdingWeight,
+                marketMakingWeight,
+                overconfidenceWeight,
+                profitTakingWeight,
+                orderMultiplier,
+                aggressionMultiplier,
+                1.0,
+                orderTtlMultiplier,
+                noiseWeight,
+                quantityMultiplier,
+                panicSellWeight,
+                dipBuyWeight,
+                holdingPatienceWeight,
+                deepLossHoldWeight,
+                recurringDepositAmount,
+                recurringDepositIntervalValue,
+                recurringDepositIntervalUnit
+        );
+    }
+
     public ProfilePolicy(
             double newsWeight,
             double momentumWeight,
@@ -59,6 +107,7 @@ public record ProfilePolicy(
                 profitTakingWeight,
                 orderMultiplier,
                 aggressionMultiplier,
+                1.0,
                 orderTtlMultiplier,
                 noiseWeight,
                 quantityMultiplier,
@@ -86,6 +135,7 @@ public record ProfilePolicy(
                 ratioOrDefault(config.profitTakingWeight(), profitTakingWeight),
                 positiveOrDefault(config.orderMultiplier(), orderMultiplier),
                 positiveOrDefault(config.aggressionMultiplier(), aggressionMultiplier),
+                boundedOrDefault(config.pricePressureSensitivity(), pricePressureSensitivity, 0.0, 2.0),
                 positiveOrDefault(config.orderTtlMultiplier(), orderTtlMultiplier),
                 ratioOrDefault(config.noiseWeight(), noiseWeight),
                 positiveOrDefault(config.quantityMultiplier(), quantityMultiplier),
@@ -99,11 +149,50 @@ public record ProfilePolicy(
         );
     }
 
+    public ProfilePolicy withPricePressureSensitivity(double sensitivity) {
+        return new ProfilePolicy(
+                newsWeight,
+                momentumWeight,
+                contrarianWeight,
+                lossAversionWeight,
+                herdingWeight,
+                marketMakingWeight,
+                overconfidenceWeight,
+                profitTakingWeight,
+                orderMultiplier,
+                aggressionMultiplier,
+                Math.clamp(sensitivity, 0.0, 2.0),
+                orderTtlMultiplier,
+                noiseWeight,
+                quantityMultiplier,
+                panicSellWeight,
+                dipBuyWeight,
+                holdingPatienceWeight,
+                deepLossHoldWeight,
+                recurringDepositAmount,
+                recurringDepositIntervalValue,
+                recurringDepositIntervalUnit
+        );
+    }
+
     private static double positiveOrDefault(BigDecimal value, double defaultValue) {
         if (value == null || value.compareTo(BigDecimal.ZERO) < 0) {
             return defaultValue;
         }
         return value.doubleValue();
+    }
+
+    private static double boundedOrDefault(
+            BigDecimal value,
+            double defaultValue,
+            double minimum,
+            double maximum
+    ) {
+        if (value == null) {
+            return defaultValue;
+        }
+        double candidate = value.doubleValue();
+        return candidate < minimum || candidate > maximum ? defaultValue : candidate;
     }
 
     private static double ratioOrDefault(BigDecimal value, double defaultValue) {

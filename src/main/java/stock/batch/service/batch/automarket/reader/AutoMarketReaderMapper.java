@@ -77,6 +77,7 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("dip_buy_weight"),
                 rs.getBigDecimal("order_multiplier"),
                 rs.getBigDecimal("aggression_multiplier"),
+                rs.getBigDecimal("price_pressure_sensitivity"),
                 rs.getBigDecimal("order_ttl_multiplier"),
                 rs.getBigDecimal("quantity_multiplier"),
                 rs.getBigDecimal("holding_patience_weight"),

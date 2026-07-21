@@ -220,6 +220,7 @@ public class AutoMarketReader {
                        dip_buy_weight,
                        order_multiplier,
                        aggression_multiplier,
+                       price_pressure_sensitivity,
                        order_ttl_multiplier,
                        quantity_multiplier,
                        holding_patience_weight,

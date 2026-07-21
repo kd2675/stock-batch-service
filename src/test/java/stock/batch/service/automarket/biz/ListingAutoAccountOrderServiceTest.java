@@ -121,6 +121,38 @@ class ListingAutoAccountOrderServiceTest {
     }
 
     @Test
+    void run_targetFitInsideBand_offsetsQuoteTargetsByExactInventoryGap() {
+        ListingAutoAccountConfig config = listingConfig(
+                10L, "TWO_SIDED", 3_066, 30_660L, 30_660L, 102_200L, 30_660L, "DOWN", "UP"
+        );
+        prepare(
+                config,
+                97_205L,
+                97_205L,
+                new BigDecimal("75271377590.00"),
+                new BigDecimal("82500.00"),
+                new BigDecimal("82700.00")
+        );
+        acceptAllPlannedOrders();
+
+        int processed = service.run(marketConfig(), sessionApproval());
+
+        List<AutoMarketPlannedOrder> orders = capturePlannedOrders();
+        long buyQuantity = orders.stream()
+                .filter(order -> "BUY".equals(order.side()))
+                .mapToLong(AutoMarketPlannedOrder::quantity)
+                .sum();
+        long sellQuantity = orders.stream()
+                .filter(order -> "SELL".equals(order.side()))
+                .mapToLong(AutoMarketPlannedOrder::quantity)
+                .sum();
+        assertThat(processed).isEqualTo(19);
+        assertThat(buyQuantity).isEqualTo(30_660L);
+        assertThat(sellQuantity).isEqualTo(25_665L);
+        assertThat(buyQuantity - sellQuantity).isEqualTo(102_200L - 97_205L);
+    }
+
+    @Test
     void run_targetReduced_cancelsExcessOrderThenRefillsExactDeficit() {
         ListingAutoAccountConfig config = listingConfig(10L, "SELL_ONLY", 10, 0L, 10L, 0L, 0L, "DOWN", "UP");
         AutoOrder first = new AutoOrder(1L, 10L, "LST001", "SELL", 8L, 0L, BigDecimal.ZERO);

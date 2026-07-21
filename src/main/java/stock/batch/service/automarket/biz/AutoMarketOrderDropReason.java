@@ -3,6 +3,7 @@ package stock.batch.service.automarket.biz;
 enum AutoMarketOrderDropReason {
     SIDE_NOT_SELECTED("side_not_selected"),
     OPEN_QUANTITY_LIMIT("open_quantity_limit"),
+    QUANTITY_MULTIPLIER_ZERO("quantity_multiplier_zero"),
     INVALID_PRICE("invalid_price"),
     INSUFFICIENT_CASH("insufficient_cash"),
     INSUFFICIENT_HOLDING("insufficient_holding"),

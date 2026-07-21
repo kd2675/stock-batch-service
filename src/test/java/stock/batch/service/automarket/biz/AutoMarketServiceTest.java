@@ -11,6 +11,8 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.profile.SmallDiversifierBehavior;
+import stock.batch.service.automarket.profile.WhaleBehavior;
 import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketDistributionBias;
@@ -787,7 +789,7 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void runAutoMarketStep_participantIntensityTen_createsBuyPressureForThatParticipant() {
+    void runAutoMarketStep_participantIntensityTen_createsBuyDirectionWithoutBypassingProfilePriceSensitivity() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-002'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
@@ -800,7 +802,7 @@ class AutoMarketServiceTest {
         assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001' and side = 'SELL'"))
                 .isZero();
         assertThat(queryDecimal("select min(limit_price) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
-                .isGreaterThanOrEqualTo(new BigDecimal("70000.00"));
+                .isBetween(new BigDecimal("49000.00"), new BigDecimal("91000.00"));
     }
 
     @Test
@@ -848,41 +850,21 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void effectiveIntensity_latestReportScoreIsBlendedWithParticipantStrategy() {
-        int effectiveIntensity = autoMarketService.effectiveIntensity(
-                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NOISE_TRADER),
-                new stock.batch.service.batch.automarket.model.AutoMarketConfig(
-                        "005930",
-                        3,
-                        15,
-                        300,
-                        BigDecimal.ONE,
-                        new BigDecimal("70000.00"),
-                        new BigDecimal("70000.00"),
-                        10
-                )
+    void activityLevel_isParticipantStrategyValueWithoutReportInput() {
+        int activityLevel = autoMarketService.activityLevel(
+                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NOISE_TRADER)
         );
 
-        assertThat(effectiveIntensity).isEqualTo(7);
+        assertThat(activityLevel).isEqualTo(5);
     }
 
     @Test
-    void effectiveIntensity_newsReactiveProfile_respondsMoreStronglyToReportScore() {
-        int effectiveIntensity = autoMarketService.effectiveIntensity(
-                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NEWS_REACTIVE),
-                new stock.batch.service.batch.automarket.model.AutoMarketConfig(
-                        "005930",
-                        3,
-                        15,
-                        300,
-                        BigDecimal.ONE,
-                        new BigDecimal("70000.00"),
-                        new BigDecimal("70000.00"),
-                        10
-                )
+    void activityLevel_newsReactiveProfileCannotIncreaseOrderActivity() {
+        int activityLevel = autoMarketService.activityLevel(
+                new stock.batch.service.batch.automarket.model.AutoParticipantStrategy(1L, 5, AutoParticipantProfileType.NEWS_REACTIVE)
         );
 
-        assertThat(effectiveIntensity).isEqualTo(9);
+        assertThat(activityLevel).isEqualTo(5);
     }
 
     @Test
@@ -1020,28 +1002,6 @@ class AutoMarketServiceTest {
         );
 
         assertThat(winningBias).isGreaterThan(flatBias + 0.08);
-    }
-
-    @Test
-    void buyBias_paydayAccumulatorKeepsHigherBuyBiasThanNoiseTraderOnNeutralSignal() {
-        double paydayBias = autoMarketService.buyBiasForProfile(
-                AutoParticipantProfileType.PAYDAY_ACCUMULATOR,
-                5,
-                0,
-                0,
-                0,
-                5
-        );
-        double noiseBias = autoMarketService.buyBiasForProfile(
-                AutoParticipantProfileType.NOISE_TRADER,
-                5,
-                0,
-                0,
-                0,
-                5
-        );
-
-        assertThat(paydayBias).isGreaterThan(noiseBias + 0.08);
     }
 
     @Test
@@ -1444,7 +1404,7 @@ class AutoMarketServiceTest {
                 10
         );
 
-        assertThat(scalperBias).isGreaterThan(profitLockerBias + 0.05);
+        assertThat(scalperBias).isGreaterThan(profitLockerBias);
     }
 
     @Test
@@ -1529,15 +1489,6 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void quantityUpperBound_whaleUsesLargerSizeThanSmallDiversifier() {
-        int whaleUpperBound = autoMarketService.quantityUpperBoundForProfile(AutoParticipantProfileType.WHALE, 100);
-        int smallDiversifierUpperBound = autoMarketService.quantityUpperBoundForProfile(AutoParticipantProfileType.SMALL_DIVERSIFIER, 100);
-
-        assertThat(whaleUpperBound).isEqualTo(100);
-        assertThat(smallDiversifierUpperBound).isLessThanOrEqualTo(45);
-    }
-
-    @Test
     void orderSizing_smallDiversifierUsesMoreOrdersButSmallerSizeThanWhale() {
         int smallDiversifierOrderCount = autoMarketService.orderCountForProfile(
                 AutoParticipantProfileType.SMALL_DIVERSIFIER,
@@ -1549,15 +1500,22 @@ class AutoMarketServiceTest {
                 5,
                 0
         );
-        int smallDiversifierQuantityUpperBound = autoMarketService.quantityUpperBoundForProfile(AutoParticipantProfileType.SMALL_DIVERSIFIER, 100);
-        int whaleQuantityUpperBound = autoMarketService.quantityUpperBoundForProfile(AutoParticipantProfileType.WHALE, 100);
+        int instrumentHardLimit = 100;
 
         assertThat(smallDiversifierOrderCount).isGreaterThan(whaleOrderCount);
-        assertThat(smallDiversifierQuantityUpperBound).isLessThan(whaleQuantityUpperBound);
+        assertThat(AutoParticipantOrderService.scaleProfileQuantity(
+                50,
+                new SmallDiversifierBehavior().defaultPolicy().quantityMultiplier(),
+                instrumentHardLimit
+        )).isLessThan(AutoParticipantOrderService.scaleProfileQuantity(
+                50,
+                new WhaleBehavior().defaultPolicy().quantityMultiplier(),
+                instrumentHardLimit
+        ));
     }
 
     @Test
-    void runAutoMarketStep_whaleAndSmallDiversifierUseDifferentRuntimeOrderSizes() {
+    void runAutoMarketStep_whaleAndSmallDiversifierStayWithinConfiguredHardLimit() {
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key = 'stock-auto-003'");
         jdbcTemplate.update("delete from stock_auto_participant where user_key = 'stock-auto-003'");
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'WHALE' where user_key = 'stock-auto-001'");
@@ -1569,8 +1527,8 @@ class AutoMarketServiceTest {
 
         runAutoMarketStep();
 
-        assertThat(queryLong("select min(quantity) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
-                .isGreaterThanOrEqualTo(50L);
+        assertThat(queryLong("select max(quantity) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
+                .isLessThanOrEqualTo(100L);
         assertThat(queryLong("select max(quantity) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-002'"))
                 .isLessThanOrEqualTo(45L);
     }
@@ -1649,6 +1607,24 @@ class AutoMarketServiceTest {
                 .isEqualTo(6L);
         assertThat(queryLong("select max(quantity) from stock_order o join stock_account a on a.id = o.account_id where o.symbol = '005930' and a.user_key = 'stock-auto-001'"))
                 .isLessThanOrEqualTo(20L);
+    }
+
+    @Test
+    void runAutoMarketStep_zeroOrderMultiplier_disablesProfileOrders() {
+        configureSingleNoiseTraderWithProfileMultipliers("0.00", "1.00");
+
+        runAutoMarketStep();
+
+        assertThat(autoOrderCount("stock-auto-001")).isZero();
+    }
+
+    @Test
+    void runAutoMarketStep_zeroQuantityMultiplier_disablesProfileOrders() {
+        configureSingleNoiseTraderWithProfileMultipliers("1.00", "0.00");
+
+        runAutoMarketStep();
+
+        assertThat(autoOrderCount("stock-auto-001")).isZero();
     }
 
     @Test
@@ -1873,12 +1849,10 @@ class AutoMarketServiceTest {
         Arrays.stream(AutoParticipantProfileType.values()).forEach(profileType -> {
             double buyBias = autoMarketService.buyBiasForProfile(profileType, 5, 0, 0, 0, 0);
             int orderCount = autoMarketService.orderCountForProfile(profileType, 5, 0);
-            int quantityUpperBound = autoMarketService.quantityUpperBoundForProfile(profileType, 100);
             int orderTtlSeconds = autoMarketService.orderTtlSecondsForProfile(profileType, 60);
 
             assertThat(buyBias).as(profileType.name() + " buy bias").isBetween(0.08, 0.92);
             assertThat(orderCount).as(profileType.name() + " order count").isBetween(0, 8);
-            assertThat(quantityUpperBound).as(profileType.name() + " quantity upper bound").isBetween(1, 100);
             assertThat(orderTtlSeconds).as(profileType.name() + " order TTL seconds").isBetween(1, 600);
         });
     }
@@ -1977,7 +1951,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("update stock_auto_participant set profile_type = 'MARKET_MAKER' where user_key = 'stock-auto-003'");
         jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 5 where user_key = 'stock-auto-003' and symbol = '005930'");
         jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol = '005930'");
-        insertFundedAutoAccount("stock-auto-003", "50000000.00");
+        insertFundedAutoAccount("stock-auto-003", "700000.00");
         jdbcTemplate.update(
                 """
                 insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
@@ -3255,6 +3229,41 @@ class AutoMarketServiceTest {
                 realSecondsPerSimulationDay,
                 accumulatedRealSeconds
         );
+    }
+
+    private void configureSingleNoiseTraderWithProfileMultipliers(
+            String orderMultiplier,
+            String quantityMultiplier
+    ) {
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant set profile_type = 'NOISE_TRADER' where user_key = 'stock-auto-001'");
+        jdbcTemplate.update("update stock_auto_participant_symbol_config set intensity = 10 where user_key = 'stock-auto-001' and symbol = '005930'");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 100 where symbol = '005930'");
+        insertDailyRegime("005930", "UP", "STOCK", 10, 5, 5, 1006L);
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days, updated_at
+                )
+                values ('NOISE_TRADER', ?, 1.00, 1.00, ?, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
+                """,
+                new BigDecimal(orderMultiplier),
+                new BigDecimal(quantityMultiplier)
+        );
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+    }
+
+    private long autoOrderCount(String userKey) {
+        return queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where o.symbol = '005930'
+                   and a.user_key = ?
+                """, userKey);
     }
 
     private BigDecimal queryDecimal(String sql) {

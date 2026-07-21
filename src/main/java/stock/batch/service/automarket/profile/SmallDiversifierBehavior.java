@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class SmallDiversifierBehavior extends AbstractAutoProfileBehavior {
 
     public SmallDiversifierBehavior() {
-        super(AutoParticipantProfileType.SMALL_DIVERSIFIER, new ProfilePolicy(0.25, 0.20, 0.10, 0.30, 0.10, 0.00, 0.05, 0.25, 1.20, 0.70, 1.20, 0.10, 0.45, 0.00, 0.05, 0.25, 0.15, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.SMALL_DIVERSIFIER, new ProfilePolicy(0.25, 0.20, 0.10, 0.30, 0.10, 0.00, 0.05, 0.25, 1.20, 0.70, 1.20, 0.10, 0.45, 0.00, 0.05, 0.25, 0.15, BigDecimal.ZERO, 30).withPricePressureSensitivity(0.65));
     }
 
     @Override
@@ -15,8 +15,4 @@ public class SmallDiversifierBehavior extends AbstractAutoProfileBehavior {
         return Math.clamp(standardOrderCount(context, false) + 1, 1, 8);
     }
 
-    @Override
-    public int quantityUpperBound(int maxOrderQuantity, ProfilePolicy policy) {
-        return Math.max(1, (int) Math.floor(Math.max(1, maxOrderQuantity) * 0.45));
-    }
 }

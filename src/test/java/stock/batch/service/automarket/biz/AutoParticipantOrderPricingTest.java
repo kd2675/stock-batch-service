@@ -44,6 +44,23 @@ class AutoParticipantOrderPricingTest {
     );
 
     @Test
+    void directionalPricePressure_profileSensitivityChangesPriceResponseWithoutChangingActivityLevel() {
+        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 100, 0, 0, 0);
+        ProfilePolicy marketMakerPolicy = AutoProfileBehaviorRegistry.createDefault()
+                .behavior(AutoParticipantProfileType.MARKET_MAKER)
+                .defaultPolicy();
+        ProfilePolicy newsReactivePolicy = AutoProfileBehaviorRegistry.createDefault()
+                .behavior(AutoParticipantProfileType.NEWS_REACTIVE)
+                .defaultPolicy();
+
+        double marketMakerPressure = pricing.directionalPricePressure(config, 5, marketMakerPolicy);
+        double newsReactivePressure = pricing.directionalPricePressure(config, 5, newsReactivePolicy);
+
+        assertThat(List.of(marketMakerPressure, newsReactivePressure))
+                .containsExactly(0.15, 0.65);
+    }
+
+    @Test
     void createAutoPrice_maxExecutionAggression_buyCrossesBestAsk() {
         AutoMarketConfig config = maxExecutionAggressionConfig();
         AutoMarketOrderBookState orderBookState = new AutoMarketOrderBookState(

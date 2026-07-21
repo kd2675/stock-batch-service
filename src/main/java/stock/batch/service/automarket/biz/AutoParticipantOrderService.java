@@ -80,14 +80,14 @@ class AutoParticipantOrderService {
             );
             AutoProfileBehavior behavior = autoProfileBehaviorSupport.behavior(strategy.profileType());
             ProfilePolicy policy = autoProfileBehaviorSupport.policy(profilePolicies, strategy.profileType());
-            int effectiveIntensity = behavior.effectiveIntensity(strategy, config, policy);
+            int activityLevel = behavior.activityLevel(strategy);
             double unrealizedReturn = unrealizedReturn(tradingState, config);
             double profileNoise = noise(policy.noiseWeight(), 0.18);
             ProfileSignalContext initialContext = profileContext(
                     strategy,
                     config,
                     policy,
-                    effectiveIntensity,
+                    activityLevel,
                     momentumPressure,
                     unrealizedReturn,
                     0,
@@ -96,14 +96,16 @@ class AutoParticipantOrderService {
                     profileNoise,
                     atLowerPriceLimit
             );
-            int orderCount = scaledOrderCount(behavior.orderCount(initialContext), config);
+            int orderCount = policy.orderMultiplier() <= 0
+                    ? 0
+                    : scaledOrderCount(behavior.orderCount(initialContext), config);
             decisionCount += orderCount;
             for (int index = 0; index < orderCount; index++) {
                 ProfileSignalContext context = profileContext(
                         strategy,
                         config,
                         policy,
-                        effectiveIntensity,
+                        activityLevel,
                         momentumPressure,
                         unrealizedReturn,
                         index,
@@ -124,7 +126,7 @@ class AutoParticipantOrderService {
                 }
                 BigDecimal price = autoParticipantOrderPricing.createAutoPrice(
                         config,
-                        effectiveIntensity,
+                        activityLevel,
                         side,
                         policy,
                         priceReferenceOrderBookState
@@ -138,7 +140,6 @@ class AutoParticipantOrderService {
                         side,
                         price,
                         policy,
-                        behavior,
                         config.maxOrderQuantity()
                 );
                 if (!quantityDecision.accepted()) {
@@ -184,7 +185,7 @@ class AutoParticipantOrderService {
             AutoParticipantStrategy strategy,
             AutoMarketConfig config,
             ProfilePolicy policy,
-            int effectiveIntensity,
+            int activityLevel,
             double momentumPressure,
             double unrealizedReturn,
             int orderIndex,
@@ -197,7 +198,7 @@ class AutoParticipantOrderService {
                 strategy,
                 config,
                 policy,
-                effectiveIntensity,
+                activityLevel,
                 momentumPressure,
                 orderBookState.orderPressure(),
                 unrealizedReturn,
@@ -215,7 +216,6 @@ class AutoParticipantOrderService {
             String side,
             BigDecimal price,
             ProfilePolicy policy,
-            AutoProfileBehavior behavior,
             int maxOrderQuantity
     ) {
         int maxQuantity = Math.max(1, maxOrderQuantity);
@@ -224,13 +224,15 @@ class AutoParticipantOrderService {
         if (remainingOpenCapacity <= 0) {
             return QuantityDecision.dropped(AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT);
         }
-        long profileQuantity;
-        if (policy.quantityMultiplier() >= 1.5 && maxQuantity > 1) {
-            profileQuantity = nextInt(Math.max(1, maxQuantity / 2), behavior.quantityUpperBound(maxQuantity, policy));
-        } else {
-            int upperBound = behavior.quantityUpperBound(maxQuantity, policy);
-            profileQuantity = nextInt(1, upperBound);
+        if (policy.quantityMultiplier() <= 0) {
+            return QuantityDecision.dropped(AutoMarketOrderDropReason.QUANTITY_MULTIPLIER_ZERO);
         }
+        int hardUpperBound = maxQuantity;
+        long profileQuantity = scaleProfileQuantity(
+                nextInt(1, hardUpperBound),
+                policy.quantityMultiplier(),
+                hardUpperBound
+        );
         if (BUY.equals(side)) {
             if (price.compareTo(BigDecimal.ZERO) <= 0) {
                 return QuantityDecision.dropped(AutoMarketOrderDropReason.INVALID_PRICE);
@@ -249,6 +251,14 @@ class AutoParticipantOrderService {
         return QuantityDecision.accepted(
                 Math.min(Math.min(profileQuantity, tradingState.availableQuantity()), remainingOpenCapacity)
         );
+    }
+
+    static long scaleProfileQuantity(long sampledQuantity, double multiplier, long hardUpperBound) {
+        if (sampledQuantity <= 0 || multiplier <= 0 || hardUpperBound <= 0) {
+            return 0;
+        }
+        long scaledQuantity = Math.round(sampledQuantity * multiplier);
+        return Math.clamp(scaledQuantity, 1L, hardUpperBound);
     }
 
     private void incrementDropCount(

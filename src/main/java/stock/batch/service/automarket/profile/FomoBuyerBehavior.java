@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class FomoBuyerBehavior extends AbstractAutoProfileBehavior {
 
     public FomoBuyerBehavior() {
-        super(AutoParticipantProfileType.FOMO_BUYER, new ProfilePolicy(0.35, 0.85, 0.00, 0.05, 0.65, 0.00, 0.35, 0.25, 1.00, 1.10, 0.90, 0.18, 1.00, 0.05, 0.00, 0.05, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.FOMO_BUYER, new ProfilePolicy(0.35, 0.85, 0.00, 0.05, 0.65, 0.00, 0.35, 0.25, 1.00, 1.10, 0.90, 0.18, 1.00, 0.05, 0.00, 0.05, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.30));
     }
 
     @Override

@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class HerdFollowerBehavior extends AbstractAutoProfileBehavior {
 
     public HerdFollowerBehavior() {
-        super(AutoParticipantProfileType.HERD_FOLLOWER, new ProfilePolicy(0.25, 0.25, 0.00, 0.15, 0.90, 0.00, 0.15, 0.20, 1.05, 1.05, 1.00, 0.12, 1.00, 0.15, 0.00, 0.05, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.HERD_FOLLOWER, new ProfilePolicy(0.25, 0.25, 0.00, 0.15, 0.90, 0.00, 0.15, 0.20, 1.05, 1.05, 1.00, 0.12, 1.00, 0.15, 0.00, 0.05, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.20));
     }
 
     @Override

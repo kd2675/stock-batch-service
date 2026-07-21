@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class ObserverBehavior extends AbstractAutoProfileBehavior {
 
     public ObserverBehavior() {
-        super(AutoParticipantProfileType.OBSERVER, new ProfilePolicy(0.15, 0.10, 0.00, 0.20, 0.00, 0.00, 0.00, 0.10, 0.30, 0.40, 2.20, 0.03, 0.40, 0.00, 0.00, 0.10, 0.00, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.OBSERVER, new ProfilePolicy(0.15, 0.10, 0.00, 0.20, 0.00, 0.00, 0.00, 0.10, 0.30, 0.40, 2.20, 0.03, 0.40, 0.00, 0.00, 0.10, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(0.30));
     }
 
     @Override

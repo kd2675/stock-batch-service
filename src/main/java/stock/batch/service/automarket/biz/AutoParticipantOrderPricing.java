@@ -33,10 +33,12 @@ class AutoParticipantOrderPricing {
     ) {
         BigDecimal bestBid = orderBookState.bestBid();
         BigDecimal bestAsk = orderBookState.bestAsk();
-        double activityStrength = Math.clamp(strategyActivityLevel, 1, 10) / 10.0;
-        double directionalPressure = config.dailyPricePressure()
-                + config.reportPricePressure() * policy.newsWeight() * 0.55;
-        double pressure = Math.clamp(directionalPressure * activityStrength + noise(policy.noiseWeight(), 0.12), -1, 1);
+        double pressure = Math.clamp(
+                directionalPricePressure(config, strategyActivityLevel, policy)
+                        + noise(policy.noiseWeight(), 0.12),
+                -1,
+                1
+        );
         double volatility = config.volatilityMultiplier();
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
         if (policy.marketMakingWeight() >= 0.8) {
@@ -60,6 +62,21 @@ class AutoParticipantOrderPricing {
         }
 
         return createDirectionalLimitPrice(config, side, pressure, volatility);
+    }
+
+    double directionalPricePressure(
+            AutoMarketConfig config,
+            int strategyActivityLevel,
+            ProfilePolicy policy
+    ) {
+        double activityStrength = Math.clamp(strategyActivityLevel, 1, 10) / 10.0;
+        double directionalPressure = config.dailyPricePressure()
+                + config.reportPricePressure() * policy.newsWeight() * 0.55;
+        return Math.clamp(
+                directionalPressure * activityStrength * policy.pricePressureSensitivity(),
+                -1,
+                1
+        );
     }
 
     double crossingChance(

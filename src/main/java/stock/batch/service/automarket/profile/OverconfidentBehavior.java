@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class OverconfidentBehavior extends AbstractAutoProfileBehavior {
 
     public OverconfidentBehavior() {
-        super(AutoParticipantProfileType.OVERCONFIDENT, new ProfilePolicy(0.35, 0.45, 0.00, 0.20, 0.25, 0.00, 0.95, 0.10, 1.25, 1.15, 0.90, 0.15, 1.25, 0.05, 0.05, 0.10, 0.05, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.OVERCONFIDENT, new ProfilePolicy(0.35, 0.45, 0.00, 0.20, 0.25, 0.00, 0.95, 0.10, 1.25, 1.15, 0.90, 0.15, 1.25, 0.05, 0.05, 0.10, 0.05, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.10));
     }
 
     @Override

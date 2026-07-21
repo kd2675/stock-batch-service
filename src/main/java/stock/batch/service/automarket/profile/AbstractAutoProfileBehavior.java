@@ -1,7 +1,5 @@
 package stock.batch.service.automarket.profile;
 
-import java.math.BigDecimal;
-
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.chance;
@@ -37,9 +35,9 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         if (dominantConfiguredSide != null) {
             return dominantConfiguredSide;
         }
-        String intensitySide = chooseByIntensityPressure(context);
-        if (intensitySide != null) {
-            return intensitySide;
+        String activityPressureSide = chooseByActivityPressure(context);
+        if (activityPressureSide != null) {
+            return activityPressureSide;
         }
         return chooseByBuyBias(context);
     }
@@ -50,22 +48,18 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
     }
 
     @Override
-    public int quantityUpperBound(int maxOrderQuantity, ProfilePolicy policy) {
-        int baseQuantity = Math.max(1, maxOrderQuantity);
-        double multiplier = Math.clamp(policy.quantityMultiplier(), 0.0, 1.0);
-        return Math.max(1, (int) Math.floor(baseQuantity * multiplier));
-    }
-
-    @Override
     public int orderTtlSeconds(int baseTtlSeconds, ProfilePolicy policy) {
         return Math.max(1, (int) Math.round(Math.max(1, baseTtlSeconds) * policy.orderTtlMultiplier()));
     }
 
     protected int standardOrderCount(ProfileSignalContext context, boolean canStayIdle) {
+        if (context.policy().orderMultiplier() <= 0) {
+            return 0;
+        }
         if (canStayIdle && Math.abs(context.pricePressure()) < 0.35 && Math.abs(context.unrealizedReturn()) < 0.05) {
             return 0;
         }
-        int movementStrength = Math.clamp(context.effectiveIntensity(), 1, 10);
+        int movementStrength = Math.clamp(context.activityLevel(), 1, 10);
         int baseOrderCount = Math.max(1, (int) Math.ceil(movementStrength / 3.5));
         double profitBoost = 1.0;
         if (context.unrealizedReturn() > 0) {
@@ -76,7 +70,9 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     protected double weightedBuyBias(ProfileSignalContext context) {
         ProfilePolicy policy = context.policy();
-        double inventoryPenalty = Math.min(context.availableQuantity(), 20) * 0.01 * (1.0 - policy.holdingPatienceWeight() * 0.65);
+        double inventoryPenalty = Math.min(context.inventoryToOrderCapacityRatio(), 4.0)
+                * 0.05
+                * (1.0 - policy.holdingPatienceWeight() * 0.65);
         double buyBias = 0.5 + context.pricePressure() * 0.35 - inventoryPenalty;
         buyBias += context.assetPreferencePressure() * 0.25;
         buyBias += context.momentumPressure() * policy.momentumWeight() * 0.24;
@@ -85,9 +81,6 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         buyBias -= context.herdPressure() * policy.marketMakingWeight() * 0.22;
         if (context.hasHolding()) {
             buyBias += policy.holdingPatienceWeight() * 0.08;
-        }
-        if (policy.recurringDepositAmount().compareTo(BigDecimal.ZERO) > 0) {
-            buyBias += 0.12;
         }
         if (context.unrealizedReturn() < 0) {
             buyBias += policy.lossAversionWeight() * 0.18;
@@ -135,15 +128,15 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         return null;
     }
 
-    protected String chooseByIntensityPressure(ProfileSignalContext context) {
+    protected String chooseByActivityPressure(ProfileSignalContext context) {
         ProfilePolicy policy = context.policy();
         double pressure = context.pricePressure() + context.assetPreferencePressure() * 0.5;
-        if (context.effectiveIntensity() >= 9
+        if (context.activityLevel() >= 9
                 && pressure > 0.35
                 && policy.contrarianWeight() < 0.50) {
             return BUY;
         }
-        if (context.effectiveIntensity() >= 9
+        if (context.activityLevel() >= 9
                 && pressure < -0.35
                 && policy.contrarianWeight() < 0.35
                 && policy.dipBuyWeight() < 0.50

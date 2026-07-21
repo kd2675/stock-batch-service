@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class ValueAnchorBehavior extends AbstractAutoProfileBehavior {
 
     public ValueAnchorBehavior() {
-        super(AutoParticipantProfileType.VALUE_ANCHOR, new ProfilePolicy(0.20, 0.00, 0.45, 0.55, 0.00, 0.10, 0.00, 0.15, 0.80, 0.75, 1.60, 0.08, 0.80, 0.00, 0.25, 0.50, 0.35, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.VALUE_ANCHOR, new ProfilePolicy(0.20, 0.00, 0.45, 0.55, 0.00, 0.10, 0.00, 0.15, 0.80, 0.75, 1.60, 0.08, 0.80, 0.00, 0.25, 0.50, 0.35, BigDecimal.ZERO, 30).withPricePressureSensitivity(0.70));
     }
 
     @Override

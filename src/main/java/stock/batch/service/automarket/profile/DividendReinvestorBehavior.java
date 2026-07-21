@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class DividendReinvestorBehavior extends AbstractAutoProfileBehavior {
 
     public DividendReinvestorBehavior() {
-        super(AutoParticipantProfileType.DIVIDEND_REINVESTOR, new ProfilePolicy(0.20, 0.08, 0.20, 0.70, 0.05, 0.00, 0.00, 0.08, 0.80, 0.75, 2.20, 0.05, 0.65, 0.00, 0.50, 0.90, 0.65, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.DIVIDEND_REINVESTOR, new ProfilePolicy(0.20, 0.08, 0.20, 0.70, 0.05, 0.00, 0.00, 0.08, 0.80, 0.75, 2.20, 0.05, 0.65, 0.00, 0.50, 0.90, 0.65, BigDecimal.ZERO, 30).withPricePressureSensitivity(0.60));
     }
 
     @Override

@@ -119,7 +119,7 @@ scripts/stock-gateway-h2-smoke.sh
 - 가격 수집 이력은 `stock_price_tick`에 append-only로 저장하며, `stock-back-service`의 `/api/stock/v1/markets/prices/{symbol}/ticks` API가 최근 이력을 조회합니다.
 - 정산은 실행 시점의 계좌·보유·현재가를 다시 읽지 않습니다. `LEDGER_FROZEN`에서 `stock_holding_snapshot`에 고정한 수량·예약수량·평가가격과 `stock_close_account_snapshot`에 고정한 현금·예약금·보유 집계를 사용하며, 당시 `stock_price`가 없는 종목의 평가가격만 동결 시점 평단가로 fallback합니다. 이후 정산 Step은 계좌 snapshot 인덱스만 paging해 평가액, 총 보유량, 예약 매도수량, 양수 보유 포지션 수를 `portfolio_snapshot`에 기록하므로 실행 지연·재시작과 무관하게 같은 input hash를 냅니다.
 - 자동장은 `stock_auto_participant`, `stock_auto_market_config`를 읽어 실제 `stock_order`에 자동 참여자 주문을 넣습니다.
-- 자동장 주문 방향 강도는 참여자별 1~10 성향을 기본으로 하되, 주문장 종목의 최신 평가 보고서 점수가 있으면 함께 반영합니다. 최신 보고서 이벤트가 `DELETE`이거나 보고서가 없으면 보고서 신호 없이 참여자 성향만 사용합니다.
+- 자동장 참여자별 1~10 활동 강도는 주문 후보 우선순위와 기본 주문 건수에 사용하며 보고서 점수로 변경하지 않습니다. 시장·보고서 방향 압력은 프로필별 가격 압력 민감도를 거쳐 호가 가격과 교차 확률에 별도로 반영합니다. 최신 보고서 이벤트가 `DELETE`이거나 보고서가 없으면 보고서 방향 압력만 제외합니다.
 - 실제 주식시장 기능 확장 범위와 우선순위는 `../stock-back-service/STOCK_MARKET_FEATURE_ROADMAP.md`를 기준으로 봅니다.
 - 기능별 현재 구현, 코드 위치, 다음 개발 순서는 `../stock-back-service/docs/market-simulation/00-overview.md`부터 확인합니다.
 - batch 코드 파일별 책임은 `../stock-back-service/docs/market-simulation/13-code-ownership-map.md`, 기능별 변경 순서는 `../stock-back-service/docs/market-simulation/14-feature-change-playbooks.md`를 기준으로 봅니다.
@@ -295,8 +295,10 @@ KIS_MARKET_DIV_CODE=J
 - `stock.batch.execution.deadlock-retry-backoff-ms`: 주문장 매칭 deadlock 재시도 간 기본 backoff입니다. 기본값은 50ms이며 attempt 번호를 곱해 짧게 증가시킵니다.
 - `stock.batch.execution.slow-symbol-log-threshold-ms`: 한 종목 체결 chunk가 이 값보다 오래 걸리면 `symbol`, `matchCount`, `elapsedMs`를 info log로 남깁니다. 기본값은 1000ms입니다.
 - 파일 로그의 공통 루트는 `STOCK_LOG_ROOT`, 배치 전용 경로는 `STOCK_BATCH_LOG_DIR`, 실행 인스턴스 표시는 `STOCK_INSTANCE_ID`로 지정합니다. 파일 로그에는 PID·포트·인스턴스가 포함되고 테스트 프로필은 파일 로그를 기록하지 않습니다. 종목 lock 경합은 매회 WARN 대신 `stock.listing.auto.market.symbol.lock.skips`, `stock.auto.market.order.expiry.symbol.lock.skips` 카운터로 확인합니다.
-- 자동 참여자 주문의 계획 대비 저장 탈락은 `/actuator/metrics`의 `stock.auto.market.order.decisions`, `stock.auto.market.order.planned`, `stock.auto.market.order.stored`, `stock.auto.market.order.dropped`로 확인합니다. `dropped`의 `reason`은 `side_not_selected`, `open_quantity_limit`, `invalid_price`, `insufficient_cash`, `insufficient_holding`, `buy_reservation_failed`, `sell_reservation_failed` 중 하나이며 계좌·종목·프로필은 지표 태그로 사용하지 않습니다. DB 저장 예외는 기존 `stock.auto.market.order.insert.failures`에서 별도로 확인합니다.
-- 자동 참여자 프로필은 가격·자산 선호·모멘텀·군집·수익률 같은 전략 신호로 `BUY`·`SELL`·`HOLD` 의도를 먼저 결정합니다. 무보유를 `BUY`로, 현금 부족을 `SELL`로 강제하지 않으며, 선택된 의도가 실행 불가능하면 주문 계획 계층에서 `insufficient_holding` 또는 `insufficient_cash`로 기록하고 주문을 만들지 않습니다. 보유량과 수익률은 프로필의 재고·손익 신호로 방향 확률에 영향을 줄 수 있지만 자산 부족 자체가 반대 방향을 강제하지는 않습니다. 시장조성형도 매수·매도 의도를 번갈아 만들고 실행 불가능한 쪽만 같은 규칙으로 생략합니다.
+- 자동 참여자 주문의 계획 대비 저장 탈락은 `/actuator/metrics`의 `stock.auto.market.order.decisions`, `stock.auto.market.order.planned`, `stock.auto.market.order.stored`, `stock.auto.market.order.dropped`로 확인합니다. `dropped`의 `reason`은 `side_not_selected`, `open_quantity_limit`, `quantity_multiplier_zero`, `invalid_price`, `insufficient_cash`, `insufficient_holding`, `buy_reservation_failed`, `sell_reservation_failed` 중 하나이며 계좌·종목·프로필은 지표 태그로 사용하지 않습니다. DB 저장 예외는 기존 `stock.auto.market.order.insert.failures`에서 별도로 확인합니다.
+- 자동 참여자 프로필은 가격·자산 선호·모멘텀·군집·수익률 같은 전략 신호로 `BUY`·`SELL`·`HOLD` 의도를 먼저 결정합니다. 무보유를 `BUY`로, 현금 부족을 `SELL`로 강제하지 않으며, 선택된 의도가 실행 불가능하면 주문 계획 계층에서 `insufficient_holding` 또는 `insufficient_cash`로 기록하고 주문을 만들지 않습니다. 보유량과 수익률은 프로필의 재고·손익 신호로 방향 확률에 영향을 줄 수 있지만 자산 부족 자체가 반대 방향을 강제하지는 않습니다. 시장조성형은 현재가 기준 주식 평가액을 현금+주식 평가액으로 나눈 재고 비중이 40% 미만이면 매수, 60% 초과이면 매도를 우선하고 밴드 안에서만 양방향 의도를 번갈아 만듭니다.
+- 주기 입금은 자금 공급 정책일 뿐 공통 매수 신호가 아닙니다. 입금 금액이 설정되어 있다는 사실만으로 주문마다 매수 확률을 올리지 않으며, 월급매수형의 매수 행동은 해당 프로필의 방향 정책에서만 결정합니다.
+- 프로필 주문 배율과 수량 배율의 `0`은 주문 생성 중지를 뜻합니다. 양수 수량 배율은 추첨 수량에 연속적으로 적용하지만 `stock_auto_market_config.max_order_quantity`를 넘지 않습니다. 보유 재고 패널티는 절대 20주가 아니라 보유수량/종목 1회 최대수량 비율로 정규화합니다.
 - `stock.batch.auto-market.profile-lock.type`: 자동 참여자 주문 생성 profile shard 중복 실행 방지 방식입니다. 기본값은 `redis`이며 테스트에서는 `none`을 사용합니다.
 - `stock.batch.auto-market.symbol-selection.*`: 한 프로필 내부 참여자가 같은 종목으로 과도하게 몰리지 않도록 종목 선택 분산 강도, 참여자별 종목 affinity, 프로필별 최대 종목 점유율을 조정합니다.
 - `spring.task.scheduling.shutdown.await-termination`: 서버 종료 시 실행 중인 `@Scheduled` 작업 완료를 기다릴지 여부. 기본값은 true로 둡니다.

@@ -7,7 +7,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 public class SwingTraderBehavior extends AbstractAutoProfileBehavior {
 
     public SwingTraderBehavior() {
-        super(AutoParticipantProfileType.SWING_TRADER, new ProfilePolicy(0.30, 0.45, 0.25, 0.25, 0.15, 0.00, 0.15, 0.45, 0.95, 1.05, 1.10, 0.12, 1.05, 0.05, 0.20, 0.20, 0.15, BigDecimal.ZERO, 30));
+        super(AutoParticipantProfileType.SWING_TRADER, new ProfilePolicy(0.30, 0.45, 0.25, 0.25, 0.15, 0.00, 0.15, 0.45, 0.95, 1.05, 1.10, 0.12, 1.05, 0.05, 0.20, 0.20, 0.15, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.00));
     }
 
     @Override
