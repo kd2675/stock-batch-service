@@ -34,6 +34,7 @@ class StockMysqlDdlMigrationTest {
             "stock_eod_cycle_alter.sql",
             "stock_eod_immutable_snapshot_alter.sql",
             "stock_portfolio_snapshot_post_close_cash_data_fix.sql",
+            "stock_portfolio_snapshot_return_contract_alter.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
             "stock_account_participant_category_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
@@ -97,6 +98,9 @@ class StockMysqlDdlMigrationTest {
                 "stock_execution_account_day_summary",
                 "realized_profit"
         )).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "portfolio_snapshot", "net_contribution")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "portfolio_snapshot", "total_profit")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "portfolio_snapshot", "return_rate_status")).isEqualTo(1);
         assertThat(indexNamedCount(
                 jdbcTemplate,
                 "stock_close_open_order_snapshot",
@@ -113,6 +117,49 @@ class StockMysqlDdlMigrationTest {
                 jdbcTemplate,
                 "stock_account_cash_flow",
                 "effective_business_date"
+        )).isEqualTo(1);
+    }
+
+    @Test
+    void portfolioReturnContractAlter_upgradesLegacyShapeAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute(
+                """
+                alter table portfolio_snapshot
+                  drop check chk_portfolio_snapshot_return_contract,
+                  drop column return_rate_status,
+                  modify column return_rate decimal(9,4) not null,
+                  drop column total_profit,
+                  drop column net_contribution
+                """
+        );
+        Path migration = ddlPath("stock_portfolio_snapshot_return_contract_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(columnCount(jdbcTemplate, "portfolio_snapshot", "net_contribution")
+                + columnCount(jdbcTemplate, "portfolio_snapshot", "total_profit")
+                + columnCount(jdbcTemplate, "portfolio_snapshot", "return_rate_status"))
+                .isEqualTo(3);
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from information_schema.columns
+                 where table_schema = database()
+                   and table_name = 'portfolio_snapshot'
+                   and column_name = 'return_rate'
+                   and numeric_precision = 19
+                   and numeric_scale = 8
+                   and is_nullable = 'YES'
+                """,
+                Integer.class
         )).isEqualTo(1);
     }
 

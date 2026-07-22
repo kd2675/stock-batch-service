@@ -100,11 +100,12 @@ SELECT 'supported-calculation-version', COUNT(*)
        'portfolio-v1-explicit-asset-backfill',
        'portfolio-v2-frozen-close',
        'portfolio-v3-post-close-cash',
-       'portfolio-v4-explicit-subscription-asset'
+       'portfolio-v4-explicit-subscription-asset',
+       'portfolio-v5-net-contribution-return'
    );
 
 -- v2+ rows have immutable input. Their cash, pending subscription, holdings, and total asset must
--- all be reproducible before the row is upgraded to the single v4 representation.
+-- all be reproducible before the row is upgraded to the explicit subscription-asset representation.
 INSERT INTO stock_portfolio_asset_fix_guard(validation_name, invalid_count)
 SELECT 'immutable-close-input', COUNT(*)
   FROM portfolio_snapshot portfolio
@@ -114,7 +115,8 @@ SELECT 'immutable-close-input', COUNT(*)
  WHERE portfolio.calculation_version IN (
        'portfolio-v2-frozen-close',
        'portfolio-v3-post-close-cash',
-       'portfolio-v4-explicit-subscription-asset'
+       'portfolio-v4-explicit-subscription-asset',
+       'portfolio-v5-net-contribution-return'
    )
    AND (
        portfolio.close_cycle_id IS NULL
@@ -138,7 +140,8 @@ SELECT 'immutable-close-input', COUNT(*)
        OR (
            portfolio.calculation_version IN (
                'portfolio-v3-post-close-cash',
-               'portfolio-v4-explicit-subscription-asset'
+               'portfolio-v4-explicit-subscription-asset',
+               'portfolio-v5-net-contribution-return'
            )
            AND portfolio.cash_balance <> account_snapshot.post_cancel_cash
        )
@@ -196,7 +199,11 @@ SELECT portfolio.id,
            ),
            256
        ),
-       'portfolio-v4-explicit-subscription-asset',
+       CASE
+         WHEN portfolio.calculation_version = 'portfolio-v5-net-contribution-return'
+           THEN 'portfolio-v5-net-contribution-return'
+         ELSE 'portfolio-v4-explicit-subscription-asset'
+       END,
        'VERIFIED'
   FROM portfolio_snapshot portfolio
   JOIN stock_close_account_snapshot account_snapshot
@@ -205,7 +212,8 @@ SELECT portfolio.id,
  WHERE portfolio.calculation_version IN (
        'portfolio-v2-frozen-close',
        'portfolio-v3-post-close-cash',
-       'portfolio-v4-explicit-subscription-asset'
+       'portfolio-v4-explicit-subscription-asset',
+       'portfolio-v5-net-contribution-return'
    );
 
 -- Legacy snapshots predate immutable close inputs. Reconstruct their pending subscription asset

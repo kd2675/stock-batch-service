@@ -10,22 +10,25 @@ import java.util.HexFormat;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.settlement.model.AccountSettlementTarget;
+import stock.batch.service.batch.settlement.model.PortfolioReturnRateStatus;
 import stock.batch.service.batch.settlement.model.PortfolioSnapshotCommand;
 
 @Component
 public class PortfolioSnapshotProcessor {
 
-    public static final String CALCULATION_VERSION = "portfolio-v4-explicit-subscription-asset";
+    public static final String CALCULATION_VERSION = "portfolio-v5-net-contribution-return";
 
     public PortfolioSnapshotCommand process(AccountSettlementTarget target) {
         BigDecimal totalAsset = target.cashBalance()
                 .add(target.pendingSubscriptionAsset())
                 .add(target.marketValue());
-        BigDecimal returnRate = BigDecimal.ZERO;
-        if (target.netCashFlow().compareTo(BigDecimal.ZERO) > 0) {
-            returnRate = totalAsset.subtract(target.netCashFlow())
+        BigDecimal totalProfit = totalAsset.subtract(target.netContribution());
+        PortfolioReturnRateStatus returnRateStatus = PortfolioReturnRateStatus.from(target.netContribution());
+        BigDecimal returnRate = null;
+        if (returnRateStatus == PortfolioReturnRateStatus.DEFINED) {
+            returnRate = totalProfit
                     .multiply(BigDecimal.valueOf(100))
-                    .divide(target.netCashFlow(), 4, RoundingMode.HALF_UP);
+                    .divide(target.netContribution(), 8, RoundingMode.HALF_UP);
         }
         return new PortfolioSnapshotCommand(
                 target.closeCycleId(),
@@ -39,7 +42,10 @@ public class PortfolioSnapshotProcessor {
                 target.reservedSellQuantity(),
                 target.holdingPositionCount(),
                 totalAsset,
+                target.netContribution(),
+                totalProfit,
                 returnRate,
+                returnRateStatus,
                 inputHash(target),
                 CALCULATION_VERSION,
                 "VERIFIED"
@@ -53,7 +59,7 @@ public class PortfolioSnapshotProcessor {
                 Long.toString(target.closeRunId()),
                 Long.toString(target.accountId()),
                 decimal(target.cashBalance()),
-                decimal(target.netCashFlow()),
+                decimal(target.netContribution()),
                 decimal(target.marketValue()),
                 decimal(target.pendingSubscriptionAsset()),
                 Long.toString(target.holdingQuantity()),

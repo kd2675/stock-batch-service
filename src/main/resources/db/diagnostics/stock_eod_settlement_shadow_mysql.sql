@@ -181,7 +181,10 @@ WITH target_account AS (
          portfolio.reserved_sell_quantity AS stored_reserved_sell_quantity,
          portfolio.holding_position_count AS stored_holding_position_count,
          portfolio.total_asset AS stored_total_asset,
+         portfolio.net_contribution AS stored_net_contribution,
+         portfolio.total_profit AS stored_total_profit,
          portfolio.return_rate AS stored_return_rate,
+         portfolio.return_rate_status AS stored_return_rate_status,
          portfolio.calculation_version,
          portfolio.data_quality_status
     FROM legacy_input legacy
@@ -194,17 +197,17 @@ WITH target_account AS (
            WHEN comparison.external_net_cash_flow > 0 THEN ROUND(
              (comparison.frozen_total_asset - comparison.external_net_cash_flow)
                * 100 / comparison.external_net_cash_flow,
-             4
+             8
            )
-           ELSE 0
+           ELSE NULL
          END AS frozen_return_rate,
          CASE
            WHEN comparison.legacy_external_net_cash_flow > 0 THEN ROUND(
              (comparison.legacy_total_asset - comparison.legacy_external_net_cash_flow)
                * 100 / comparison.legacy_external_net_cash_flow,
-             4
+             8
            )
-           ELSE 0
+           ELSE NULL
          END AS legacy_return_rate
     FROM comparison
 ), classified AS (
@@ -226,8 +229,15 @@ WITH target_account AS (
             AND result.stored_reserved_sell_quantity = result.reserved_sell_quantity
             AND result.stored_holding_position_count = result.holding_position_count
             AND result.stored_total_asset = result.frozen_total_asset
-            AND result.stored_return_rate = result.frozen_return_rate
-            AND result.calculation_version = 'portfolio-v4-explicit-subscription-asset'
+            AND result.stored_net_contribution = result.external_net_cash_flow
+            AND result.stored_total_profit = result.frozen_total_asset - result.external_net_cash_flow
+            AND result.stored_return_rate <=> result.frozen_return_rate
+            AND result.stored_return_rate_status = CASE
+              WHEN result.external_net_cash_flow > 0 THEN 'DEFINED'
+              WHEN result.external_net_cash_flow = 0 THEN 'UNDEFINED_ZERO_CONTRIBUTION'
+              ELSE 'UNDEFINED_NEGATIVE_CONTRIBUTION'
+            END
+            AND result.calculation_version = 'portfolio-v5-net-contribution-return'
             AND result.data_quality_status = 'VERIFIED'
            THEN 'MATCHED'
            ELSE 'MISMATCHED'
@@ -266,6 +276,9 @@ SELECT classified.close_cycle_id,
        classified.frozen_return_rate,
        classified.legacy_return_rate,
        classified.stored_cash_balance,
+       classified.stored_net_contribution,
+       classified.stored_total_profit,
+       classified.stored_return_rate_status,
        classified.stored_market_value,
        classified.stored_holding_quantity,
        classified.stored_reserved_sell_quantity,

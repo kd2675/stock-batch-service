@@ -261,7 +261,10 @@ public class PortfolioSettlementLifecycleService {
                                portfolio.reserved_sell_quantity as portfolio_reserved_sell_quantity,
                                portfolio.holding_position_count as portfolio_holding_position_count,
                                portfolio.total_asset as portfolio_total_asset,
+                               portfolio.net_contribution as portfolio_net_contribution,
+                               portfolio.total_profit as portfolio_total_profit,
                                portfolio.return_rate as portfolio_return_rate,
+                               portfolio.return_rate_status,
                                portfolio.input_hash,
                                portfolio.calculation_version,
                                portfolio.data_quality_status
@@ -312,7 +315,13 @@ public class PortfolioSettlementLifecycleService {
                                 && longEquals(expected.holdingPositionCount(),
                                 resultSet.getObject("portfolio_holding_position_count", Long.class))
                                 && decimalEquals(expected.totalAsset(), resultSet.getBigDecimal("portfolio_total_asset"))
+                                && decimalEquals(
+                                        expected.netContribution(),
+                                        resultSet.getBigDecimal("portfolio_net_contribution")
+                                )
+                                && decimalEquals(expected.totalProfit(), resultSet.getBigDecimal("portfolio_total_profit"))
                                 && decimalEquals(expected.returnRate(), resultSet.getBigDecimal("portfolio_return_rate"))
+                                && expected.returnRateStatus().name().equals(resultSet.getString("return_rate_status"))
                                 && expected.inputHash().equals(resultSet.getString("input_hash"))
                                 && PortfolioSnapshotProcessor.CALCULATION_VERSION.equals(
                                         resultSet.getString("calculation_version")
@@ -334,7 +343,10 @@ public class PortfolioSettlementLifecycleService {
     }
 
     private boolean decimalEquals(BigDecimal expected, BigDecimal actual) {
-        return actual != null && expected.compareTo(actual) == 0;
+        if (expected == null || actual == null) {
+            return expected == null && actual == null;
+        }
+        return expected.compareTo(actual) == 0;
     }
 
     private boolean longEquals(long expected, Long actual) {

@@ -8,7 +8,7 @@ public record AccountSettlementTarget(
         long accountId,
         String userKey,
         BigDecimal cashBalance,
-        BigDecimal netCashFlow,
+        BigDecimal netContribution,
         BigDecimal marketValue,
         BigDecimal pendingSubscriptionAsset,
         long holdingQuantity,

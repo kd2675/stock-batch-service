@@ -25,7 +25,8 @@ public class PortfolioSnapshotWriter {
                 close_cycle_id, close_run_id, account_id, snapshot_date,
                 total_asset, cash_balance, pending_subscription_asset, market_value,
                 holding_quantity, reserved_sell_quantity, holding_position_count,
-                return_rate, input_hash, calculation_version, data_quality_status,
+                net_contribution, total_profit, return_rate, return_rate_status,
+                input_hash, calculation_version, data_quality_status,
                 source_build_version, created_at
             )
             values %s as incoming
@@ -39,7 +40,10 @@ public class PortfolioSnapshotWriter {
                 holding_quantity = incoming.holding_quantity,
                 reserved_sell_quantity = incoming.reserved_sell_quantity,
                 holding_position_count = incoming.holding_position_count,
+                net_contribution = incoming.net_contribution,
+                total_profit = incoming.total_profit,
                 return_rate = incoming.return_rate,
+                return_rate_status = incoming.return_rate_status,
                 input_hash = incoming.input_hash,
                 calculation_version = incoming.calculation_version,
                 data_quality_status = incoming.data_quality_status,
@@ -51,10 +55,11 @@ public class PortfolioSnapshotWriter {
                 close_cycle_id, close_run_id, account_id, snapshot_date,
                 total_asset, cash_balance, pending_subscription_asset, market_value,
                 holding_quantity, reserved_sell_quantity, holding_position_count,
-                return_rate, input_hash, calculation_version, data_quality_status,
+                net_contribution, total_profit, return_rate, return_rate_status,
+                input_hash, calculation_version, data_quality_status,
                 source_build_version, created_at
             ) key(account_id, snapshot_date)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private final JdbcTemplate jdbcTemplate;
@@ -103,9 +108,9 @@ public class PortfolioSnapshotWriter {
             List<? extends PortfolioSnapshotCommand> chunk = commands.subList(start, end);
             String values = String.join(",", Collections.nCopies(
                     chunk.size(),
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ));
-            List<Object> parameters = new ArrayList<>(chunk.size() * 17);
+            List<Object> parameters = new ArrayList<>(chunk.size() * 20);
             for (PortfolioSnapshotCommand command : chunk) {
                 Collections.addAll(parameters, parameters(command, snapshotDate, snapshotAt));
             }
@@ -130,7 +135,10 @@ public class PortfolioSnapshotWriter {
                 command.holdingQuantity(),
                 command.reservedSellQuantity(),
                 command.holdingPositionCount(),
+                command.netContribution(),
+                command.totalProfit(),
                 command.returnRate(),
+                command.returnRateStatus().name(),
                 command.inputHash(),
                 command.calculationVersion(),
                 command.dataQualityStatus(),

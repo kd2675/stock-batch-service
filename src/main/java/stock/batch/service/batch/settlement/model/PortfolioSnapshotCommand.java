@@ -14,7 +14,10 @@ public record PortfolioSnapshotCommand(
         long reservedSellQuantity,
         long holdingPositionCount,
         BigDecimal totalAsset,
+        BigDecimal netContribution,
+        BigDecimal totalProfit,
         BigDecimal returnRate,
+        PortfolioReturnRateStatus returnRateStatus,
         String inputHash,
         String calculationVersion,
         String dataQualityStatus

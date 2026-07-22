@@ -345,7 +345,7 @@ class PortfolioSettlementJobIntegrationTest {
                 .hasMessageContaining("requires LEDGER_FROZEN");
 
         assertThat(beforeListing + "|" + snapshotTotalAndReturn("capital-settlement-user"))
-                .isEqualTo("10000000.00:0.0000|10000000.00:0.0000");
+                .isEqualTo("10000000.00:0E-8|10000000.00:0E-8");
     }
 
     @Test

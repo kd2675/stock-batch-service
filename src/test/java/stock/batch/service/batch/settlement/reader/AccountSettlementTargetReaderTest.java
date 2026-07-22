@@ -48,7 +48,7 @@ class AccountSettlementTargetReaderTest {
 
         assertThat(first.accountId()).isEqualTo(1L);
         assertThat(first.cashBalance()).isEqualByComparingTo(new BigDecimal("130000.00"));
-        assertThat(first.netCashFlow()).isEqualByComparingTo(new BigDecimal("90000.00"));
+        assertThat(first.netContribution()).isEqualByComparingTo(new BigDecimal("90000.00"));
         assertThat(first.marketValue()).isEqualByComparingTo(new BigDecimal("150000.00"));
         assertThat(first.pendingSubscriptionAsset()).isEqualByComparingTo(new BigDecimal("20000.00"));
         assertThat(first.holdingQuantity()).isEqualTo(5L);

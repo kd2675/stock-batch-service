@@ -267,7 +267,8 @@ class PortfolioSettlementLifecycleServiceTest {
                 """
                 update portfolio_snapshot
                    set pending_subscription_asset = 1,
-                       total_asset = total_asset + 1
+                       total_asset = total_asset + 1,
+                       total_profit = total_profit + 1
                  where close_cycle_id = ?
                 """,
                 cycle.id()
@@ -389,14 +390,17 @@ class PortfolioSettlementLifecycleServiceTest {
                     close_cycle_id, close_run_id, account_id, snapshot_date,
                     total_asset, cash_balance, pending_subscription_asset, market_value,
                     holding_quantity, reserved_sell_quantity, holding_position_count,
-                    return_rate, input_hash, calculation_version, data_quality_status,
+                    net_contribution, total_profit, return_rate, return_rate_status,
+                    input_hash, calculation_version, data_quality_status,
                     source_build_version, created_at
                 ) values (?, ?, 99001, ?, ?, 1000000, 0, 0, 0, 0, 0,
-                          0, ?, ?, 'VERIFIED', 'test', ?)
+                          0, ?, null, 'UNDEFINED_ZERO_CONTRIBUTION',
+                          ?, ?, 'VERIFIED', 'test', ?)
                 """,
                 cycle.id(),
                 cycle.closeRunId(),
                 BUSINESS_DATE,
+                totalAsset,
                 totalAsset,
                 inputHash,
                 PortfolioSnapshotProcessor.CALCULATION_VERSION,

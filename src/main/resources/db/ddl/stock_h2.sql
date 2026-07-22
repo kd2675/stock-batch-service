@@ -1469,7 +1469,10 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshot (
   holding_quantity BIGINT NULL,
   reserved_sell_quantity BIGINT NULL,
   holding_position_count BIGINT NULL,
-  return_rate DECIMAL(9,4) NOT NULL,
+  net_contribution DECIMAL(19,2) NULL,
+  total_profit DECIMAL(19,2) NULL,
+  return_rate DECIMAL(19,8) NULL,
+  return_rate_status VARCHAR(40) NOT NULL DEFAULT 'LEGACY_UNVERIFIED',
   input_hash VARCHAR(64) NULL,
   calculation_version VARCHAR(40) NULL,
   data_quality_status VARCHAR(20) NULL,
@@ -1485,6 +1488,27 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshot (
   CONSTRAINT chk_portfolio_snapshot_market_value_non_negative CHECK (market_value >= 0),
   CONSTRAINT chk_portfolio_snapshot_asset_composition CHECK (
     total_asset = cash_balance + pending_subscription_asset + market_value
+  ),
+  CONSTRAINT chk_portfolio_snapshot_return_contract CHECK (
+    (return_rate_status = 'LEGACY_UNVERIFIED' AND net_contribution IS NULL AND total_profit IS NULL)
+    OR (
+      net_contribution IS NOT NULL
+      AND total_profit IS NOT NULL
+      AND total_profit = total_asset - net_contribution
+      AND (
+        (return_rate_status = 'DEFINED' AND net_contribution > 0 AND return_rate IS NOT NULL)
+        OR (
+          return_rate_status = 'UNDEFINED_ZERO_CONTRIBUTION'
+          AND net_contribution = 0
+          AND return_rate IS NULL
+        )
+        OR (
+          return_rate_status = 'UNDEFINED_NEGATIVE_CONTRIBUTION'
+          AND net_contribution < 0
+          AND return_rate IS NULL
+        )
+      )
+    )
   ),
   CONSTRAINT chk_portfolio_snapshot_holding_metrics_complete CHECK (
     (holding_quantity IS NULL AND reserved_sell_quantity IS NULL AND holding_position_count IS NULL)

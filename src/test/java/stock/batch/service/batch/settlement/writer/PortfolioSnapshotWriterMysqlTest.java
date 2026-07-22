@@ -20,6 +20,7 @@ import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import stock.batch.service.batch.settlement.model.PortfolioSnapshotCommand;
+import stock.batch.service.batch.settlement.model.PortfolioReturnRateStatus;
 import stock.batch.service.common.config.StockRuntimeIdentity;
 
 class PortfolioSnapshotWriterMysqlTest {
@@ -55,7 +56,7 @@ class PortfolioSnapshotWriterMysqlTest {
                 + ":" + sqlCaptor.getValue().contains("as incoming")
                 + ":" + sqlCaptor.getValue().contains("values(close_cycle_id)")
                 + ":" + parametersCaptor.getValue().length;
-        assertThat(outcome).isEqualTo("true:true:false:34");
+        assertThat(outcome).isEqualTo("true:true:false:40");
     }
 
     private PortfolioSnapshotCommand command(long accountId) {
@@ -71,7 +72,10 @@ class PortfolioSnapshotWriterMysqlTest {
                 1L,
                 1L,
                 new BigDecimal("3100.00"),
-                new BigDecimal("0.10"),
+                new BigDecimal("3000.00"),
+                new BigDecimal("100.00"),
+                new BigDecimal("3.33333333"),
+                PortfolioReturnRateStatus.DEFINED,
                 "hash-" + accountId,
                 "v1",
                 "VALID"

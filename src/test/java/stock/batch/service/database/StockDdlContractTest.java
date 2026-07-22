@@ -115,6 +115,7 @@ class StockDdlContractTest {
             "stock_eod_cycle_alter.sql",
             "stock_eod_immutable_snapshot_alter.sql",
             "stock_portfolio_snapshot_post_close_cash_data_fix.sql",
+            "stock_portfolio_snapshot_return_contract_alter.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
             "stock_corporate_action_processing_alter.sql",
@@ -426,6 +427,39 @@ class StockDdlContractTest {
                 "JOIN stock_execution ",
                 "UPDATE stock_execution "
         );
+    }
+
+    @Test
+    void portfolioReturnContractAlter_isBoundedAndPresentInBothServices() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_portfolio_snapshot_return_contract_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_portfolio_snapshot_return_contract_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(firstExecutableSqlLine(backDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(batchDdl).contains(
+                "net_contribution",
+                "total_profit",
+                "return_rate_status",
+                "portfolio-v5-net-contribution-return",
+                "LEGACY_UNVERIFIED",
+                "stock_close_account_snapshot"
+        );
+        assertThat(backDdl).contains(
+                "net_contribution",
+                "total_profit",
+                "return_rate_status",
+                "portfolio-v5-net-contribution-return",
+                "LEGACY_UNVERIFIED",
+                "stock_close_account_snapshot"
+        );
+        assertThat(batchDdl).doesNotContain("stock_order", "stock_execution");
+        assertThat(backDdl).doesNotContain("stock_order", "stock_execution");
     }
 
     @Test
