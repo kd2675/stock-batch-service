@@ -256,6 +256,8 @@ class StockBatchJobLauncherTest {
 
     @Test
     void postCloseCashFlow_whenAutomaticDisabled_completesPhaseWithoutMetadataOrPayment() {
+        when(simulationClockService.currentMarketDateTime())
+                .thenReturn(BUSINESS_DATE.plusDays(1).atStartOfDay());
         when(cashFlowRuntimeControl.shouldRunScheduledJob()).thenReturn(false);
         when(postCloseCycleService.findById(501L)).thenReturn(Optional.of(cycle(
                 501L,
@@ -274,6 +276,8 @@ class StockBatchJobLauncherTest {
 
     @Test
     void postCloseCashFlow_whenAutomaticEnabled_usesStableCycleIdentity() {
+        when(simulationClockService.currentMarketDateTime())
+                .thenReturn(BUSINESS_DATE.plusDays(1).atStartOfDay());
         when(cashFlowRuntimeControl.shouldRunScheduledJob()).thenReturn(true);
         when(postCloseCycleService.findById(501L)).thenReturn(Optional.of(cycle(
                 501L,
@@ -288,6 +292,22 @@ class StockBatchJobLauncherTest {
         assertThat(parameters.getLong(StockBatchJobParameters.CYCLE_ID)).isEqualTo(501L);
         assertThat(parameters.getParameter(StockBatchJobParameters.CYCLE_ID).identifying()).isTrue();
         assertThat(parameters.getParameter(StockBatchJobParameters.SWEEP_AT).identifying()).isFalse();
+    }
+
+    @Test
+    void postCloseCashFlow_beforeMidnight_defersWithoutMetadataOrPayment() {
+        when(postCloseCycleService.findById(501L)).thenReturn(Optional.of(cycle(
+                501L,
+                PostCloseScopeType.FULL_MARKET,
+                "ALL",
+                PostClosePhase.CORPORATE_CASH_APPLIED
+        )));
+
+        StockBatchJobRunResponse response = launcher.fundAutoParticipantsForPostClose(501L);
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.message()).contains("2026-07-15T00:00");
+        verify(runner, never()).run(eq(cashFlowJob), any(), any());
     }
 
     @Test
@@ -602,6 +622,22 @@ class StockBatchJobLauncherTest {
                 .isEqualTo(CorporateActionJob.OPERATION_CASH);
         assertThat(parameters.getLocalDateTime(StockBatchJobParameters.SWEEP_AT))
                 .isEqualTo(BUSINESS_DATE.plusDays(1).atTime(0, 5));
+    }
+
+    @Test
+    void corporateCash_beforeMidnight_defersWithoutMetadataOrCashMutation() {
+        when(postCloseCycleService.findById(501L)).thenReturn(Optional.of(cycle(
+                501L,
+                PostCloseScopeType.FULL_MARKET,
+                "ALL",
+                PostClosePhase.PORTFOLIO_SETTLED
+        )));
+
+        StockBatchJobRunResponse response = launcher.applyCorporateCashActions(501L);
+
+        assertThat(response.status()).isEqualTo("SKIPPED");
+        assertThat(response.message()).contains("2026-07-15T00:00");
+        verify(runner, never()).run(eq(corporateActionJob), any(), any());
     }
 
     @Test

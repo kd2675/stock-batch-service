@@ -248,6 +248,16 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse fundAutoParticipantsForPostClose(long closeCycleId) {
         PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.CORPORATE_CASH_APPLIED);
+        LocalDateTime now = simulationClockService.currentMarketDateTime();
+        LocalDateTime overnightEligibleAt = cycle.businessDate().plusDays(1).atStartOfDay();
+        if (now.isBefore(overnightEligibleAt)) {
+            return StockBatchJobRunResponses.postCloseOvernightDeferred(
+                    AutoParticipantCashFlowJob.JOB_NAME,
+                    MODE_POST_CLOSE_CASH,
+                    overnightEligibleAt,
+                    LocalDateTime.now()
+            );
+        }
         if (!autoParticipantCashFlowRuntimeControl.shouldRunScheduledJob()) {
             return StockBatchJobRunResponses.completedWithoutWork(
                     AutoParticipantCashFlowJob.JOB_NAME,
@@ -256,7 +266,6 @@ public class StockBatchJobLauncher {
                     LocalDateTime.now()
             );
         }
-        LocalDateTime now = simulationClockService.currentMarketDateTime();
         JobParametersBuilder parameters = StockBatchJobParameters.base(
                 cycle.businessDate(),
                 MODE_POST_CLOSE_CASH,
@@ -538,6 +547,15 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse applyCorporateCashActions(long closeCycleId) {
         PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.PORTFOLIO_SETTLED);
+        LocalDateTime overnightEligibleAt = cycle.businessDate().plusDays(1).atStartOfDay();
+        if (simulationClockService.currentMarketDateTime().isBefore(overnightEligibleAt)) {
+            return StockBatchJobRunResponses.postCloseOvernightDeferred(
+                    CorporateActionJob.JOB_NAME,
+                    MODE_CORPORATE_CASH,
+                    overnightEligibleAt,
+                    LocalDateTime.now()
+            );
+        }
         return applyCorporatePhase(
                 cycle,
                 cycle.businessDate(),

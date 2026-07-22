@@ -18,6 +18,8 @@ public final class StockBatchJobRunResponses {
             "Manual recurring cash is deferred until market close";
     public static final String MANUAL_CASH_FLOW_OVERNIGHT_DEFERRED_MESSAGE =
             "Manual recurring cash is deferred until corporate cash actions complete and the overnight window";
+    private static final String POST_CLOSE_OVERNIGHT_DEFERRED_MESSAGE =
+            "Post-close cash phase is deferred until the overnight window";
     private static final String SCHEDULED_EXECUTION_MODE = "scheduled";
     private static final String SCHEDULED_DISABLED_MESSAGE = "Scheduled job is disabled";
 
@@ -129,6 +131,16 @@ public final class StockBatchJobRunResponses {
                 now,
                 now
         );
+    }
+
+    public static StockBatchJobRunResponse postCloseOvernightDeferred(
+            String jobName,
+            String executionMode,
+            LocalDateTime eligibleAt,
+            LocalDateTime now
+    ) {
+        String message = POST_CLOSE_OVERNIGHT_DEFERRED_MESSAGE + ": eligibleAt=" + eligibleAt;
+        return response(jobName, executionMode, SKIPPED, 0, message, now, now);
     }
 
     static StockBatchJobRunResponse alreadyRunning(

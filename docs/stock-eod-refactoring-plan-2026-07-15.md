@@ -801,7 +801,7 @@ NOT EXISTS (
 
 ### 7.3 `overnight-cash-and-actions` Job
 
-00시 이후 coordinator는 자동 참여자 정기 자금 Job을 먼저 독립 실행해 `OVERNIGHT_CASH_APPLIED`를 확정하고, 그 다음 `CorporateActionJob`의 `CASH` flow를 실행한다. 현금 기업행사 flow는 다음 Spring Batch Step으로 분리한다.
+00시 이후 coordinator는 `CorporateActionJob`의 T일 `CASH` flow를 먼저 실행해 `CORPORATE_CASH_APPLIED`를 확정하고, 그다음 T+1 자동 참여자 정기 자금 Job으로 `OVERNIGHT_CASH_APPLIED`를 확정한다. 이 순서로 T+1 정기입금이 T일 유상증자 자동청약에 사용되지 않게 하며, 현금 기업행사 flow는 다음 Spring Batch Step으로 분리한다.
 
 1. `cash-dividend-payment-step`
 2. `capital-increase-auto-subscription-step`

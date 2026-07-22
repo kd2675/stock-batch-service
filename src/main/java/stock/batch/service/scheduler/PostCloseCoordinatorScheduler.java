@@ -147,8 +147,10 @@ public class PostCloseCoordinatorScheduler {
         LocalDate preparingBusinessDate = cycle.businessDate().plusDays(1);
         return switch (cycle.phase()) {
             case OPEN, CLOSE_REQUESTED, ORDER_ENTRY_CLOSED, EXECUTION_DRAINED, LEDGER_FROZEN -> false;
-            case PORTFOLIO_SETTLED -> runClosedMarketPhase(
+            case PORTFOLIO_SETTLED -> runAfter(
                     cycle,
+                    simulationNow,
+                    preparingBusinessDate.atStartOfDay(),
                     PostClosePhase.PORTFOLIO_SETTLED,
                     PostClosePhase.CORPORATE_CASH_APPLIED,
                     CorporateActionJob.JOB_NAME,

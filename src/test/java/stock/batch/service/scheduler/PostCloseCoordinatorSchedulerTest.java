@@ -106,9 +106,20 @@ class PostCloseCoordinatorSchedulerTest {
     }
 
     @Test
-    void advanceOnePhase_beforeMidnight_appliesCorporateCashBeforeNextDayFunding() {
+    void advanceOnePhase_beforeMidnight_doesNotClaimCorporateCashPhase() {
+        boolean advanced = scheduler.advanceOnePhase(
+                cycle(PostClosePhase.PORTFOLIO_SETTLED),
+                BUSINESS_DATE.atTime(23, 59, 59)
+        );
+
+        assertThat(advanced).isFalse();
+        verifyNoInteractions(stockBatchJobLauncher, phaseExecutionService, marketSessionFenceService);
+    }
+
+    @Test
+    void advanceOnePhase_atMidnight_appliesCorporateCashBeforeNextDayFunding() {
         PostCloseCycle cycle = cycle(PostClosePhase.PORTFOLIO_SETTLED);
-        LocalDateTime simulationNow = BUSINESS_DATE.atTime(23, 59, 59);
+        LocalDateTime simulationNow = BUSINESS_DATE.plusDays(1).atStartOfDay();
         StockBatchJobRunResponse completed = response(
                 CorporateActionJob.JOB_NAME,
                 "COMPLETED",
