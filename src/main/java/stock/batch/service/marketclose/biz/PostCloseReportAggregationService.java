@@ -97,9 +97,9 @@ public class PostCloseReportAggregationService {
         if (cycle.closeRunId() == null) {
             throw new IllegalStateException("Post-close cycle has no frozen close run: " + closeCycleId);
         }
-        if (cycle.phase() != PostClosePhase.CORPORATE_CASH_APPLIED) {
+        if (cycle.phase() != PostClosePhase.OVERNIGHT_CASH_APPLIED) {
             throw new IllegalStateException(
-                    "Post-close report aggregation requires CORPORATE_CASH_APPLIED: cycleId=%d, phase=%s"
+                    "Post-close report aggregation requires OVERNIGHT_CASH_APPLIED: cycleId=%d, phase=%s"
                             .formatted(closeCycleId, cycle.phase())
             );
         }

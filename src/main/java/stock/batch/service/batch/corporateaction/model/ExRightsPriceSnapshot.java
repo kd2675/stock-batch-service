@@ -4,6 +4,10 @@ import java.math.BigDecimal;
 
 public record ExRightsPriceSnapshot(
         BigDecimal closePrice,
-        long issuedShares
+        long issuedShares,
+        String market
 ) {
+    public ExRightsPriceSnapshot(BigDecimal closePrice, long issuedShares) {
+        this(closePrice, issuedShares, "ORDERBOOK");
+    }
 }

@@ -21,6 +21,7 @@ import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsPriceSnapshot;
+import stock.batch.service.batch.corporateaction.model.EntitlementSnapshotRef;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
 import stock.batch.service.batch.corporateaction.model.ShareEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.StockSplitActionRow;
@@ -43,7 +44,8 @@ public class CorporateActionReader {
         return jdbcClient.sql(
                 """
 	                select id, symbol, action_type, offering_type, coalesce(share_quantity, 0) as share_quantity,
-	                       issue_price, ex_rights_date, theoretical_ex_rights_price, dividend_amount
+	                       issue_price, ex_rights_date, theoretical_ex_rights_price, dividend_amount,
+	                       entitlement_close_cycle_id, entitlement_close_run_id
 	                  from stock_corporate_action
 	                 where action_type in (:actionTypes)
 	                   and status = :announcedStatus
@@ -67,7 +69,9 @@ public class CorporateActionReader {
 	                        rs.getBigDecimal("issue_price"),
 	                        rs.getObject("ex_rights_date", LocalDate.class),
                         rs.getBigDecimal("theoretical_ex_rights_price"),
-                        rs.getBigDecimal("dividend_amount")
+                        rs.getBigDecimal("dividend_amount"),
+                        rs.getObject("entitlement_close_cycle_id", Long.class),
+                        rs.getObject("entitlement_close_run_id", Long.class)
                 ))
                 .list();
     }
@@ -521,7 +525,7 @@ public class CorporateActionReader {
                 select coalesce(sum(subscribed_share_quantity), 0)
                   from stock_corporate_action_entitlement
                  where action_id = :actionId
-                   and status in ('SUBSCRIBED', 'PAID')
+                   and status in ('PARTIALLY_SUBSCRIBED', 'SUBSCRIBED', 'PAID')
                 """
         )
                 .param("actionId", actionId)
@@ -631,7 +635,7 @@ public class CorporateActionReader {
                                select sum(e.subscribed_share_quantity)
                                  from stock_corporate_action_entitlement e
                                 where e.action_id = a.id
-                                  and e.status in ('SUBSCRIBED', 'PAID')
+                                  and e.status in ('PARTIALLY_SUBSCRIBED', 'SUBSCRIBED', 'PAID')
                            ), 0)
                            else a.share_quantity
                        end as share_quantity
@@ -819,38 +823,94 @@ public class CorporateActionReader {
     public Optional<ExRightsPriceSnapshot> findExRightsPriceSnapshot(long closeRunId, String symbol) {
         return jdbcClient.sql(
                 """
-                select close_price, issued_shares
-                  from stock_order_book_daily_snapshot
-                 where close_run_id = :closeRunId
-                   and symbol = :symbol
-                   and close_price > 0
-                   and issued_shares > 0
+                select snapshot.close_price, snapshot.issued_shares, instrument.market
+                  from stock_order_book_daily_snapshot snapshot
+                  join stock_order_book_instrument instrument on instrument.symbol = snapshot.symbol
+                 where snapshot.close_run_id = :closeRunId
+                   and snapshot.symbol = :symbol
+                   and snapshot.close_price > 0
+                   and snapshot.issued_shares > 0
                 """
         )
                 .param("closeRunId", closeRunId)
                 .param("symbol", symbol)
                 .query((rs, rowNum) -> new ExRightsPriceSnapshot(
                         rs.getBigDecimal("close_price"),
-                        rs.getLong("issued_shares")
+                        rs.getLong("issued_shares"),
+                        rs.getString("market")
                 ))
                 .optional();
     }
 
-    public Optional<Long> findLatestCompletedMarketCloseRunIdBefore(String symbol, LocalDate actionDate) {
+    public Optional<EntitlementSnapshotRef> findLatestCompletedFullMarketSnapshotBefore(LocalDate actionDate) {
         return jdbcClient.sql(
                 """
-                select id
-                  from stock_market_close_run
-                 where status = 'COMPLETED'
-                   and business_date < :actionDate
-                   and (symbol = :symbol or symbol is null)
-                 order by business_date desc, closed_at desc, id desc
+                select cycle.id as close_cycle_id, run.id as close_run_id
+                  from stock_post_close_cycle cycle
+                  join stock_market_close_run run on run.id = cycle.close_run_id
+                 where cycle.scope_type = 'FULL_MARKET'
+                   and cycle.scope_key = 'ALL'
+                   and cycle.cycle_kind = 'TRADING'
+                   and run.status = 'COMPLETED'
+                   and run.symbol is null
+                   and run.business_date < :actionDate
+                 order by run.business_date desc, run.closed_at desc, run.id desc
                  limit 1
                 """
         )
-                .param("symbol", symbol)
                 .param("actionDate", actionDate)
-                .query(Long.class)
+                .query((rs, rowNum) -> new EntitlementSnapshotRef(
+                        rs.getLong("close_cycle_id"),
+                        rs.getLong("close_run_id")
+                ))
+                .optional();
+    }
+
+    public Optional<EntitlementSnapshotRef> findFrozenEntitlementSnapshotForUpdate(
+            long actionId,
+            String sourceStatus
+    ) {
+        return jdbcClient.sql(
+                """
+                select action.entitlement_close_cycle_id,
+                       action.entitlement_close_run_id,
+                       case
+                         when cycle.id is not null
+                          and cycle.close_run_id = run.id
+                          and cycle.scope_type = 'FULL_MARKET'
+                          and cycle.scope_key = 'ALL'
+                          and cycle.cycle_kind = 'TRADING'
+                          and cycle.business_date = run.business_date
+                          and run.status = 'COMPLETED'
+                          and run.symbol is null
+                          and run.business_date < action.ex_rights_date
+                         then true else false
+                       end as valid_snapshot
+                  from stock_corporate_action action
+                  left join stock_post_close_cycle cycle
+                    on cycle.id = action.entitlement_close_cycle_id
+                  left join stock_market_close_run run
+                    on run.id = action.entitlement_close_run_id
+                 where action.id = :actionId
+                   and action.status = :sourceStatus
+                 for update
+                """
+        )
+                .param("actionId", actionId)
+                .param("sourceStatus", sourceStatus)
+                .query((rs, rowNum) -> {
+                    Long closeCycleId = rs.getObject("entitlement_close_cycle_id", Long.class);
+                    Long closeRunId = rs.getObject("entitlement_close_run_id", Long.class);
+                    if (closeCycleId == null && closeRunId == null) {
+                        return null;
+                    }
+                    if (closeCycleId == null || closeRunId == null || !rs.getBoolean("valid_snapshot")) {
+                        throw new IllegalStateException(
+                                "Frozen entitlement snapshot is invalid: actionId=" + actionId
+                        );
+                    }
+                    return new EntitlementSnapshotRef(closeCycleId, closeRunId);
+                })
                 .optional();
     }
 

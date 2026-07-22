@@ -106,14 +106,32 @@ class PostCloseCoordinatorSchedulerTest {
     }
 
     @Test
-    void advanceOnePhase_beforeMidnight_doesNotClaimCashPhase() {
-        boolean advanced = scheduler.advanceOnePhase(
-                cycle(PostClosePhase.PORTFOLIO_SETTLED),
-                BUSINESS_DATE.atTime(23, 59, 59)
+    void advanceOnePhase_beforeMidnight_appliesCorporateCashBeforeNextDayFunding() {
+        PostCloseCycle cycle = cycle(PostClosePhase.PORTFOLIO_SETTLED);
+        LocalDateTime simulationNow = BUSINESS_DATE.atTime(23, 59, 59);
+        StockBatchJobRunResponse completed = response(
+                CorporateActionJob.JOB_NAME,
+                "COMPLETED",
+                "corporate-cash",
+                simulationNow
+        );
+        when(marketSessionFenceService.hasOpenMarket()).thenReturn(false);
+        when(stockBatchJobLauncher.applyCorporateCashActions(cycle.id())).thenReturn(completed);
+        doAnswer(invocation -> ((Supplier<StockBatchJobRunResponse>) invocation.getArgument(2)).get())
+                .when(scheduledJobGuard)
+                .runBatchIfEnabled(eq(CorporateActionJob.JOB_NAME), eq(true), any());
+        doAnswer(invocation -> {
+            Supplier<StockBatchJobRunResponse> action = invocation.getArgument(3);
+            assertThat(action.get()).isSameAs(completed);
+            return true;
+        }).when(phaseExecutionService).execute(
+                eq(cycle),
+                eq(PostClosePhase.PORTFOLIO_SETTLED),
+                eq(PostClosePhase.CORPORATE_CASH_APPLIED),
+                any()
         );
 
-        assertThat(advanced).isFalse();
-        verifyNoInteractions(stockBatchJobLauncher, phaseExecutionService, marketSessionFenceService);
+        assertThat(scheduler.advanceOnePhase(cycle, simulationNow)).isTrue();
     }
 
     @Test
@@ -357,7 +375,7 @@ class PostCloseCoordinatorSchedulerTest {
 
     @Test
     void advanceOnePhase_cashPolicyPhase_bypassesRuntimeGuardAndDelegatesNoOpDecisionToLauncher() {
-        PostCloseCycle cycle = cycle(PostClosePhase.PORTFOLIO_SETTLED);
+        PostCloseCycle cycle = cycle(PostClosePhase.CORPORATE_CASH_APPLIED);
         LocalDateTime simulationNow = BUSINESS_DATE.plusDays(1).atTime(0, 1);
         StockBatchJobRunResponse completed = new StockBatchJobRunResponse(
                 "auto-participant-cash-flow",
@@ -376,7 +394,7 @@ class PostCloseCoordinatorSchedulerTest {
             return true;
         }).when(phaseExecutionService).execute(
                 eq(cycle),
-                eq(PostClosePhase.PORTFOLIO_SETTLED),
+                eq(PostClosePhase.CORPORATE_CASH_APPLIED),
                 eq(PostClosePhase.OVERNIGHT_CASH_APPLIED),
                 any()
         );

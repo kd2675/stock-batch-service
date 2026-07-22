@@ -147,11 +147,19 @@ public class PostCloseCoordinatorScheduler {
         LocalDate preparingBusinessDate = cycle.businessDate().plusDays(1);
         return switch (cycle.phase()) {
             case OPEN, CLOSE_REQUESTED, ORDER_ENTRY_CLOSED, EXECUTION_DRAINED, LEDGER_FROZEN -> false;
-            case PORTFOLIO_SETTLED -> runAfter(
+            case PORTFOLIO_SETTLED -> runClosedMarketPhase(
+                    cycle,
+                    PostClosePhase.PORTFOLIO_SETTLED,
+                    PostClosePhase.CORPORATE_CASH_APPLIED,
+                    CorporateActionJob.JOB_NAME,
+                    corporateActionsConfigured,
+                    () -> stockBatchJobLauncher.applyCorporateCashActions(cycle.id())
+            );
+            case CORPORATE_CASH_APPLIED -> runAfter(
                     cycle,
                     simulationNow,
                     preparingBusinessDate.atStartOfDay(),
-                    PostClosePhase.PORTFOLIO_SETTLED,
+                    PostClosePhase.CORPORATE_CASH_APPLIED,
                     PostClosePhase.OVERNIGHT_CASH_APPLIED,
                     () -> cashFlowConfigured
                             ? stockBatchJobLauncher.fundAutoParticipantsForPostClose(cycle.id())
@@ -165,14 +173,6 @@ public class PostCloseCoordinatorScheduler {
             case OVERNIGHT_CASH_APPLIED -> runClosedMarketPhase(
                     cycle,
                     PostClosePhase.OVERNIGHT_CASH_APPLIED,
-                    PostClosePhase.CORPORATE_CASH_APPLIED,
-                    CorporateActionJob.JOB_NAME,
-                    corporateActionsConfigured,
-                    () -> stockBatchJobLauncher.applyCorporateCashActions(cycle.id())
-            );
-            case CORPORATE_CASH_APPLIED -> runClosedMarketPhase(
-                    cycle,
-                    PostClosePhase.CORPORATE_CASH_APPLIED,
                     PostClosePhase.REPORTS_AGGREGATED,
                     PostCloseReportAggregationJob.JOB_NAME,
                     reportsConfigured,

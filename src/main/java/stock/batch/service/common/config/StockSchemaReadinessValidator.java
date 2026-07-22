@@ -2,6 +2,7 @@ package stock.batch.service.common.config;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -39,11 +40,21 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
     private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.of(
             "portfolio_snapshot", Set.of("pending_subscription_asset"),
+            "stock_corporate_action_entitlement", Set.of("forfeited_share_quantity"),
             "stock_close_open_order_snapshot", Set.of("source_order_status")
+    );
+    private static final Map<String, Set<String>> REQUIRED_CHECK_TOKENS = Map.of(
+            "chk_stock_corporate_action_paid_date_order", Set.of("record_date"),
+            "chk_stock_corporate_action_paid_schedule_required", Set.of("record_date"),
+            "chk_stock_corporate_action_entitlement_status", Set.of("partially_subscribed"),
+            "chk_stock_corporate_action_entitlement_finalized_share_limit", Set.of("forfeited_share_quantity")
     );
     private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.of(
             "stock_account_cash_flow",
-            Set.of("idx_stock_account_cash_flow_account_id"),
+            Set.of(
+                    "idx_stock_account_cash_flow_account_id",
+                    "idx_stock_account_cash_flow_corporate_action"
+            ),
             "stock_auto_participant_cash_flow_run",
             Set.of("idx_stock_auto_participant_cash_flow_run_completed"),
             "stock_corporate_action_entitlement",
@@ -51,6 +62,8 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                     "idx_stock_corporate_action_entitlement_action_status_id",
                     "idx_stock_corporate_action_entitlement_account_status"
             ),
+            "stock_corporate_action",
+            Set.of("idx_stock_corporate_action_entitlement_close"),
             "stock_close_account_snapshot",
             Set.of(
                     "idx_stock_close_account_snapshot_cycle_target",
@@ -120,10 +133,23 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                             ));
                 }
             }
+            for (Map.Entry<String, Set<String>> requirement : REQUIRED_CHECK_TOKENS.entrySet()) {
+                Optional<String> checkClause = readCheckClause(connection, requirement.getKey());
+                if (checkClause.isEmpty()) {
+                    missing.add(requirement.getKey() + " CHECK constraint");
+                    continue;
+                }
+                String normalizedClause = normalize(checkClause.get());
+                for (String requiredToken : requirement.getValue()) {
+                    if (!normalizedClause.contains(normalize(requiredToken))) {
+                        missing.add(requirement.getKey() + " CHECK token " + requiredToken);
+                    }
+                }
+            }
         }
         if (!missing.isEmpty()) {
             throw new IllegalStateException(
-                    "Stock EOD schema is not ready; apply the synchronized stock_*_alter.sql files before restart: "
+                    "Stock EOD schema is not ready; apply the canonical stock-back-service DDL migrations before restart: "
                             + String.join(", ", missing)
             );
         }
@@ -222,6 +248,42 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         }
     }
 
+    private Optional<String> readCheckClause(Connection connection, String constraintName) throws SQLException {
+        String productName = connection.getMetaData().getDatabaseProductName();
+        String normalizedProductName = normalize(productName);
+        boolean mysql = normalizedProductName.contains("mysql");
+        boolean h2 = normalizedProductName.contains("h2");
+        String sql = mysql
+                ? """
+                  select check_clause
+                   from information_schema.check_constraints
+                   where constraint_schema = database()
+                     and lower(constraint_name) = lower(?)
+                  """
+                : h2
+                ? """
+                  select "CHECK_CLAUSE"
+                    from "INFORMATION_SCHEMA"."CHECK_CONSTRAINTS"
+                   where lower("CONSTRAINT_SCHEMA") = lower(current_schema)
+                     and lower("CONSTRAINT_NAME") = lower(?)
+                  """
+                : """
+                  select check_clause
+                   from information_schema.check_constraints
+                   where constraint_schema = current_schema
+                     and lower(constraint_name) = lower(?)
+                  """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, constraintName);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(rows.getString("check_clause"));
+            }
+        }
+    }
+
     private String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
@@ -288,6 +350,15 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         requirements.put("stock_corporate_action_processing", Set.of(
                 "action_id", "account_scope_key", "action_phase", "effective_business_date",
                 "status", "attempt_count", "processed_count", "amount", "quantity"
+        ));
+        requirements.put("stock_corporate_action", Set.of(
+                "record_date", "entitlement_close_cycle_id", "entitlement_close_run_id"
+        ));
+        requirements.put("stock_corporate_action_entitlement", Set.of(
+                "subscribed_share_quantity", "subscribed_cash_amount", "forfeited_share_quantity", "status"
+        ));
+        requirements.put("stock_account_cash_flow", Set.of(
+                "corporate_action_id", "corporate_action_entitlement_id", "effective_business_date"
         ));
         requirements.put("stock_batch_job_signal", Set.of(
                 "status", "requested_business_date", "requested_session_epoch", "expected_cycle_id",

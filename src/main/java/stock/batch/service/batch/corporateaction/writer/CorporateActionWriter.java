@@ -17,6 +17,29 @@ public class CorporateActionWriter {
 
     private final JdbcTemplate jdbcTemplate;
 
+    public int freezeEntitlementSnapshot(
+            long actionId,
+            long closeCycleId,
+            long closeRunId,
+            String sourceStatus
+    ) {
+        return jdbcTemplate.update(
+                """
+                update stock_corporate_action
+                   set entitlement_close_cycle_id = ?,
+                       entitlement_close_run_id = ?
+                 where id = ?
+                   and status = ?
+                   and entitlement_close_cycle_id is null
+                   and entitlement_close_run_id is null
+                """,
+                closeCycleId,
+                closeRunId,
+                actionId,
+                sourceStatus
+        );
+    }
+
     public int markActionExRightsApplied(long actionId, String nextStatus, String sourceStatus, LocalDateTime appliedAt) {
         return markCorporateActionTimestamp(actionId, nextStatus, sourceStatus, "applied_at", appliedAt);
     }

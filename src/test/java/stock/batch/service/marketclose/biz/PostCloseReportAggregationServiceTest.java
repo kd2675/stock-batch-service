@@ -92,7 +92,7 @@ class PostCloseReportAggregationServiceTest {
                 LocalDateTime.of(2026, 7, 16, 0, 10),
                 ""
         )).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("requires CORPORATE_CASH_APPLIED");
+                .hasMessageContaining("requires OVERNIGHT_CASH_APPLIED");
 
         verify(writer, never()).findCloseReportSymbolChunk(anyLong(), anyString(), anyInt());
         verifyNoInteractions(unitService);
@@ -115,7 +115,7 @@ class PostCloseReportAggregationServiceTest {
                 .toList();
         LocalDateTime aggregatedAt = LocalDateTime.of(2026, 7, 16, 0, 10);
         when(fenceService.hasOpenMarket()).thenReturn(false);
-        when(cycleService.findById(10L)).thenReturn(Optional.of(corporateCashAppliedCycle()));
+        when(cycleService.findById(10L)).thenReturn(Optional.of(overnightCashAppliedCycle()));
         when(writer.findCloseReportSymbolChunk(10L, "", 25)).thenReturn(symbols);
         when(unitService.aggregateSymbolReport(
                 org.mockito.ArgumentMatchers.eq(10L),
@@ -148,7 +148,7 @@ class PostCloseReportAggregationServiceTest {
         );
         LocalDateTime aggregatedAt = LocalDateTime.of(2026, 7, 16, 0, 10);
         when(fenceService.hasOpenMarket()).thenReturn(false);
-        when(cycleService.findById(10L)).thenReturn(Optional.of(corporateCashAppliedCycle()));
+        when(cycleService.findById(10L)).thenReturn(Optional.of(overnightCashAppliedCycle()));
         when(writer.findCloseReportSymbolChunk(10L, "S024", 25)).thenReturn(List.of());
 
         PostCloseReportAggregationService.ReportAggregationChunk result =
@@ -167,7 +167,7 @@ class PostCloseReportAggregationServiceTest {
                 .hasMessageContaining("must be between 1 and 200");
     }
 
-    private PostCloseCycle corporateCashAppliedCycle() {
+    private PostCloseCycle overnightCashAppliedCycle() {
         return new PostCloseCycle(
                 10L,
                 LocalDate.of(2026, 7, 15),
@@ -175,7 +175,7 @@ class PostCloseReportAggregationServiceTest {
                 "ALL",
                 PostCloseCycleKind.TRADING,
                 null,
-                PostClosePhase.CORPORATE_CASH_APPLIED,
+                PostClosePhase.OVERNIGHT_CASH_APPLIED,
                 PostCloseCycleStatus.RUNNING,
                 0,
                 3L,

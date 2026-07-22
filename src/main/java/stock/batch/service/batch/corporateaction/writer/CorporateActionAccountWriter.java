@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -79,7 +80,9 @@ public class CorporateActionAccountWriter {
     }
 
     public int recordDividendPaymentCashFlowChunk(
+            long actionId,
             List<DividendEntitlementRow> entitlements,
+            LocalDate effectiveBusinessDate,
             LocalDateTime createdAt
     ) {
         if (entitlements.isEmpty()) {
@@ -87,18 +90,23 @@ public class CorporateActionAccountWriter {
         }
         String values = String.join(",", Collections.nCopies(
                 entitlements.size(),
-                "(?, 'DEPOSIT', ?, 'DIVIDEND_PAYMENT', 'CORPORATE_ACTION', ?)"
+                "(?, 'DEPOSIT', ?, 'DIVIDEND_PAYMENT', 'CORPORATE_ACTION', ?, ?, ?, ?)"
         ));
-        List<Object> parameters = new ArrayList<>(entitlements.size() * 3);
+        List<Object> parameters = new ArrayList<>(entitlements.size() * 7);
         for (DividendEntitlementRow entitlement : entitlements) {
             parameters.add(entitlement.accountId());
             parameters.add(entitlement.cashAmount());
+            parameters.add(actionId);
+            parameters.add(entitlement.id());
+            parameters.add(effectiveBusinessDate);
             parameters.add(createdAt);
         }
         return jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(
-                    account_id, flow_type, amount, reason, created_by, created_at
+                    account_id, flow_type, amount, reason, created_by,
+                    corporate_action_id, corporate_action_entitlement_id,
+                    effective_business_date, created_at
                 ) values %s
                 """.formatted(values),
                 parameters.toArray()
@@ -135,7 +143,9 @@ public class CorporateActionAccountWriter {
     }
 
     public int recordCapitalIncreaseSubscriptionCashFlowChunk(
+            long actionId,
             List<CapitalIncreaseSubscriptionDecision> decisions,
+            LocalDate effectiveBusinessDate,
             LocalDateTime createdAt
     ) {
         if (decisions.isEmpty()) {
@@ -144,18 +154,25 @@ public class CorporateActionAccountWriter {
         requireUniqueSubscriptionAccounts(decisions);
         String values = String.join(",", Collections.nCopies(
                 decisions.size(),
-                "(?, 'WITHDRAW', ?, 'CAPITAL_INCREASE_SUBSCRIPTION', 'CORPORATE_ACTION_AUTO', ?)"
+                "(?, 'WITHDRAW', ?, 'CAPITAL_INCREASE_SUBSCRIPTION', 'CORPORATE_ACTION_AUTO', ?, "
+                        + "(select id from stock_corporate_action_entitlement where action_id = ? and account_id = ?), ?, ?)"
         ));
-        List<Object> parameters = new ArrayList<>(decisions.size() * 3);
+        List<Object> parameters = new ArrayList<>(decisions.size() * 7);
         for (CapitalIncreaseSubscriptionDecision decision : decisions) {
             parameters.add(decision.accountId());
             parameters.add(decision.cashAmount());
+            parameters.add(actionId);
+            parameters.add(actionId);
+            parameters.add(decision.accountId());
+            parameters.add(effectiveBusinessDate);
             parameters.add(createdAt);
         }
         return jdbcTemplate.update(
                 """
                 insert into stock_account_cash_flow(
-                    account_id, flow_type, amount, reason, created_by, created_at
+                    account_id, flow_type, amount, reason, created_by,
+                    corporate_action_id, corporate_action_entitlement_id,
+                    effective_business_date, created_at
                 ) values %s
                 """.formatted(values),
                 parameters.toArray()
@@ -176,11 +193,19 @@ public class CorporateActionAccountWriter {
         if (decisions.stream().anyMatch(decision -> decision.entitlementId() == null)) {
             throw new IllegalArgumentException("Shareholder subscription decision is missing entitlement id");
         }
+        String statusCases = String.join(" ", Collections.nCopies(
+                decisions.size(),
+                "when ? then case when coalesce(subscribed_share_quantity, 0) + ? = share_quantity then ? else 'PARTIALLY_SUBSCRIBED' end"
+        ));
         String shareCases = String.join(" ", Collections.nCopies(decisions.size(), "when ? then ?"));
         String cashCases = String.join(" ", Collections.nCopies(decisions.size(), "when ? then ?"));
         String entitlementPlaceholders = String.join(",", Collections.nCopies(decisions.size(), "?"));
-        List<Object> parameters = new ArrayList<>(decisions.size() * 6 + 4);
-        parameters.add(subscribedStatus);
+        List<Object> parameters = new ArrayList<>(decisions.size() * 8 + 3);
+        for (CapitalIncreaseSubscriptionDecision decision : decisions) {
+            parameters.add(decision.entitlementId());
+            parameters.add(decision.shareQuantity());
+            parameters.add(subscribedStatus);
+        }
         for (CapitalIncreaseSubscriptionDecision decision : decisions) {
             parameters.add(decision.entitlementId());
             parameters.add(decision.shareQuantity());
@@ -196,14 +221,14 @@ public class CorporateActionAccountWriter {
         return jdbcTemplate.update(
                 """
                 update stock_corporate_action_entitlement
-                   set status = ?,
-                       subscribed_share_quantity = case id %s else subscribed_share_quantity end,
-                       subscribed_cash_amount = case id %s else subscribed_cash_amount end,
+                   set status = case id %s else status end,
+                       subscribed_share_quantity = coalesce(subscribed_share_quantity, 0) + case id %s else 0 end,
+                       subscribed_cash_amount = coalesce(subscribed_cash_amount, 0) + case id %s else 0 end,
                        subscribed_at = ?
                  where action_id = ?
                    and id in (%s)
                    and status = ?
-                """.formatted(shareCases, cashCases, entitlementPlaceholders),
+                """.formatted(statusCases, shareCases, cashCases, entitlementPlaceholders),
                 parameters.toArray()
         );
     }
@@ -326,7 +351,39 @@ public class CorporateActionAccountWriter {
                 """
                 update stock_corporate_action_entitlement
                    set status = ?,
+                       forfeited_share_quantity = case
+                           when share_quantity is null then forfeited_share_quantity
+                           else greatest(0, share_quantity - coalesce(subscribed_share_quantity, 0))
+                       end,
                        paid_at = ?
+                 where id in (%s)
+                   and status = ?
+                """.formatted(placeholders),
+                parameters.toArray()
+        );
+    }
+
+    public int finalizePartiallySubscribedEntitlementChunk(
+            List<Long> entitlementIds,
+            String finalizedStatus,
+            String partialStatus
+    ) {
+        if (entitlementIds.isEmpty()) {
+            return 0;
+        }
+        String placeholders = String.join(",", Collections.nCopies(entitlementIds.size(), "?"));
+        List<Object> parameters = new ArrayList<>(entitlementIds.size() + 2);
+        parameters.add(finalizedStatus);
+        parameters.addAll(entitlementIds);
+        parameters.add(partialStatus);
+        return jdbcTemplate.update(
+                """
+                update stock_corporate_action_entitlement
+                   set status = ?,
+                       forfeited_share_quantity = greatest(
+                           0,
+                           share_quantity - coalesce(subscribed_share_quantity, 0)
+                       )
                  where id in (%s)
                    and status = ?
                 """.formatted(placeholders),

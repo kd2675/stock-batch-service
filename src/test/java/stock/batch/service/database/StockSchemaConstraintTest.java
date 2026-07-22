@@ -319,6 +319,74 @@ class StockSchemaConstraintTest {
     }
 
     @Test
+    void stockCorporateActionEntitlement_partialSubscription_preservesRemainingRights() {
+        int inserted = jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, forfeited_share_quantity, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (1, 1, '005930', 10, 10, 500000.00,
+                          4, 200000.00, 0, 'PARTIALLY_SUBSCRIBED', null, ?, ?, null)
+                """,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+
+        assertThat(inserted).isEqualTo(1);
+    }
+
+    @Test
+    void stockCorporateActionEntitlement_finalizedPartialWithoutForfeiture_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, forfeited_share_quantity, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (1, 1, '005930', 10, 10, 500000.00,
+                          4, 200000.00, 0, 'SUBSCRIBED', null, ?, ?, null)
+                """,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void stockCorporateActionEntitlement_finalizedPartialWithForfeiture_isAcceptedBySchema() {
+        int inserted = jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, forfeited_share_quantity, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (1, 1, '005930', 10, 10, 500000.00,
+                          4, 200000.00, 6, 'SUBSCRIBED', null, ?, ?, null)
+                """,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+
+        assertThat(inserted).isEqualTo(1);
+    }
+
+    @Test
+    void stockCorporateActionEntitlement_expiredRightsWithoutForfeiture_isRejectedBySchema() {
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                """
+                insert into stock_corporate_action_entitlement(
+                  action_id, account_id, symbol, quantity, share_quantity, cash_amount,
+                  subscribed_share_quantity, subscribed_cash_amount, forfeited_share_quantity, status,
+                  holding_snapshot_run_id, created_at, subscribed_at, paid_at
+                ) values (1, 1, '005930', 10, 10, 500000.00,
+                          null, null, 0, 'EXPIRED', null, ?, null, ?)
+                """,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void stockCorporateAction_publicOfferingPaymentOnSubscriptionEnd_isRejectedBySchema() {
         LocalDate subscriptionStartDate = LocalDate.now().plusDays(1);
         LocalDate subscriptionEndDate = LocalDate.now().plusDays(2);

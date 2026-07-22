@@ -261,7 +261,7 @@ class StockBatchJobLauncherTest {
                 501L,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.PORTFOLIO_SETTLED
+                PostClosePhase.CORPORATE_CASH_APPLIED
         )));
 
         StockBatchJobRunResponse response = launcher.fundAutoParticipantsForPostClose(501L);
@@ -279,7 +279,7 @@ class StockBatchJobLauncherTest {
                 501L,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.PORTFOLIO_SETTLED
+                PostClosePhase.CORPORATE_CASH_APPLIED
         )));
 
         launcher.fundAutoParticipantsForPostClose(501L);
@@ -324,7 +324,7 @@ class StockBatchJobLauncherTest {
                 requestedBusinessDate,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.PORTFOLIO_SETTLED
+                PostClosePhase.CORPORATE_CASH_APPLIED
         );
         when(postCloseCycleService.findFullMarketCycle(requestedBusinessDate))
                 .thenReturn(Optional.of(requestedCycle));
@@ -400,7 +400,7 @@ class StockBatchJobLauncherTest {
     }
 
     @Test
-    void manualCashFlow_afterMidnightBeforeSettlement_defersWithoutMetadata() {
+    void manualCashFlow_afterMidnightBeforeCorporateCash_defersWithoutMetadata() {
         when(simulationClockService.currentMarketDateTime())
                 .thenReturn(BUSINESS_DATE.plusDays(1).atTime(0, 5));
         when(sessionService.currentSession()).thenReturn(SimulationMarketSession.PRE_OPEN);
@@ -408,13 +408,13 @@ class StockBatchJobLauncherTest {
                 501L,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.LEDGER_FROZEN
+                PostClosePhase.PORTFOLIO_SETTLED
         )));
 
         StockBatchJobRunResponse response = launcher.fundAutoParticipantsManually(41L);
 
         assertThat(response.status()).isEqualTo("SKIPPED");
-        assertThat(response.message()).contains("portfolio settlement");
+        assertThat(response.message()).contains("corporate cash actions");
         verify(runner, never()).run(eq(cashFlowJob), any(), any());
     }
 
@@ -590,7 +590,7 @@ class StockBatchJobLauncherTest {
                 501L,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.OVERNIGHT_CASH_APPLIED
+                PostClosePhase.PORTFOLIO_SETTLED
         )));
 
         launcher.applyCorporateCashActions(501L);
@@ -612,7 +612,7 @@ class StockBatchJobLauncherTest {
                 501L,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.CORPORATE_CASH_APPLIED
+                PostClosePhase.OVERNIGHT_CASH_APPLIED
         )));
 
         launcher.aggregatePostCloseReports(501L, firstAggregatedAt);
@@ -687,7 +687,7 @@ class StockBatchJobLauncherTest {
                 businessDate,
                 PostCloseScopeType.FULL_MARKET,
                 "ALL",
-                PostClosePhase.PORTFOLIO_SETTLED
+                PostClosePhase.CORPORATE_CASH_APPLIED
         )));
     }
 

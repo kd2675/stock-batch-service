@@ -217,7 +217,7 @@ public class StockBatchJobLauncher {
             );
         }
         requireExpectedCycle(expectedCycleId, cycle);
-        if (cycle.phase().ordinal() < PostClosePhase.PORTFOLIO_SETTLED.ordinal()) {
+        if (cycle.phase().ordinal() < PostClosePhase.CORPORATE_CASH_APPLIED.ordinal()) {
             return StockBatchJobRunResponses.manualCashFlowOvernightDeferred(
                     overnightEligibleAt,
                     LocalDateTime.now()
@@ -247,7 +247,7 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse fundAutoParticipantsForPostClose(long closeCycleId) {
-        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.PORTFOLIO_SETTLED);
+        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.CORPORATE_CASH_APPLIED);
         if (!autoParticipantCashFlowRuntimeControl.shouldRunScheduledJob()) {
             return StockBatchJobRunResponses.completedWithoutWork(
                     AutoParticipantCashFlowJob.JOB_NAME,
@@ -537,7 +537,7 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse applyCorporateCashActions(long closeCycleId) {
-        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.OVERNIGHT_CASH_APPLIED);
+        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.PORTFOLIO_SETTLED);
         return applyCorporatePhase(
                 cycle,
                 cycle.businessDate(),
@@ -584,7 +584,7 @@ public class StockBatchJobLauncher {
     }
 
     public StockBatchJobRunResponse aggregatePostCloseReports(long closeCycleId, LocalDateTime aggregatedAt) {
-        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.CORPORATE_CASH_APPLIED);
+        PostCloseCycle cycle = requireCyclePhase(closeCycleId, PostClosePhase.OVERNIGHT_CASH_APPLIED);
         JobParametersBuilder parameters = StockBatchJobParameters.base(
                 cycle.businessDate(),
                 MODE_POST_CLOSE_REPORTS,

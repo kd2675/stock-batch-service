@@ -562,7 +562,7 @@ class MarketCloseRolloverServiceTest {
                    and scope_key = 'ALL'
                 """, businessDate);
         jdbcTemplate.update(
-                "update stock_post_close_cycle set phase = 'CORPORATE_CASH_APPLIED' where id = ?",
+                "update stock_post_close_cycle set phase = 'OVERNIGHT_CASH_APPLIED' where id = ?",
                 closeCycleId
         );
         LocalDateTime aggregatedAt = businessDate.plusDays(1).atTime(0, 10);

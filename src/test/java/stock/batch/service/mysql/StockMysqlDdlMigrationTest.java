@@ -41,7 +41,8 @@ class StockMysqlDdlMigrationTest {
             "stock_execution_daily_account_last_executed_at_alter.sql",
             "stock_execution_profit_summary_alter.sql",
             "stock_eod_volume_indexes_alter.sql",
-            "stock_auto_participant_cash_flow_run_alter.sql"
+            "stock_auto_participant_cash_flow_run_alter.sql",
+            "stock_capital_increase_lifecycle_hardening_alter.sql"
     );
     private static final String EOD_APPLICATION_ROLLBACK_FILE =
             "stock_eod_application_rollback_alter.sql";
@@ -101,6 +102,83 @@ class StockMysqlDdlMigrationTest {
                 "idx_stock_close_open_order_snapshot_cycle_stream"
         )).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_cash_flow_run")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_corporate_action", "record_date")).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_corporate_action_entitlement",
+                "forfeited_share_quantity"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_account_cash_flow",
+                "effective_business_date"
+        )).isEqualTo(1);
+    }
+
+    @Test
+    void capitalIncreaseLifecycleAlter_upgradesLegacySchemaAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        downgradeCapitalIncreaseLifecycleSchema(jdbcTemplate);
+
+        Path migration = ddlPath("stock_capital_increase_lifecycle_hardening_alter.sql");
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(columnCount(jdbcTemplate, "stock_corporate_action", "record_date")).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_corporate_action",
+                "entitlement_close_cycle_id"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_corporate_action",
+                "entitlement_close_run_id"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_corporate_action_entitlement",
+                "forfeited_share_quantity"
+        )).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_account_cash_flow", "corporate_action_id")).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_account_cash_flow",
+                "corporate_action_entitlement_id"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_account_cash_flow",
+                "effective_business_date"
+        )).isEqualTo(1);
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_corporate_action",
+                "idx_stock_corporate_action_entitlement_close"
+        )).isEqualTo(1);
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_account_cash_flow",
+                "idx_stock_account_cash_flow_corporate_action"
+        )).isEqualTo(1);
+
+        assertThat(showCreateTable(jdbcTemplate, "stock_corporate_action"))
+                .contains(
+                        "chk_stock_corporate_action_entitlement_close_pair",
+                        "`record_date` > `ex_rights_date`"
+                );
+        assertThat(showCreateTable(jdbcTemplate, "stock_corporate_action_entitlement"))
+                .contains(
+                        "PARTIALLY_SUBSCRIBED",
+                        "chk_stock_corporate_action_entitlement_forfeited_share",
+                        "chk_stock_corporate_action_entitlement_finalized_share_limit"
+                );
     }
 
     @Test
@@ -865,6 +943,41 @@ class StockMysqlDdlMigrationTest {
                 """
                 alter table stock_account_cash_flow
                   drop index idx_stock_account_cash_flow_account_id
+                """
+        );
+    }
+
+    private void downgradeCapitalIncreaseLifecycleSchema(JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.execute(
+                """
+                alter table stock_corporate_action
+                  drop check chk_stock_corporate_action_paid_date_order,
+                  drop check chk_stock_corporate_action_paid_schedule_required,
+                  drop check chk_stock_corporate_action_field_scope,
+                  drop check chk_stock_corporate_action_entitlement_close_pair,
+                  drop index idx_stock_corporate_action_entitlement_close,
+                  drop column entitlement_close_run_id,
+                  drop column entitlement_close_cycle_id,
+                  drop column record_date
+                """
+        );
+        jdbcTemplate.execute(
+                """
+                alter table stock_corporate_action_entitlement
+                  drop check chk_stock_corporate_action_entitlement_subscription_complete,
+                  drop check chk_stock_corporate_action_entitlement_status,
+                  drop check chk_stock_corporate_action_entitlement_forfeited_share,
+                  drop check chk_stock_corporate_action_entitlement_finalized_share_limit,
+                  drop column forfeited_share_quantity
+                """
+        );
+        jdbcTemplate.execute(
+                """
+                alter table stock_account_cash_flow
+                  drop index idx_stock_account_cash_flow_corporate_action,
+                  drop column effective_business_date,
+                  drop column corporate_action_entitlement_id,
+                  drop column corporate_action_id
                 """
         );
     }

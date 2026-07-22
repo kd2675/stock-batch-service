@@ -17,7 +17,7 @@ public final class StockBatchJobRunResponses {
     public static final String MANUAL_CASH_FLOW_BEFORE_MARKET_CLOSE_MESSAGE =
             "Manual recurring cash is deferred until market close";
     public static final String MANUAL_CASH_FLOW_OVERNIGHT_DEFERRED_MESSAGE =
-            "Manual recurring cash is deferred until portfolio settlement and the overnight window";
+            "Manual recurring cash is deferred until corporate cash actions complete and the overnight window";
     private static final String SCHEDULED_EXECUTION_MODE = "scheduled";
     private static final String SCHEDULED_DISABLED_MESSAGE = "Scheduled job is disabled";
 

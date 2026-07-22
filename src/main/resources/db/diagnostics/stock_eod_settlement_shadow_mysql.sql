@@ -155,7 +155,7 @@ WITH target_account AS (
              FROM stock_corporate_action_entitlement entitlement
                   FORCE INDEX (idx_stock_corporate_action_entitlement_account_status)
             WHERE entitlement.account_id = target.account_id
-              AND entitlement.status = 'SUBSCRIBED'
+              AND entitlement.status IN ('PARTIALLY_SUBSCRIBED', 'SUBSCRIBED')
               AND entitlement.subscribed_cash_amount IS NOT NULL
          ), 0) AS legacy_subscription_reserved_cash
     FROM target_account target

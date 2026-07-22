@@ -61,14 +61,14 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 cycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> response("COMPLETED", "Job completed")
         );
 
         assertThat(advanced).isTrue();
         verify(postCloseCycleService).completeClaim(
                 eq(claim),
-                eq(PostClosePhase.OVERNIGHT_CASH_APPLIED),
+                eq(PostClosePhase.CORPORATE_CASH_APPLIED),
                 any(LocalDateTime.class)
         );
     }
@@ -78,14 +78,14 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 cycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> response("SKIPPED", StockBatchJobRunResponses.ALREADY_COMPLETE_MESSAGE)
         );
 
         assertThat(advanced).isTrue();
         verify(postCloseCycleService).completeClaim(
                 eq(claim),
-                eq(PostClosePhase.OVERNIGHT_CASH_APPLIED),
+                eq(PostClosePhase.CORPORATE_CASH_APPLIED),
                 any(LocalDateTime.class)
         );
     }
@@ -95,7 +95,7 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 cycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> response("SKIPPED", "Scheduled job is disabled")
         );
 
@@ -113,7 +113,7 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 cycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> response("FAILED", "cash flow failed")
         );
 
@@ -128,7 +128,7 @@ class PostClosePhaseExecutionServiceTest {
     @ParameterizedTest
     @EnumSource(
             value = PostClosePhase.class,
-            names = {"OVERNIGHT_CASH_APPLIED", "REPORTS_AGGREGATED"}
+            names = {"PORTFOLIO_SETTLED", "REPORTS_AGGREGATED"}
     )
     void execute_corporatePhaseFailureWithCommittedProgress_usesBaseContinuationInsteadOfFailureBackoff(
             PostClosePhase corporatePhase
@@ -152,7 +152,7 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 corporateCycle,
                 corporatePhase,
-                corporatePhase == PostClosePhase.OVERNIGHT_CASH_APPLIED
+                corporatePhase == PostClosePhase.PORTFOLIO_SETTLED
                         ? PostClosePhase.CORPORATE_CASH_APPLIED
                         : PostClosePhase.PREOPEN_SECURITY_TRANSFORMS_APPLIED,
                 () -> response("FAILED", 200, "more bounded work remains")
@@ -170,16 +170,32 @@ class PostClosePhaseExecutionServiceTest {
 
     @Test
     void execute_nonCorporateFailureWithPositiveWriteCount_usesExponentialFailureBackoff() {
+        PostCloseCycle cashCycle = cycle(PostClosePhase.CORPORATE_CASH_APPLIED);
+        PostClosePhaseClaim cashClaim = new PostClosePhaseClaim(
+                cashCycle.id(),
+                PostClosePhase.CORPORATE_CASH_APPLIED,
+                2,
+                "owner",
+                LocalDateTime.now().plusMinutes(3)
+        );
+        when(postCloseCycleService.tryClaim(
+                eq(cashCycle.id()),
+                eq(PostClosePhase.CORPORATE_CASH_APPLIED),
+                any(LocalDateTime.class)
+        )).thenReturn(Optional.of(cashClaim));
+        when(postCloseCycleService.isPhaseClaimEligible(eq(cashCycle), any(LocalDateTime.class)))
+                .thenReturn(true);
+
         boolean advanced = service.execute(
-                cycle,
-                PostClosePhase.PORTFOLIO_SETTLED,
+                cashCycle,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 PostClosePhase.OVERNIGHT_CASH_APPLIED,
                 () -> response("FAILED", 200, "report or settlement failed after a partial write")
         );
 
         assertThat(advanced).isFalse();
         verify(postCloseCycleService).failPhase(
-                eq(claim),
+                eq(cashClaim),
                 any(IllegalStateException.class),
                 any(LocalDateTime.class)
         );
@@ -193,7 +209,7 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 advancedCycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> {
                     throw new AssertionError("job must not run");
                 }
@@ -215,7 +231,7 @@ class PostClosePhaseExecutionServiceTest {
         boolean advanced = service.execute(
                 backedOffCycle,
                 PostClosePhase.PORTFOLIO_SETTLED,
-                PostClosePhase.OVERNIGHT_CASH_APPLIED,
+                PostClosePhase.CORPORATE_CASH_APPLIED,
                 () -> {
                     throw new AssertionError("job must not run before nextRetryAt");
                 }

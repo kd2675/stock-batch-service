@@ -588,7 +588,7 @@ public class MarketCloseRolloverWriter {
                           left join (
                                select account_id, sum(subscribed_cash_amount) as reserved_cash
                                  from stock_corporate_action_entitlement
-                                where status = 'SUBSCRIBED'
+                                where status in ('PARTIALLY_SUBSCRIBED', 'SUBSCRIBED')
                                   and subscribed_cash_amount is not null
                                   and account_id in (:accountIds)
                                 group by account_id

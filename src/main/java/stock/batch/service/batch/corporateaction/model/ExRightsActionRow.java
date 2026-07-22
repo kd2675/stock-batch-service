@@ -12,6 +12,33 @@ public record ExRightsActionRow(
         BigDecimal issuePrice,
         LocalDate exRightsDate,
         BigDecimal theoreticalExRightsPrice,
-        BigDecimal dividendAmount
+        BigDecimal dividendAmount,
+        Long entitlementCloseCycleId,
+        Long entitlementCloseRunId
 ) {
+    public ExRightsActionRow(
+            long id,
+            String symbol,
+            String actionType,
+            String offeringType,
+            long shareQuantity,
+            BigDecimal issuePrice,
+            LocalDate exRightsDate,
+            BigDecimal theoreticalExRightsPrice,
+            BigDecimal dividendAmount
+    ) {
+        this(
+                id,
+                symbol,
+                actionType,
+                offeringType,
+                shareQuantity,
+                issuePrice,
+                exRightsDate,
+                theoreticalExRightsPrice,
+                dividendAmount,
+                null,
+                null
+        );
+    }
 }

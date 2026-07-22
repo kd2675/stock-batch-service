@@ -14,7 +14,7 @@ public class StockRuntimeIdentity {
     public StockRuntimeIdentity(
             ObjectProvider<BuildProperties> buildPropertiesProvider,
             @Value("${BUILD_SHA:}") String environmentBuildSha,
-            @Value("${STOCK_SCHEMA_VERSION:2026-07-19-eod-v2}") String configuredSchemaVersion
+            @Value("${STOCK_SCHEMA_VERSION:2026-07-22-eod-v3}") String configuredSchemaVersion
     ) {
         BuildProperties buildProperties = buildPropertiesProvider.getIfAvailable();
         this.buildVersion = firstNonBlank(

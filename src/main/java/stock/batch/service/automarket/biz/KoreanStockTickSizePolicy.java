@@ -5,7 +5,7 @@ import java.math.RoundingMode;
 import java.util.Locale;
 import java.util.Set;
 
-final class KoreanStockTickSizePolicy {
+public final class KoreanStockTickSizePolicy {
 
     private static final BigDecimal ONE = BigDecimal.ONE;
     private static final BigDecimal FIVE = BigDecimal.valueOf(5);
@@ -51,7 +51,7 @@ final class KoreanStockTickSizePolicy {
         return ONE_THOUSAND;
     }
 
-    static BigDecimal nearestValidQuotePrice(String market, BigDecimal rawPrice) {
+    public static BigDecimal nearestValidQuotePrice(String market, BigDecimal rawPrice) {
         return alignToValidQuotePrice(market, rawPrice, RoundingMode.HALF_UP);
     }
 

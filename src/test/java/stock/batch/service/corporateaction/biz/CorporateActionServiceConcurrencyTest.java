@@ -245,7 +245,7 @@ class CorporateActionServiceConcurrencyTest {
                 .thenReturn(List.of(dividend), List.of());
         when(accountWriter.lockDividendAccountsForUpdate(List.of(dividend))).thenReturn(1);
         when(accountWriter.creditDividendCashChunk(List.of(dividend), now)).thenReturn(1);
-        when(accountWriter.recordDividendPaymentCashFlowChunk(List.of(dividend), now)).thenReturn(1);
+        when(accountWriter.recordDividendPaymentCashFlowChunk(41L, List.of(dividend), today, now)).thenReturn(1);
         when(accountWriter.markDividendEntitlementChunkPaid(
                 List.of(dividend), "PAID", "ANNOUNCED", now
         )).thenReturn(1);

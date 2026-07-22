@@ -24,6 +24,7 @@ import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscripti
 import stock.batch.service.batch.corporateaction.model.CapitalIncreaseSubscriptionActionRow;
 import stock.batch.service.batch.corporateaction.model.DividendEntitlementRow;
 import stock.batch.service.batch.corporateaction.model.DelistingActionRow;
+import stock.batch.service.batch.corporateaction.model.EntitlementSnapshotRef;
 import stock.batch.service.batch.corporateaction.model.ExRightsActionRow;
 import stock.batch.service.batch.corporateaction.model.ExRightsPriceSnapshot;
 import stock.batch.service.batch.corporateaction.model.ListingActionRow;
@@ -34,6 +35,7 @@ import stock.batch.service.batch.corporateaction.writer.CorporateActionAccountWr
 import stock.batch.service.batch.corporateaction.writer.CorporateActionPriceWriter;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
 import stock.batch.service.marketclose.biz.MarketSessionFenceService;
+import stock.batch.service.automarket.biz.KoreanStockTickSizePolicy;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import web.common.core.simulation.SimulationMarketSession;
@@ -52,6 +54,7 @@ public class CorporateActionService {
     private static final String SHAREHOLDER_ALLOCATION = "SHAREHOLDER_ALLOCATION";
     private static final String PUBLIC_OFFERING = "PUBLIC_OFFERING";
     private static final String ANNOUNCED = "ANNOUNCED";
+    private static final String PARTIALLY_SUBSCRIBED = "PARTIALLY_SUBSCRIBED";
     private static final String SUBSCRIBED = "SUBSCRIBED";
     private static final String EXPIRED = "EXPIRED";
     private static final String EX_RIGHTS_APPLIED = "EX_RIGHTS_APPLIED";
@@ -100,11 +103,6 @@ public class CorporateActionService {
         }
         List<RuntimeException> failures = new ArrayList<>();
         int exRightsCount = executeStage("ex-rights", failures, () -> applyDueExRights(actionDate, failures));
-        int rightsPaymentCount = executeStage(
-                "capital-increase-payment",
-                failures,
-                () -> markDueRightsPayments(actionDate, failures)
-        );
         int dividendPaymentCount = executeStage(
                 "cash-dividend-payment",
                 failures,
@@ -117,6 +115,11 @@ public class CorporateActionService {
                         () -> subscribeAutoParticipantsToCapitalIncreases(actionDate, failures)
                 )
                 : 0;
+        int rightsPaymentCount = executeStage(
+                "capital-increase-payment",
+                failures,
+                () -> markDueRightsPayments(actionDate, failures)
+        );
         int rightsListingCount = executeStage(
                 "capital-increase-listing",
                 failures,
@@ -496,19 +499,51 @@ public class CorporateActionService {
         }
         BigDecimal existingValue = snapshot.closePrice().multiply(BigDecimal.valueOf(snapshot.issuedShares()));
         BigDecimal issueValue = issuePrice.multiply(BigDecimal.valueOf(row.shareQuantity()));
-        return existingValue.add(issueValue)
+        BigDecimal totalShareQuantity = BigDecimal.valueOf(snapshot.issuedShares())
+                .add(BigDecimal.valueOf(row.shareQuantity()));
+        BigDecimal rawPrice = existingValue.add(issueValue)
                 .divide(
-                        BigDecimal.valueOf(snapshot.issuedShares() + row.shareQuantity()),
+                        totalShareQuantity,
                         0,
                         RoundingMode.DOWN
                 );
+        return KoreanStockTickSizePolicy.nearestValidQuotePrice(snapshot.market(), rawPrice);
     }
 
     private Long resolveRequiredHoldingSnapshotRunId(ExRightsActionRow row) {
         if (!requiresHoldingSnapshot(row)) {
             return null;
         }
-        return corporateActionReader.findLatestCompletedMarketCloseRunIdBefore(row.symbol(), row.exRightsDate()).orElse(null);
+        return transactionExecutor.executeValue(() -> freezeOrReadEntitlementSnapshot(row));
+    }
+
+    private Long freezeOrReadEntitlementSnapshot(ExRightsActionRow row) {
+        if (!corporateActionReader.lockDueActionForUpdate(
+                row.id(), row.exRightsDate(), row.actionType(), ANNOUNCED, "ex_rights_date")) {
+            return null;
+        }
+        EntitlementSnapshotRef frozenSnapshot = corporateActionReader
+                .findFrozenEntitlementSnapshotForUpdate(row.id(), ANNOUNCED)
+                .orElse(null);
+        if (frozenSnapshot != null) {
+            return frozenSnapshot.closeRunId();
+        }
+        EntitlementSnapshotRef candidate = corporateActionReader
+                .findLatestCompletedFullMarketSnapshotBefore(row.exRightsDate())
+                .orElse(null);
+        if (candidate == null) {
+            return null;
+        }
+        int updated = corporateActionWriter.freezeEntitlementSnapshot(
+                row.id(),
+                candidate.closeCycleId(),
+                candidate.closeRunId(),
+                ANNOUNCED
+        );
+        if (updated != 1) {
+            throw new IllegalStateException("Entitlement snapshot freeze failed: " + row.id());
+        }
+        return candidate.closeRunId();
     }
 
     private boolean requiresHoldingSnapshot(String actionType) {
@@ -578,6 +613,14 @@ public class CorporateActionService {
         int chunkSize = normalizedAccountChunkSize();
         while (true) {
             Integer selectedCount = transactionExecutor.executeValue(
+                    () -> finalizePartiallySubscribedRightsChunk(row, today, chunkSize)
+            );
+            if (selectedCount == null || selectedCount == 0) {
+                break;
+            }
+        }
+        while (true) {
+            Integer selectedCount = transactionExecutor.executeValue(
                     () -> expireRightsEntitlementChunk(row, today, chunkSize)
             );
             if (selectedCount == null || selectedCount == 0) {
@@ -591,6 +634,39 @@ public class CorporateActionService {
                 failures,
                 () -> markDueRightsPayment(row, today)
         );
+    }
+
+    private int finalizePartiallySubscribedRightsChunk(
+            CapitalIncreaseSubscriptionActionRow row,
+            LocalDate today,
+            int chunkSize
+    ) {
+        CapitalIncreaseSubscriptionActionRow lockedRow = corporateActionReader
+                .findDueCapitalIncreasePaymentForUpdate(
+                        row.id(),
+                        today,
+                        PAID_IN_CAPITAL_INCREASE,
+                        EX_RIGHTS_APPLIED,
+                        SHAREHOLDER_ALLOCATION
+                )
+                .orElse(null);
+        if (lockedRow == null) {
+            return 0;
+        }
+        List<Long> entitlementIds = corporateActionReader.findEntitlementIdChunk(
+                row.id(),
+                PARTIALLY_SUBSCRIBED,
+                chunkSize
+        );
+        int updated = corporateActionAccountWriter.finalizePartiallySubscribedEntitlementChunk(
+                entitlementIds,
+                SUBSCRIBED,
+                PARTIALLY_SUBSCRIBED
+        );
+        if (updated != entitlementIds.size()) {
+            throw new IllegalStateException("Partial rights finalization count mismatch: " + row.id());
+        }
+        return entitlementIds.size();
     }
 
     private int expireRightsEntitlementChunk(
@@ -648,7 +724,8 @@ public class CorporateActionService {
         }
         LocalDateTime now = currentDateTime();
         if (SHAREHOLDER_ALLOCATION.equals(row.offeringType())
-                && corporateActionReader.existsEntitlementWithStatus(row.id(), ANNOUNCED)) {
+                && (corporateActionReader.existsEntitlementWithStatus(row.id(), ANNOUNCED)
+                || corporateActionReader.existsEntitlementWithStatus(row.id(), PARTIALLY_SUBSCRIBED))) {
             throw new IllegalStateException("Unsubscribed rights remain before payment completion: " + row.id());
         }
         int updatedAction = corporateActionWriter.markActionPaid(row.id(), PAID, sourceStatus, now);
@@ -839,7 +916,9 @@ public class CorporateActionService {
             requireChunkCount(
                     "shareholder subscription cash-flow insert",
                     decisions.size(),
-                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(decisions, now)
+                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(
+                            row.id(), decisions, today, now
+                    )
             );
         }
         requireChunkCount(
@@ -985,7 +1064,9 @@ public class CorporateActionService {
             requireChunkCount(
                     "public offering subscription cash-flow insert",
                     decisions.size(),
-                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(decisions, now)
+                    corporateActionAccountWriter.recordCapitalIncreaseSubscriptionCashFlowChunk(
+                            lockedRow.id(), decisions, today, now
+                    )
             );
         }
         requireChunkCount(
@@ -1142,7 +1223,9 @@ public class CorporateActionService {
         requireChunkCount(
                 "dividend cash-flow insert",
                 entitlements.size(),
-                corporateActionAccountWriter.recordDividendPaymentCashFlowChunk(entitlements, now)
+                corporateActionAccountWriter.recordDividendPaymentCashFlowChunk(
+                        actionId, entitlements, today, now
+                )
         );
         requireChunkCount(
                 "dividend entitlement completion",
@@ -1336,6 +1419,7 @@ public class CorporateActionService {
         }
         if (PAID_IN_CAPITAL_INCREASE.equals(actionType)
                 && (corporateActionReader.existsEntitlementWithStatus(lockedRow.id(), SUBSCRIBED)
+                || corporateActionReader.existsEntitlementWithStatus(lockedRow.id(), PARTIALLY_SUBSCRIBED)
                 || corporateActionReader.existsEntitlementWithStatus(lockedRow.id(), ANNOUNCED))) {
             throw new IllegalStateException("Capital increase entitlements remain before listing: " + lockedRow.id());
         }

@@ -93,7 +93,7 @@ public class PostClosePhaseExecutionService {
      * exponential failure backoff instead.
      */
     private boolean supportsBoundedContinuation(PostClosePhase phase) {
-        return phase == PostClosePhase.OVERNIGHT_CASH_APPLIED
+        return phase == PostClosePhase.PORTFOLIO_SETTLED
                 || phase == PostClosePhase.REPORTS_AGGREGATED;
     }
 }
