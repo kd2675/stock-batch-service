@@ -104,6 +104,67 @@ class StockMysqlDdlMigrationTest {
     }
 
     @Test
+    void investorTypeCleanupAlter_reappliesAndPreservesDataAndHotLedgers() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        addObsoleteInvestorTypeColumns(jdbcTemplate);
+        seedInvestorTypeCleanupSentinels(jdbcTemplate);
+        String orderDdlBefore = showCreateTable(jdbcTemplate, "stock_order");
+        String executionDdlBefore = showCreateTable(jdbcTemplate, "stock_execution");
+
+        executeDelimiterScript(jdbcTemplate, ddlPath("stock_investor_type_cleanup_alter.sql"));
+        executeDelimiterScript(jdbcTemplate, ddlPath("stock_investor_type_cleanup_alter.sql"));
+
+        for (String tableName : List.of(
+                "stock_account",
+                "stock_auto_participant",
+                "stock_close_account_snapshot",
+                "stock_execution_account_day_summary",
+                "stock_execution_daily_account_snapshot"
+        )) {
+            assertThat(columnCount(jdbcTemplate, tableName, "investor_type")).isZero();
+        }
+        assertThat(requiredCount(
+                jdbcTemplate,
+                """
+                select count(*)
+                  from information_schema.table_constraints
+                 where table_schema = database()
+                   and constraint_name in (
+                       'chk_stock_account_investor_type',
+                       'chk_stock_auto_participant_investor_type',
+                       'chk_stock_close_account_snapshot_investor_type',
+                       'chk_stock_execution_account_day_investor_type',
+                       'chk_stock_execution_daily_account_investor_type'
+                   )
+                """
+        )).isZero();
+        assertThat(requiredCount(
+                jdbcTemplate,
+                """
+                select count(*)
+                  from information_schema.routines
+                 where routine_schema = database()
+                   and routine_name = 'stock_drop_obsolete_investor_type'
+                """
+        )).isZero();
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_account where id = 9001")).isEqualTo(1);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_auto_participant where user_key = 'cleanup-auto'")).isEqualTo(1);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_close_account_snapshot where id = 9001")).isEqualTo(1);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_execution_account_day_summary where account_id = 9001")).isEqualTo(1);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_execution_daily_account_snapshot where id = 9001")).isEqualTo(1);
+        assertThat(showCreateTable(jdbcTemplate, "stock_order")).isEqualTo(orderDdlBefore);
+        assertThat(showCreateTable(jdbcTemplate, "stock_execution")).isEqualTo(executionDdlBefore);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_order where id = 9001")).isEqualTo(1);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_execution where id = 9001")).isEqualTo(1);
+    }
+
+    @Test
     void profilePricePressureSensitivityAlter_backfillsProfileDefaultsAndReappliesAsNoOp() throws IOException {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
                 MYSQL.getJdbcUrl(),
@@ -825,6 +886,136 @@ class StockMysqlDdlMigrationTest {
                   drop index idx_stock_close_account_snapshot_cycle_target
                 """
         );
+    }
+
+    private void addObsoleteInvestorTypeColumns(JdbcTemplate jdbcTemplate) {
+        addObsoleteInvestorTypeColumn(jdbcTemplate, "stock_account", "chk_stock_account_investor_type");
+        addObsoleteInvestorTypeColumn(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "chk_stock_auto_participant_investor_type"
+        );
+        addObsoleteInvestorTypeColumn(
+                jdbcTemplate,
+                "stock_close_account_snapshot",
+                "chk_stock_close_account_snapshot_investor_type"
+        );
+        addObsoleteInvestorTypeColumn(
+                jdbcTemplate,
+                "stock_execution_account_day_summary",
+                "chk_stock_execution_account_day_investor_type"
+        );
+        addObsoleteInvestorTypeColumn(
+                jdbcTemplate,
+                "stock_execution_daily_account_snapshot",
+                "chk_stock_execution_daily_account_investor_type"
+        );
+    }
+
+    private void addObsoleteInvestorTypeColumn(
+            JdbcTemplate jdbcTemplate,
+            String tableName,
+            String constraintName
+    ) {
+        jdbcTemplate.execute(
+                "alter table `%s` add column investor_type varchar(30) not null default 'INDIVIDUAL', "
+                        .formatted(tableName)
+                        + "add constraint `%s` check (investor_type in ('INDIVIDUAL', 'FOREIGN', 'INSTITUTION', 'OTHER_CORPORATION'))"
+                        .formatted(constraintName)
+        );
+    }
+
+    private void seedInvestorTypeCleanupSentinels(JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account(id, user_key, status, cash_balance, created_at, updated_at)
+                values (9001, 'cleanup-user', 'ACTIVE', 1000000, '2026-07-21 00:00:00', '2026-07-21 00:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type, created_at, updated_at
+                )
+                values ('cleanup-auto', 'cleanup auto', true, 'NOISE_TRADER',
+                        '2026-07-21 00:00:00', '2026-07-21 00:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_close_account_snapshot(
+                    id, close_cycle_id, close_run_id, account_id, user_key, account_status,
+                    participant_category, settlement_target, pre_cancel_cash,
+                    snapshot_at, created_at
+                )
+                values (9001, 9001, 9001, 9001, 'cleanup-user', 'ACTIVE',
+                        'MANUAL_PARTICIPANT', true, 1000000,
+                        '2026-07-21 18:00:00', '2026-07-21 18:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_execution_account_day_summary(
+                    simulation_trade_date, account_id, updated_at
+                )
+                values ('2026-07-21', 9001, '2026-07-21 18:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_execution_daily_account_snapshot(
+                    id, close_run_id, symbol, simulation_trade_date, account_id,
+                    participant_category, created_at
+                )
+                values (9001, 9001, 'CLEANUP', '2026-07-21', 9001,
+                        'MANUAL_PARTICIPANT', '2026-07-21 18:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                    id, client_order_id, account_id, symbol, market_type, side, order_type,
+                    status, limit_price, quantity, filled_quantity, average_fill_price,
+                    reserved_cash, created_at, updated_at
+                )
+                values (9001, 'cleanup-order', 9001, 'CLEANUP', 'ORDER_BOOK', 'BUY', 'LIMIT',
+                        'FILLED', 100, 1, 1, 100, 0,
+                        '2026-07-21 12:00:00', '2026-07-21 12:00:00')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_execution(
+                    id, order_id, account_id, symbol, side, quantity, price,
+                    gross_amount, fee_amount, tax_amount, net_amount, source, executed_at
+                )
+                values (9001, 9001, 9001, 'CLEANUP', 'BUY', 1, 100,
+                        100, 0, 0, 100, 'INTERNAL_ORDER_BOOK', '2026-07-21 12:00:00')
+                """
+        );
+    }
+
+    private void executeDelimiterScript(JdbcTemplate jdbcTemplate, Path scriptPath) throws IOException {
+        String delimiter = ";";
+        StringBuilder statement = new StringBuilder();
+        for (String line : Files.readAllLines(scriptPath, StandardCharsets.UTF_8)) {
+            String trimmedLine = line.trim();
+            if (trimmedLine.startsWith("DELIMITER ")) {
+                delimiter = trimmedLine.substring("DELIMITER ".length()).trim();
+                continue;
+            }
+            statement.append(line).append('\n');
+            if (!trimmedLine.endsWith(delimiter)) {
+                continue;
+            }
+            String sql = statement.toString().trim();
+            sql = sql.substring(0, sql.length() - delimiter.length()).trim();
+            if (!sql.isBlank()) {
+                jdbcTemplate.execute(sql);
+            }
+            statement.setLength(0);
+        }
+        assertThat(statement.toString().trim()).isEmpty();
     }
 
     private void executeScript(
