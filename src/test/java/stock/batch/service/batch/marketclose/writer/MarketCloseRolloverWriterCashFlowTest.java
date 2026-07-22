@@ -37,6 +37,7 @@ class MarketCloseRolloverWriterCashFlowTest {
                     user_key varchar(64),
                     account_code varchar(32),
                     status varchar(20) not null,
+                    participant_category varchar(30) not null default 'MANUAL_PARTICIPANT',
                     cash_balance decimal(19,2) not null,
                     created_at timestamp not null,
                     updated_at timestamp not null
@@ -175,6 +176,37 @@ class MarketCloseRolloverWriterCashFlowTest {
                         new CashFlowSnapshot(10L, 1L, new BigDecimal("1000.00"), watermark),
                         new CashFlowSnapshot(10L, 2L, BigDecimal.ZERO.setScale(2), watermark)
                 );
+    }
+
+    @Test
+    void snapshotAccounts_freezesPersistedRoleAndExcludesListingAccountFromSettlementTarget() {
+        jdbcTemplate.update(
+                "update stock_account set participant_category = 'LISTING_UNDERWRITER' where id = 2"
+        );
+
+        writer.snapshotAccountsForAccounts(
+                10L,
+                100L,
+                LocalDateTime.parse("2026-07-15T18:00:00"),
+                null,
+                0L,
+                0L,
+                List.of(1L, 2L)
+        );
+
+        assertThat(jdbcTemplate.queryForList(
+                """
+                select account_id, participant_category, settlement_target
+                  from stock_close_account_snapshot
+                 order by account_id
+                """
+        )).extracting(
+                row -> row.get("PARTICIPANT_CATEGORY"),
+                row -> row.get("SETTLEMENT_TARGET")
+        ).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("MANUAL_PARTICIPANT", true),
+                org.assertj.core.groups.Tuple.tuple("LISTING_UNDERWRITER", false)
+        );
     }
 
     @Test

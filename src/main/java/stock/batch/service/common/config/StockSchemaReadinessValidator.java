@@ -39,11 +39,13 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
 
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
     private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.of(
+            "stock_account", Set.of("participant_category"),
             "portfolio_snapshot", Set.of("pending_subscription_asset"),
             "stock_corporate_action_entitlement", Set.of("forfeited_share_quantity"),
             "stock_close_open_order_snapshot", Set.of("source_order_status")
     );
     private static final Map<String, Set<String>> REQUIRED_CHECK_TOKENS = Map.of(
+            "chk_stock_account_participant_category", Set.of("manual_participant", "auto_participant", "listing_underwriter"),
             "chk_stock_corporate_action_paid_date_order", Set.of("record_date"),
             "chk_stock_corporate_action_paid_schedule_required", Set.of("record_date"),
             "chk_stock_corporate_action_entitlement_status", Set.of("partially_subscribed"),
@@ -290,6 +292,7 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
 
     private static Map<String, Set<String>> requiredColumns() {
         Map<String, Set<String>> requirements = new LinkedHashMap<>();
+        requirements.put("stock_account", Set.of("participant_category"));
         requirements.put("stock_market_business_state", Set.of(
                 "state_id", "active_business_date", "preparing_business_date", "raw_simulation_date", "version"
         ));

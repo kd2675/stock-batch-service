@@ -35,6 +35,7 @@ class StockMysqlDdlMigrationTest {
             "stock_eod_immutable_snapshot_alter.sql",
             "stock_portfolio_snapshot_post_close_cash_data_fix.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
+            "stock_account_participant_category_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
             "stock_corporate_action_processing_alter.sql",
             "stock_corporate_action_chunking_alter.sql",
@@ -113,6 +114,65 @@ class StockMysqlDdlMigrationTest {
                 "stock_account_cash_flow",
                 "effective_business_date"
         )).isEqualTo(1);
+    }
+
+    @Test
+    void accountParticipantCategoryAlter_backfillsThreeRolesAndReappliesWithoutHotLedgerChanges()
+            throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        String orderDdlBefore = showCreateTable(jdbcTemplate, "stock_order");
+        String executionDdlBefore = showCreateTable(jdbcTemplate, "stock_execution");
+
+        jdbcTemplate.execute("""
+                alter table stock_account
+                  drop check chk_stock_account_participant_category,
+                  drop index idx_stock_account_status_participant_id,
+                  drop column participant_category
+                """);
+        jdbcTemplate.update("""
+                insert into stock_account(id, user_key, status, cash_balance, created_at, updated_at)
+                values
+                  (9901, 'migration-manual', 'ACTIVE', 100, current_timestamp, current_timestamp),
+                  (9902, 'migration-auto', 'ACTIVE', 200, current_timestamp, current_timestamp),
+                  (9903, 'stock-listing-MIGRATION', 'ACTIVE', 300, current_timestamp, current_timestamp)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type, created_at, updated_at
+                ) values ('migration-auto', 'migration auto', true, 'NOISE_TRADER', current_timestamp, current_timestamp)
+                """);
+
+        Path migration = ddlPath("stock_account_participant_category_alter.sql");
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select participant_category from stock_account where id = 9901",
+                String.class
+        )).isEqualTo("MANUAL_PARTICIPANT");
+        assertThat(jdbcTemplate.queryForObject(
+                "select participant_category from stock_account where id = 9902",
+                String.class
+        )).isEqualTo("AUTO_PARTICIPANT");
+        assertThat(jdbcTemplate.queryForObject(
+                "select participant_category from stock_account where id = 9903",
+                String.class
+        )).isEqualTo("LISTING_UNDERWRITER");
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_account",
+                "idx_stock_account_status_participant_id"
+        )).isEqualTo(1);
+        assertThat(showCreateTable(jdbcTemplate, "stock_account"))
+                .contains("chk_stock_account_participant_category");
+        assertThat(showCreateTable(jdbcTemplate, "stock_order")).isEqualTo(orderDdlBefore);
+        assertThat(showCreateTable(jdbcTemplate, "stock_execution")).isEqualTo(executionDdlBefore);
     }
 
     @Test

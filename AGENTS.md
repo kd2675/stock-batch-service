@@ -78,6 +78,7 @@
 - Redis 발행 실패는 체결/정산 원장 처리를 막지 않도록 degrade 처리합니다.
 - 주문·체결 hot path에는 전역 row lock, 범위 `FOR UPDATE`, 무제한 반복 조회, EOD 보고서 집계를 넣지 않습니다. 종목 session fence 뒤에 계좌 ID, 보유 row, 정확한 주문 PK 순으로 잠그고 모든 대상 수와 트랜잭션 chunk에 상한을 둡니다.
 - 장마감·정산·기업행사·보고서 작업은 정규장 체결 worker와 DB 자원을 경쟁하지 않도록 cycle phase와 heavy-job admission control을 거칩니다. 한 시점에 무거운 EOD Job은 하나만 허용하고, 18시 hot path에는 원장 동결에 필요한 작업만 둡니다.
+- 장마감 계좌 스냅샷의 참여자 역할은 계정명이나 현재 자동 참여자 조인으로 추정하지 않고 `stock_account.participant_category`를 그대로 동결합니다.
 - 자동 주문 worker/chunk/계좌당 주문 수, 체결 worker 수, 만료·유동성 공급 batch size를 동시에 키우지 않습니다. 기본 최악치 계획량과 실제 저장량을 구분하고, 설정 증가는 동일 데이터·동일 동시성 MySQL A/B에서 TPS 95% 이상과 지연·lock wait·deadlock 기준을 통과한 뒤에만 허용합니다.
 - `stock_order`·`stock_execution` 인덱스 추가는 기존 실행계획이 부족하다는 `EXPLAIN ANALYZE`와 INSERT/체결 A/B 근거가 있을 때만 검토합니다. EOD 편의를 위한 인덱스는 snapshot/summary/queue 테이블에 둡니다.
 - EOD 구현·배포·부하검증의 기준 문서는 `docs/stock-eod-refactoring-plan-2026-07-15.md`입니다. Java/H2 테스트만 통과한 상태를 “주문·체결 부하 문제 없음”으로 판정하지 않습니다.

@@ -548,15 +548,11 @@ public class MarketCloseRolloverWriter {
                             reconciliation_status, snapshot_at, created_at
                         )
                         select :closeCycleId, :closeRunId, a.id, a.user_key, a.status,
-                               case
-                                 when a.user_key like 'stock-listing-%' then 'LISTING_UNDERWRITER'
-                                 when participant.user_key is not null then 'AUTO_PARTICIPANT'
-                                 else 'MANUAL_PARTICIPANT'
-                               end,
+                               a.participant_category,
                                case
                                  when a.status = 'ACTIVE'
                                   and a.user_key is not null
-                                  and a.user_key not like 'stock-listing-%'
+                                  and a.participant_category <> 'LISTING_UNDERWRITER'
                                  then true else false
                                end,
                                a.cash_balance,
@@ -572,8 +568,6 @@ public class MarketCloseRolloverWriter {
                                coalesce(holding.holding_position_count, 0),
                                'PENDING', :snapshotAt, :snapshotAt
                           from stock_account a
-                          left join stock_auto_participant participant
-                            on participant.user_key = a.user_key
                           left join stock_close_account_snapshot previous
                             on previous.close_cycle_id = :previousCloseCycleId
                            and previous.account_id = a.id
