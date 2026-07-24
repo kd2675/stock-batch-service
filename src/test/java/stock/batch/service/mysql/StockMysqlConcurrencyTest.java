@@ -25,6 +25,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
 import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
+import stock.batch.service.batch.common.support.StockHoldingReservationJdbcSupport;
+import stock.batch.service.batch.execution.model.OrderBookOrderFillUpdate;
+import stock.batch.service.batch.execution.writer.ExecutionHoldingJdbcSupport;
+import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -62,6 +66,7 @@ class StockMysqlConcurrencyTest {
                         status varchar(20) not null,
                         cash_balance decimal(19, 2) not null default 0,
                         revision bigint not null,
+                        updated_at datetime(6) null,
                         unique key uk_stock_account_user_key (user_key)
                     ) engine=InnoDB
                     """
@@ -73,6 +78,8 @@ class StockMysqlConcurrencyTest {
                         symbol varchar(20) not null,
                         quantity bigint not null,
                         reserved_quantity bigint not null default 0,
+                        average_price decimal(19, 2) not null default 0,
+                        updated_at datetime(6) null,
                         primary key (account_id, symbol)
                     ) engine=InnoDB
                     """
@@ -85,11 +92,16 @@ class StockMysqlConcurrencyTest {
                         market_type varchar(20) not null,
                         symbol varchar(20) not null,
                         side varchar(10) not null default 'BUY',
+                        order_type varchar(20) not null default 'LIMIT',
                         status varchar(30) not null,
+                        limit_price decimal(19, 2) null,
                         quantity bigint not null default 1,
                         filled_quantity bigint not null default 0,
+                        average_fill_price decimal(19, 2) null,
                         reserved_cash decimal(19, 2) not null default 0,
+                        funding_budget_type varchar(20) null,
                         created_at datetime(6) not null,
+                        updated_at datetime(6) null,
                         key idx_stock_order_market_status_symbol (
                             market_type, status, symbol
                         )
@@ -191,6 +203,8 @@ class StockMysqlConcurrencyTest {
                         remaining_reserved_amount decimal(19, 2) not null,
                         spent_amount decimal(19, 2) not null,
                         released_amount decimal(19, 2) not null,
+                        created_at datetime(6) not null default current_timestamp(6),
+                        updated_at datetime(6) not null default current_timestamp(6),
                         primary key (order_id, budget_id),
                         key idx_stock_auto_order_budget_budget (budget_id, order_id)
                     ) engine=InnoDB
@@ -208,15 +222,41 @@ class StockMysqlConcurrencyTest {
                        (2, 102, 'ORDER_BOOK', 'DEMO001', 'PARTIALLY_FILLED', now(6))
                 """
         );
+        String exactLockPlan = querySingleString(
+                """
+                explain format=json
+                select stock_order.id
+                  from stock_order force index (primary)
+                  join (
+                      select cast(1 as decimal(19, 0)) as id
+                      union all
+                      select cast(2 as decimal(19, 0)) as id
+                  ) selected_order
+                    on selected_order.id = stock_order.id
+                 order by stock_order.id
+                 for update
+                """
+        );
+        assertThat(exactLockPlan)
+                .contains(
+                        "\"table_name\": \"stock_order\"",
+                        "\"access_type\": \"eq_ref\"",
+                        "\"key\": \"PRIMARY\""
+                );
 
         try (Connection locker = transactionConnection()) {
             querySingleLong(
                     locker,
                     """
-                    select id
+                    select stock_order.id
                       from stock_order force index (primary)
-                     where id in (1, 2)
-                     order by id
+                      join (
+                          select 1 as id
+                          union all
+                          select 2 as id
+                      ) selected_order
+                        on selected_order.id = stock_order.id
+                     order by stock_order.id
                      for update
                     """
             );
@@ -237,13 +277,149 @@ class StockMysqlConcurrencyTest {
                 });
 
                 assertThat(inserted.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isEqualTo(1);
+                var lockedRowUpdate = executor.submit(() -> {
+                    try (Connection updater = connection(); Statement statement = updater.createStatement()) {
+                        statement.execute("set session innodb_lock_wait_timeout = 4");
+                        return statement.executeUpdate(
+                                "update stock_order set updated_at = now(6) where id = 2"
+                        );
+                    }
+                });
+                Thread.sleep(200);
+                assertThat(lockedRowUpdate).isNotDone();
+
+                locker.rollback();
+                assertThat(lockedRowUpdate.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS))
+                        .isEqualTo(1);
             } finally {
                 executor.shutdownNow();
             }
-            locker.rollback();
         }
 
         assertThat(querySingleLong("select count(*) from stock_order where id = 3")).isEqualTo(1L);
+    }
+
+    @Test
+    void exactPrimaryKeyAccountLock_doesNotGapLockAdjacentAccountInsert() throws Exception {
+        execute(
+                """
+                insert into stock_account(id, user_key, status, cash_balance, revision)
+                values (1, 'account-1', 'ACTIVE', 0.00, 1),
+                       (2, 'account-2', 'ACTIVE', 0.00, 1)
+                """
+        );
+        String exactLockPlan = querySingleString(
+                """
+                explain format=json
+                select stock_account.id
+                  from stock_account force index (primary)
+                  join (
+                      select cast(1 as decimal(19, 0)) as id
+                      union all
+                      select cast(2 as decimal(19, 0)) as id
+                  ) selected_account
+                    on selected_account.id = stock_account.id
+                 order by stock_account.id
+                 for update
+                """
+        );
+        assertThat(exactLockPlan)
+                .contains(
+                        "\"table_name\": \"stock_account\"",
+                        "\"access_type\": \"eq_ref\"",
+                        "\"key\": \"PRIMARY\""
+                );
+
+        try (Connection locker = transactionConnection()) {
+            querySingleLong(
+                    locker,
+                    """
+                    select stock_account.id
+                      from stock_account force index (primary)
+                      join (
+                          select cast(1 as decimal(19, 0)) as id
+                          union all
+                          select cast(2 as decimal(19, 0)) as id
+                      ) selected_account
+                        on selected_account.id = stock_account.id
+                     order by stock_account.id
+                     for update
+                    """
+            );
+
+            var executor = Executors.newSingleThreadExecutor();
+            try {
+                var inserted = executor.submit(() -> {
+                    try (Connection inserter = connection(); Statement statement = inserter.createStatement()) {
+                        statement.execute("set session innodb_lock_wait_timeout = 2");
+                        return statement.executeUpdate(
+                                """
+                                insert into stock_account(
+                                    id, user_key, status, cash_balance, revision
+                                ) values (3, 'account-3', 'ACTIVE', 0.00, 1)
+                                """
+                        );
+                    }
+                });
+
+                assertThat(inserted.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isEqualTo(1);
+                var lockedRowUpdate = executor.submit(() -> {
+                    try (Connection updater = connection(); Statement statement = updater.createStatement()) {
+                        statement.execute("set session innodb_lock_wait_timeout = 4");
+                        return statement.executeUpdate(
+                                "update stock_account set updated_at = now(6) where id = 2"
+                        );
+                    }
+                });
+                Thread.sleep(200);
+                assertThat(lockedRowUpdate).isNotDone();
+
+                locker.rollback();
+                assertThat(lockedRowUpdate.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS))
+                        .isEqualTo(1);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+
+        assertThat(querySingleLong("select count(*) from stock_account where id = 3")).isEqualTo(1L);
+    }
+
+    @Test
+    void exactPrimaryKeyBatchUpdates_useEqRefPrimaryKeyPlans() throws Exception {
+        String accountUpdatePlan = querySingleString(
+                """
+                explain format=json
+                update stock_account force index (primary)
+                  join (
+                      select cast(1 as decimal(19, 0)) as id
+                      union all
+                      select cast(2 as decimal(19, 0)) as id
+                  ) selected_account
+                    on selected_account.id = stock_account.id
+                   set stock_account.cash_balance = stock_account.cash_balance
+                """
+        );
+        String orderUpdatePlan = querySingleString(
+                """
+                explain format=json
+                update stock_order force index (primary)
+                  join (
+                      select cast(1 as decimal(19, 0)) as id
+                      union all
+                      select cast(2 as decimal(19, 0)) as id
+                  ) selected_order
+                    on selected_order.id = stock_order.id
+                   set stock_order.updated_at = stock_order.updated_at
+                """
+        );
+
+        assertThat(new String[]{accountUpdatePlan, orderUpdatePlan})
+                .allSatisfy(plan -> assertThat(plan)
+                        .contains(
+                                "\"access_type\": \"eq_ref\"",
+                                "\"key\": \"PRIMARY\""
+                        ));
     }
 
     @Test
@@ -574,7 +750,7 @@ class StockMysqlConcurrencyTest {
     }
 
     @Test
-    void skipLockedSignalClaim_skipsLockedHeadWithoutBlockingNextSignal() throws Exception {
+    void pointLockedSignalClaim_skipsLockedHeadWithoutBlockingNextSignal() throws Exception {
         execute(
                 """
                 insert into stock_batch_job_signal(
@@ -591,10 +767,20 @@ class StockMysqlConcurrencyTest {
                     """
                     select id
                       from stock_batch_job_signal
-                     where status in ('PENDING', 'DEFERRED')
+                     where id = 1
+                       and status in ('PENDING', 'DEFERRED')
                        and next_attempt_at <= now(6)
-                     order by next_attempt_at, id
-                     limit 1
+                     for update skip locked
+                    """
+            );
+            OptionalLong lockedHead = queryOptionalLong(
+                    secondConsumer,
+                    """
+                    select id
+                      from stock_batch_job_signal
+                     where id = 1
+                       and status in ('PENDING', 'DEFERRED')
+                       and next_attempt_at <= now(6)
                      for update skip locked
                     """
             );
@@ -603,14 +789,14 @@ class StockMysqlConcurrencyTest {
                     """
                     select id
                       from stock_batch_job_signal
-                     where status in ('PENDING', 'DEFERRED')
+                     where id = 2
+                       and status in ('PENDING', 'DEFERRED')
                        and next_attempt_at <= now(6)
-                     order by next_attempt_at, id
-                     limit 1
                      for update skip locked
                     """
             );
 
+            assertThat(lockedHead).isEmpty();
             assertThat(firstId + ":" + secondId).isEqualTo("1:2");
             firstConsumer.rollback();
             secondConsumer.rollback();
@@ -654,6 +840,77 @@ class StockMysqlConcurrencyTest {
                 "select concat(available_amount, ':', reserved_amount, ':', spent_amount, ':', status) "
                         + "from stock_auto_participant_funding_budget where id = 1"
         )).isEqualTo("0.00:0.00:100.00:EXHAUSTED");
+    }
+
+    @Test
+    void orderBookExecutionBatchUpdates_applyTwoAccountsAndOrdersWithMySqlCaseSemantics() throws Exception {
+        execute(
+                """
+                insert into stock_account(id, user_key, status, cash_balance, revision)
+                values (101, 'seller', 'ACTIVE', 100.00, 1),
+                       (102, 'buyer', 'ACTIVE', 50.00, 1)
+                """
+        );
+        execute(
+                """
+                insert into stock_order(
+                    id, account_id, market_type, symbol, side, order_type, status,
+                    limit_price, quantity, filled_quantity, reserved_cash, created_at
+                ) values (201, 101, 'ORDER_BOOK', 'DEMO001', 'SELL', 'LIMIT', 'PENDING',
+                          70.00, 1, 0, 0.00, now(6)),
+                         (202, 102, 'ORDER_BOOK', 'DEMO001', 'BUY', 'LIMIT', 'PENDING',
+                          70.00, 1, 0, 70.00, now(6))
+                """
+        );
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        OrderBookExecutionWriter writer = new OrderBookExecutionWriter(
+                jdbcTemplate,
+                new ExecutionHoldingJdbcSupport(jdbcTemplate),
+                new StockHoldingReservationJdbcSupport(jdbcTemplate)
+        );
+        LocalDateTime executedAt = LocalDateTime.of(2027, 1, 18, 9, 0);
+
+        writer.adjustMatchedAccounts(
+                101L,
+                new BigDecimal("70.00"),
+                102L,
+                new BigDecimal("-2.00"),
+                executedAt
+        );
+        writer.updateOrdersAfterFill(
+                new OrderBookOrderFillUpdate(
+                        201L,
+                        "FILLED",
+                        1L,
+                        new BigDecimal("70.00"),
+                        BigDecimal.ZERO
+                ),
+                new OrderBookOrderFillUpdate(
+                        202L,
+                        "FILLED",
+                        1L,
+                        new BigDecimal("70.00"),
+                        BigDecimal.ZERO
+                ),
+                executedAt
+        );
+
+        assertThat(querySingleString(
+                "select concat("
+                        + "(select group_concat(concat(id, ':', cash_balance) order by id) from stock_account),"
+                        + "'|',"
+                        + "(select group_concat(concat(id, ':', status, ':', filled_quantity, ':', "
+                        + "average_fill_price, ':', reserved_cash) order by id) from stock_order)"
+                        + ")"
+        )).isEqualTo(
+                "101:170.00,102:48.00|"
+                        + "201:FILLED:1:70.00:0.00,202:FILLED:1:70.00:0.00"
+        );
     }
 
     @Test

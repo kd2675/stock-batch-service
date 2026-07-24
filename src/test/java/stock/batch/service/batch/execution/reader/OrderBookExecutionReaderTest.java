@@ -96,6 +96,26 @@ class OrderBookExecutionReaderTest {
     }
 
     @Test
+    void findOpenOrderBookSymbols_returnsOnlyEnabledOpenMarketAndInstrumentWithinLimit() {
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK001', true, 'OPEN')");
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK002', true, 'CLOSED')");
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK003', false, 'OPEN')");
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK004', true, 'OPEN')");
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK005', true, 'OPEN')");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK001', true)");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK002', true)");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK003', true)");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK004', false)");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK005', true)");
+
+        List<String> firstPage = reader.findOpenOrderBookSymbolsAfter("", 1);
+        List<String> secondPage = reader.findOpenOrderBookSymbolsAfter("STOCK001", 1);
+
+        assertThat(List.of(firstPage, secondPage))
+                .containsExactly(List.of("STOCK001"), List.of("STOCK005"));
+    }
+
+    @Test
     void findBestMatchCandidate_prioritizesMarketBuyAndBestLimitSell() {
         insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
         insertOrder(2L, 20L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70100.00"), 10L, 0L, 2);

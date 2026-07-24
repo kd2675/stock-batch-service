@@ -14,6 +14,7 @@ import stock.batch.service.simulation.SimulationMarketSessionService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -32,6 +33,7 @@ class OrderBookExecutionWorkerTest {
                 9,
                 100,
                 5,
+                1_000,
                 1_000
         ))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -44,12 +46,68 @@ class OrderBookExecutionWorkerTest {
         BatchJobRuntimeControl runtimeControl = mock(BatchJobRuntimeControl.class);
         SimulationMarketSessionService marketSessionService = mock(SimulationMarketSessionService.class);
         MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
-        CountDownLatch runCalled = new CountDownLatch(1);
+        CountDownLatch reconciliationCalled = new CountDownLatch(1);
+        CountDownLatch executionCalled = new CountDownLatch(1);
         when(marketSessionService.isRegularSession()).thenReturn(true);
         when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(true);
         when(runtimeControl.shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true)).thenReturn(true);
+        when(executionService.reconcileReadySymbolsIfDue()).thenAnswer(invocation -> {
+            reconciliationCalled.countDown();
+            return 0;
+        });
         when(executionService.executeReadyOrders()).thenAnswer(invocation -> {
-            runCalled.countDown();
+            executionCalled.countDown();
+            return 1;
+        });
+        OrderBookExecutionWorker worker = new OrderBookExecutionWorker(
+                executionService,
+                runtimeControl,
+                marketSessionService,
+                marketSessionFenceService,
+                new SimpleMeterRegistry(),
+                1,
+                10,
+                0,
+                10,
+                100
+        );
+
+        worker.start();
+        try {
+            assertThat(reconciliationCalled.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(executionCalled.await(2, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            worker.stop();
+        }
+
+        assertThat(worker.isRunning()).isFalse();
+        verify(executionService, atLeastOnce()).executeReadyOrders();
+        verify(executionService, atLeastOnce()).reconcileReadySymbolsIfDue();
+    }
+
+    @Test
+    void start_slowReconciliation_doesNotDelayReadyQueueConsumption() throws Exception {
+        InternalOrderBookExecutionService executionService = mock(InternalOrderBookExecutionService.class);
+        BatchJobRuntimeControl runtimeControl = mock(BatchJobRuntimeControl.class);
+        SimulationMarketSessionService marketSessionService = mock(SimulationMarketSessionService.class);
+        MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
+        CountDownLatch reconciliationStarted = new CountDownLatch(1);
+        CountDownLatch releaseReconciliation = new CountDownLatch(1);
+        CountDownLatch executionCalled = new CountDownLatch(1);
+        when(marketSessionService.isRegularSession()).thenReturn(true);
+        when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(true);
+        when(runtimeControl.shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true)).thenReturn(true);
+        when(executionService.reconcileReadySymbolsIfDue()).thenAnswer(invocation -> {
+            reconciliationStarted.countDown();
+            try {
+                releaseReconciliation.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+            return 0;
+        });
+        when(executionService.executeReadyOrders()).thenAnswer(invocation -> {
+            executionCalled.countDown();
             return 0;
         });
         OrderBookExecutionWorker worker = new OrderBookExecutionWorker(
@@ -61,18 +119,18 @@ class OrderBookExecutionWorkerTest {
                 1,
                 10,
                 0,
-                10
+                10,
+                100
         );
 
         worker.start();
         try {
-            assertThat(runCalled.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(reconciliationStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(executionCalled.await(1, TimeUnit.SECONDS)).isTrue();
         } finally {
+            releaseReconciliation.countDown();
             worker.stop();
         }
-
-        assertThat(worker.isRunning()).isFalse();
-        verify(executionService).executeReadyOrders();
     }
 
     @Test
@@ -106,7 +164,8 @@ class OrderBookExecutionWorkerTest {
                 1,
                 10,
                 50,
-                10
+                10,
+                100
         );
 
         worker.start();
@@ -139,7 +198,8 @@ class OrderBookExecutionWorkerTest {
                 1,
                 10,
                 0,
-                10
+                10,
+                100
         );
 
         worker.start();
@@ -150,6 +210,7 @@ class OrderBookExecutionWorkerTest {
         }
 
         verify(executionService, never()).executeReadyOrders();
+        verify(executionService, never()).reconcileReadySymbolsIfDue();
         verify(runtimeControl, never()).shouldRunScheduledJob(OrderBookExecutionJob.JOB_NAME, true);
     }
 }

@@ -36,6 +36,8 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
     private static final long MAX_MATCH_YIELD_MILLIS = 1_000L;
     private static final long MIN_GATE_REFRESH_MILLIS = 10L;
     private static final long MAX_GATE_REFRESH_MILLIS = 10_000L;
+    private static final long MIN_RECONCILIATION_INTERVAL_MILLIS = 100L;
+    private static final long MAX_RECONCILIATION_INTERVAL_MILLIS = 30_000L;
 
     private final InternalOrderBookExecutionService executionService;
     private final BatchJobRuntimeControl batchJobRuntimeControl;
@@ -45,6 +47,7 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
     private final long idleDelayMillis;
     private final long matchYieldMillis;
     private final long gateRefreshMillis;
+    private final long reconciliationIntervalMillis;
     private final Counter runCounter;
     private final Counter matchCounter;
     private final Counter failureCounter;
@@ -65,7 +68,8 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
             @Value("${stock.batch.order-book-execution.worker.count:2}") int workerCount,
             @Value("${stock.batch.order-book-execution.worker.idle-delay-ms:100}") long idleDelayMillis,
             @Value("${stock.batch.order-book-execution.worker.match-yield-ms:5}") long matchYieldMillis,
-            @Value("${stock.batch.order-book-execution.worker.gate-refresh-ms:1000}") long gateRefreshMillis
+            @Value("${stock.batch.order-book-execution.worker.gate-refresh-ms:1000}") long gateRefreshMillis,
+            @Value("${stock.batch.execution.ready-symbol-reconciliation-interval-ms:1000}") long reconciliationIntervalMillis
     ) {
         if (workerCount <= 0 || workerCount > MAX_WORKER_COUNT) {
             throw new IllegalArgumentException(
@@ -91,6 +95,16 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
                             .formatted(MIN_GATE_REFRESH_MILLIS, MAX_GATE_REFRESH_MILLIS)
             );
         }
+        if (reconciliationIntervalMillis < MIN_RECONCILIATION_INTERVAL_MILLIS
+                || reconciliationIntervalMillis > MAX_RECONCILIATION_INTERVAL_MILLIS) {
+            throw new IllegalArgumentException(
+                    "stock.batch.execution.ready-symbol-reconciliation-interval-ms must be between %d and %d"
+                            .formatted(
+                                    MIN_RECONCILIATION_INTERVAL_MILLIS,
+                                    MAX_RECONCILIATION_INTERVAL_MILLIS
+                            )
+            );
+        }
         this.executionService = executionService;
         this.batchJobRuntimeControl = batchJobRuntimeControl;
         this.simulationMarketSessionService = simulationMarketSessionService;
@@ -99,6 +113,7 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
         this.idleDelayMillis = idleDelayMillis;
         this.matchYieldMillis = matchYieldMillis;
         this.gateRefreshMillis = gateRefreshMillis;
+        this.reconciliationIntervalMillis = reconciliationIntervalMillis;
         this.runCounter = meterRegistry.counter("stock.orderbook.execution.worker.runs");
         this.matchCounter = meterRegistry.counter("stock.orderbook.execution.worker.matches");
         this.failureCounter = meterRegistry.counter("stock.orderbook.execution.worker.failures");
@@ -111,9 +126,10 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
             return;
         }
         executorService = Executors.newFixedThreadPool(
-                workerCount,
+                workerCount + 1,
                 Thread.ofPlatform().name("stock-orderbook-worker-", 0).factory()
         );
+        executorService.submit(this::runReconciliationLoop);
         for (int index = 0; index < workerCount; index++) {
             executorService.submit(this::runLoop);
         }
@@ -141,6 +157,26 @@ public class OrderBookExecutionWorker implements SmartLifecycle {
                 log.warn("Order-book execution worker run failed: reason={}", ex.getMessage(), ex);
             }
             pause(idleDelayMillis);
+        }
+    }
+
+    private void runReconciliationLoop() {
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            if (canExecute()) {
+                try {
+                    executionService.reconcileReadySymbolsIfDue();
+                } catch (RuntimeException ex) {
+                    failureCounter.increment();
+                    log.warn(
+                            "Order-book ready-symbol reconciliation worker failed: reason={}",
+                            ex.getMessage(),
+                            ex
+                    );
+                }
+            }
+            if (running.get()) {
+                pause(reconciliationIntervalMillis);
+            }
         }
     }
 

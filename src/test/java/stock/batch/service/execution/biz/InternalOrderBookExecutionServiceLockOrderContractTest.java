@@ -22,11 +22,11 @@ class InternalOrderBookExecutionServiceLockOrderContractTest {
     void execution_discoversCandidateOutsideTransactionAndLocksOnlyAfterFence() throws IOException {
         String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
         String retryMethod = source.substring(
-                source.indexOf("private boolean matchNextWithRetry(String symbol)"),
+                source.indexOf("private MatchAttemptResult matchNextWithRetry(String symbol)"),
                 source.indexOf("private Optional<OrderBookMatchCandidate> findMatchCandidate")
         );
         String mutationMethod = source.substring(
-                source.indexOf("private boolean matchSelectedCandidate"),
+                source.indexOf("private MatchAttemptResult matchSelectedCandidate"),
                 source.indexOf("private OrderBookOrderRow findLockedOrder")
         );
 
@@ -43,23 +43,21 @@ class InternalOrderBookExecutionServiceLockOrderContractTest {
     }
 
     @Test
-    void execution_zeroMatch_doesNotImmediatelyRequeryOrRequeueSymbol() throws IOException {
+    void execution_chunkTermination_requeuesOnlyBoundedOrStaleWorkWithoutFollowUpQuery() throws IOException {
         String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
         String pollingMethod = source.substring(
                 source.indexOf("private int executePolledSymbol"),
-                source.indexOf("private void requeueIfStillExecutable")
+                source.indexOf("private SymbolChunkResult executeLockedSymbolChunk")
         );
 
         assertThat(pollingMethod).contains(
-                "if (matchCount > 0)",
-                "requeueIfStillExecutable(symbol)"
-        );
-        assertThat(pollingMethod.indexOf("if (matchCount > 0)"))
-                .isLessThan(pollingMethod.indexOf("requeueIfStillExecutable(symbol)"));
+                "if (chunkResult.shouldRequeue())",
+                "readySymbolQueue.enqueue(symbol)"
+        ).doesNotContain("hasExecutablePair");
     }
 
     @Test
-    void execution_exactOrderLocks_usePrimaryIndexWithoutSkipLocked() throws IOException {
+    void execution_exactOrderLocks_useOrderedPrimaryKeyPointLookupsWithoutSkipLocked() throws IOException {
         String source = Files.readString(READER_SOURCE, StandardCharsets.UTF_8);
         String constructor = source.substring(
                 source.indexOf("public OrderBookExecutionReader"),
@@ -72,7 +70,17 @@ class InternalOrderBookExecutionServiceLockOrderContractTest {
 
         assertThat(constructor).contains("stock_order force index (primary)");
         assertThat(lockMethod)
-                .contains("where id in (:buyOrderId, :sellOrderId)", "order by id asc", "for update")
+                .contains(
+                        "Math.min(candidate.buyOrderId(), candidate.sellOrderId())",
+                        "Math.max(candidate.buyOrderId(), candidate.sellOrderId())",
+                        "select cast(:firstOrderId as decimal(19, 0)) as id",
+                        "union all",
+                        "select cast(:secondOrderId as decimal(19, 0)) as id",
+                        "on selected_order.id = stock_order.id",
+                        "order by stock_order.id asc",
+                        "for update"
+                )
+                .doesNotContain("where id in")
                 .doesNotContain("skip locked");
     }
 }

@@ -82,47 +82,25 @@ public class OrderBookExecutionReader {
                 .list();
     }
 
-    public boolean hasExecutablePair(String symbol) {
-        Long executableOrderId = jdbcClient.sql(
+    public List<String> findOpenOrderBookSymbolsAfter(String afterSymbol, int limit) {
+        return jdbcClient.sql(
                 """
-                select b.id
-                  from stock_order b
-                  join stock_order_book_market_config c on c.symbol = b.symbol and c.enabled = true and c.market_status = 'OPEN'
-                  join stock_order_book_instrument i on i.symbol = b.symbol and i.enabled = true
-                 where b.symbol = :symbol
-                   and b.side = 'BUY'
-                   and b.market_type = 'ORDER_BOOK'
-                   and b.order_type in ('LIMIT', 'MARKET')
-                   and b.status in ('PENDING', 'PARTIALLY_FILLED')
-                   and b.quantity > b.filled_quantity
-                   and (b.order_type = 'MARKET' or b.limit_price is not null)
-                   and exists (
-                       select 1
-                         from stock_order s
-                        where s.symbol = b.symbol
-                          and s.side = 'SELL'
-                          and s.market_type = 'ORDER_BOOK'
-                          and s.order_type in ('LIMIT', 'MARKET')
-                          and s.status in ('PENDING', 'PARTIALLY_FILLED')
-                          and s.quantity > s.filled_quantity
-                          and s.account_id <> b.account_id
-                          and (
-                              (b.order_type = 'MARKET' and s.order_type = 'LIMIT' and s.limit_price is not null)
-                              or
-                              (b.order_type = 'LIMIT' and b.limit_price is not null and (
-                                  (s.order_type = 'LIMIT' and s.limit_price <= b.limit_price)
-                                  or s.order_type = 'MARKET'
-                              ))
-                          )
-                   )
-                 limit 1
+                select c.symbol
+                  from stock_order_book_market_config c
+                  join stock_order_book_instrument i
+                    on i.symbol = c.symbol
+                   and i.enabled = true
+                 where c.enabled = true
+                   and c.market_status = 'OPEN'
+                   and c.symbol > :afterSymbol
+                 order by c.symbol asc
+                limit :limit
                 """
         )
-                .param("symbol", symbol)
-                .query(Long.class)
-                .optional()
-                .orElse(null);
-        return executableOrderId != null;
+                .param("afterSymbol", afterSymbol == null ? "" : afterSymbol)
+                .param("limit", Math.max(1, limit))
+                .query(String.class)
+                .list();
     }
 
     public Optional<OrderBookMatchCandidate> findBestMatchCandidate(String symbol, int scanLimit) {
@@ -308,23 +286,44 @@ public class OrderBookExecutionReader {
     }
 
     public List<OrderBookOrderRow> findMatchOrdersForUpdate(OrderBookMatchCandidate candidate) {
+        long firstOrderId = Math.min(candidate.buyOrderId(), candidate.sellOrderId());
+        long secondOrderId = Math.max(candidate.buyOrderId(), candidate.sellOrderId());
+        // Keep one remote round trip without using an IN-list locking range. On InnoDB under
+        // REPEATABLE READ, `id in (?, ?) for update` can next-key lock the gap after the second
+        // order and block an unrelated auto-increment INSERT. Joining two exact PK values keeps
+        // both record locks ordered while leaving the adjacent insert gap open.
         return jdbcClient.sql(
                 """
-                select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity,
-                       average_fill_price, reserved_cash, created_at, funding_budget_type
+                select stock_order.id,
+                       stock_order.account_id,
+                       stock_order.symbol,
+                       stock_order.side,
+                       stock_order.order_type,
+                       stock_order.limit_price,
+                       stock_order.quantity,
+                       stock_order.filled_quantity,
+                       stock_order.average_fill_price,
+                       stock_order.reserved_cash,
+                       stock_order.created_at,
+                       stock_order.funding_budget_type
                   from %s
-                 where id in (:buyOrderId, :sellOrderId)
-                  and market_type = 'ORDER_BOOK'
-                  and order_type in ('LIMIT', 'MARKET')
-                  and status in ('PENDING', 'PARTIALLY_FILLED')
-                  and quantity > filled_quantity
-                  and (order_type = 'MARKET' or limit_price is not null)
-                 order by id asc
+                  join (
+                      select cast(:firstOrderId as decimal(19, 0)) as id
+                      union all
+                      select cast(:secondOrderId as decimal(19, 0)) as id
+                  ) selected_order
+                    on selected_order.id = stock_order.id
+                 where stock_order.market_type = 'ORDER_BOOK'
+                   and stock_order.order_type in ('LIMIT', 'MARKET')
+                   and stock_order.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and stock_order.quantity > stock_order.filled_quantity
+                   and (stock_order.order_type = 'MARKET' or stock_order.limit_price is not null)
+                 order by stock_order.id asc
                 for update
                 """.formatted(lockedOrderTable)
         )
-                .param("buyOrderId", candidate.buyOrderId())
-                .param("sellOrderId", candidate.sellOrderId())
+                .param("firstOrderId", firstOrderId)
+                .param("secondOrderId", secondOrderId)
                 .query((rs, rowNum) -> mapOrderRow(rs))
                 .list();
     }

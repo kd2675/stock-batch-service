@@ -132,6 +132,9 @@ stock:
       symbol-chunk-limit: ${STOCK_BATCH_EXECUTION_SYMBOL_CHUNK_LIMIT:5}
       symbol-chunk-max-duration-ms: ${STOCK_BATCH_EXECUTION_SYMBOL_CHUNK_MAX_DURATION_MS:500}
       ready-symbol-fallback-scan-limit: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_FALLBACK_SCAN_LIMIT:8}
+      stale-candidate-retry-limit: ${STOCK_BATCH_EXECUTION_STALE_CANDIDATE_RETRY_LIMIT:3}
+      ready-symbol-reconciliation-enabled: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_RECONCILIATION_ENABLED:true}
+      ready-symbol-reconciliation-interval-ms: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_RECONCILIATION_INTERVAL_MS:1000}
       deadlock-retry-max-attempts: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_MAX_ATTEMPTS:3}
       deadlock-retry-backoff-ms: ${STOCK_BATCH_EXECUTION_DEADLOCK_RETRY_BACKOFF_MS:50}
       slow-symbol-log-threshold-ms: ${STOCK_BATCH_EXECUTION_SLOW_SYMBOL_LOG_THRESHOLD_MS:1000}
@@ -143,6 +146,8 @@ stock:
         type: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_TYPE:redis}
         set-key: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_SET_KEY:stock:orderbook:execution:ready-symbol-set}
         queue-key: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_QUEUE_KEY:stock:orderbook:execution:ready-symbol-queue}
+        reconciliation-lease-key: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_RECONCILIATION_LEASE_KEY:stock:orderbook:execution:ready-symbol-reconciliation-lease}
+        reconciliation-lease-ttl-ms: ${STOCK_BATCH_EXECUTION_READY_SYMBOL_QUEUE_RECONCILIATION_LEASE_TTL_MS:3000}
     order-book-execution:
       enabled: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_ENABLED:true}
       initial-delay-ms: ${STOCK_BATCH_ORDER_BOOK_EXECUTION_INITIAL_DELAY_MS:36000}

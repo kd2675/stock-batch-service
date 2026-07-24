@@ -443,6 +443,29 @@ class InternalOrderBookExecutionServiceTest {
     }
 
     @Test
+    void executeEligibleOrders_rejectedBuy_continuesToNextExecutablePairInSameChunk() {
+        insertAccount("broken-priority-buyer", "0.00", "10000000.00");
+        insertAccount("healthy-buyer", "9930000.00", "10000000.00");
+        insertAccount("seller-after-broken-buy", "100000.00", "10000000.00");
+        insertHolding("seller-after-broken-buy", "005930", 1, 1, "50000.00");
+        insertOrder("broken-priority-buy", "broken-priority-buyer", "005930", "BUY", "LIMIT", "PENDING", "71000.00", 1, 0, null, "100.00", 1);
+        insertOrder("healthy-buy", "healthy-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 2);
+        insertOrder("sell-after-broken-buy", "seller-after-broken-buy", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 3);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_order where client_order_id = 'broken-priority-buy'"))
+                .isEqualTo("REJECTED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'healthy-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'sell-after-broken-buy'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
+                .isEqualTo(2L);
+    }
+
+    @Test
     void executeEligibleOrders_sellWithInsufficientReservedHolding_rejectsWithoutMatching() {
         insertAccount("buyer-for-broken-sell", "9930000.00", "10000000.00");
         insertAccount("broken-seller", "100000.00", "10000000.00");
@@ -463,6 +486,30 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo("PENDING");
         assertThat(queryLong("select count(*) from stock_execution"))
                 .isZero();
+    }
+
+    @Test
+    void executeEligibleOrders_rejectedSell_continuesToNextExecutablePairInSameChunk() {
+        insertAccount("buyer-after-broken-sell", "9930000.00", "10000000.00");
+        insertAccount("broken-priority-seller", "100000.00", "10000000.00");
+        insertAccount("healthy-seller", "100000.00", "10000000.00");
+        insertHolding("broken-priority-seller", "005930", 1, 0, "50000.00");
+        insertHolding("healthy-seller", "005930", 1, 1, "50000.00");
+        insertOrder("buy-after-broken-sell", "buyer-after-broken-sell", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("broken-priority-sell", "broken-priority-seller", "005930", "SELL", "LIMIT", "PENDING", "68000.00", 1, 0, null, "0.00", 2);
+        insertOrder("healthy-sell", "healthy-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 3);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(queryString("select status from stock_order where client_order_id = 'broken-priority-sell'"))
+                .isEqualTo("REJECTED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'buy-after-broken-sell'"))
+                .isEqualTo("FILLED");
+        assertThat(queryString("select status from stock_order where client_order_id = 'healthy-sell'"))
+                .isEqualTo("FILLED");
+        assertThat(queryLong("select count(*) from stock_execution where source = 'INTERNAL_ORDER_BOOK'"))
+                .isEqualTo(2L);
     }
 
     @Test

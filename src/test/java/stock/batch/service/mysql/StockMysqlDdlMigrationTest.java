@@ -485,11 +485,12 @@ class StockMysqlDdlMigrationTest {
         );
         jdbcTemplate.update("""
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, quantity_multiplier,
+                    profile_type, order_multiplier, aggression_multiplier,
+                    price_pressure_sensitivity, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 ) values (
-                    'NOISE_TRADER', 1, 1, 1, 0.5, 0.5, 0, 30, current_timestamp
+                    'NOISE_TRADER', 1, 1, 1, 1, 0.5, 0.5, 0, 30, current_timestamp
                 )
                 """);
         jdbcTemplate.update("""
@@ -605,9 +606,11 @@ class StockMysqlDdlMigrationTest {
         )).containsExactly("LEGACY_COMPLETED", "EOD_V1", "UNDECLARED");
         assertThat(jdbcTemplate.queryForList(
                 """
-                select eod_contract_version
-                  from stock_post_close_phase_attempt
-                 order by cycle_id
+                select attempt.eod_contract_version
+                  from stock_post_close_phase_attempt attempt
+                  join stock_post_close_cycle cycle
+                    on cycle.id = attempt.cycle_id
+                 order by cycle.business_date
                 """,
                 String.class
         )).containsExactly("LEGACY_COMPLETED", "EOD_V1");
@@ -1416,7 +1419,8 @@ class StockMysqlDdlMigrationTest {
         }
 
         assertThat(showCreateTable(jdbcTemplate, "stock_order")).isEqualTo(orderDdlBefore);
-        assertThat(showCreateTable(jdbcTemplate, "stock_execution")).isEqualTo(executionDdlBefore);
+        assertThat(stableShowCreateTable(jdbcTemplate, "stock_execution"))
+                .isEqualTo(stableCreateTable(executionDdlBefore));
         assertThat(columnCount(jdbcTemplate, "stock_holding_snapshot", "close_cycle_id")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_holding_snapshot", "evaluation_price")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "portfolio_snapshot", "input_hash")).isEqualTo(1);
@@ -1913,6 +1917,14 @@ class StockMysqlDdlMigrationTest {
         );
         assertThat(createTable).isNotNull();
         return createTable;
+    }
+
+    private String stableShowCreateTable(JdbcTemplate jdbcTemplate, String tableName) {
+        return stableCreateTable(showCreateTable(jdbcTemplate, tableName));
+    }
+
+    private String stableCreateTable(String createTable) {
+        return createTable.replaceFirst(" AUTO_INCREMENT=\\d+", "");
     }
 
     private int requiredCount(JdbcTemplate jdbcTemplate, String sql, Object... arguments) {

@@ -1,5 +1,6 @@
 package stock.batch.service.execution.biz;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -58,13 +59,16 @@ class InternalOrderBookExecutionServiceVolumeConfigurationTest {
                 mock(OrderBookSymbolLock.class),
                 mock(OrderBookReadySymbolQueue.class),
                 mock(ExecutionAccountDaySummaryAccumulator.class),
-                mock(AutoParticipantFundingBudgetService.class)
+                mock(AutoParticipantFundingBudgetService.class),
+                new SimpleMeterRegistry()
         );
         ReflectionTestUtils.setField(service, "scanLimit", 300);
         ReflectionTestUtils.setField(service, "buyCandidateScanLimit", 20);
         ReflectionTestUtils.setField(service, "symbolChunkLimit", 5);
         ReflectionTestUtils.setField(service, "symbolChunkMaxDurationMillis", 500L);
         ReflectionTestUtils.setField(service, "readySymbolFallbackScanLimit", 8);
+        ReflectionTestUtils.setField(service, "staleCandidateRetryLimit", 3);
+        ReflectionTestUtils.setField(service, "readySymbolReconciliationIntervalMillis", 1_000L);
         ReflectionTestUtils.setField(service, "deadlockRetryMaxAttempts", 3);
         ReflectionTestUtils.setField(service, "deadlockRetryBackoffMillis", 50L);
         ReflectionTestUtils.setField(service, "slowSymbolLogThresholdMillis", 1_000L);

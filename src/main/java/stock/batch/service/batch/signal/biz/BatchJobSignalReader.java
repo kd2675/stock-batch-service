@@ -1,30 +1,31 @@
 package stock.batch.service.batch.signal.biz;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import stock.batch.service.batch.signal.model.BatchJobSignal;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.UUID;
-import java.util.Optional;
+import stock.batch.service.batch.signal.model.BatchJobSignal;
 
 @Component
 public class BatchJobSignalReader {
 
     private static final int DEAD_LETTER_SWEEP_LIMIT = 100;
+    private static final int CLAIM_CANDIDATE_SCAN_LIMIT = 32;
 
-    private static final String CLAIMABLE_SIGNAL_SQL = """
-            select id
-              from stock_batch_job_signal
-             where (
+    private static final String CLAIMABLE_SIGNAL_PREDICATE = """
+            (
                        (status in ('PENDING', 'DEFERRED') and next_attempt_at <= :systemNow)
                        or (status = 'PROCESSING' and lease_until <= :systemNow)
-                   )
-               and (eligible_at is null or eligible_at <= :simulationNow)
-               and (
+            )
+            and (eligible_at is null or eligible_at <= :simulationNow)
+            and (
                    signal_type <> 'AUTO_PARTICIPANT_CASH_FLOW_RUN'
                    or exists (
                        select 1
@@ -42,12 +43,28 @@ public class BatchJobSignalReader {
                               'AUTO_MARKET_PREPARED',
                               'READY_TO_OPEN',
                               'COMPLETED'
-                          )
+                           )
                    )
-               )
-               and attempt_count < max_attempts
+            )
+            and attempt_count < max_attempts
+            """;
+
+    private static final String CLAIMABLE_SIGNAL_CANDIDATES_SQL = """
+            select id
+              from stock_batch_job_signal
+             where
+            """ + CLAIMABLE_SIGNAL_PREDICATE + """
              order by next_attempt_at asc, id asc
-             limit 1
+             limit :candidateLimit
+            """;
+
+    private static final String LOCK_EXACT_CLAIMABLE_SIGNAL_SQL = """
+            select id
+              from stock_batch_job_signal
+             where id = :signalId
+               and
+            """ + CLAIMABLE_SIGNAL_PREDICATE + """
+            for update skip locked
             """;
 
     private final JdbcClient jdbcClient;
@@ -68,7 +85,7 @@ public class BatchJobSignalReader {
         if (simulationNow == null) {
             throw new IllegalArgumentException("simulationNow is required");
         }
-        return findClaimableId(simulationNow, LocalDateTime.now(), false).isPresent();
+        return !findClaimableCandidates(simulationNow, LocalDateTime.now(), 1).isEmpty();
     }
 
     /**
@@ -105,7 +122,21 @@ public class BatchJobSignalReader {
             throw new IllegalArgumentException("simulationNow is required");
         }
         LocalDateTime systemNow = LocalDateTime.now();
-        Optional<Long> signalId = findClaimableId(simulationNow, systemNow, true);
+        Optional<Long> signalId = Optional.empty();
+        List<Long> candidates = findClaimableCandidates(
+                simulationNow,
+                systemNow,
+                CLAIM_CANDIDATE_SCAN_LIMIT
+        );
+        // The ordered eligibility query can require a filesort across status ranges. Applying
+        // FOR UPDATE to that scan lets InnoDB lock more than the first row, defeating SKIP
+        // LOCKED. Discover a bounded candidate window without locks, then probe each exact PK.
+        for (Long candidateId : candidates) {
+            if (lockExactClaimableId(candidateId, simulationNow, systemNow).isPresent()) {
+                signalId = Optional.of(candidateId);
+                break;
+            }
+        }
         if (signalId.isEmpty()) {
             return Optional.empty();
         }
@@ -136,13 +167,26 @@ public class BatchJobSignalReader {
         return findClaimed(signalId.get(), claimToken);
     }
 
-    private Optional<Long> findClaimableId(
+    private List<Long> findClaimableCandidates(
             LocalDateTime simulationNow,
             LocalDateTime systemNow,
-            boolean lock
+            int limit
     ) {
-        String sql = lock ? CLAIMABLE_SIGNAL_SQL + "\nfor update skip locked" : CLAIMABLE_SIGNAL_SQL;
-        return jdbcClient.sql(sql)
+        return jdbcClient.sql(CLAIMABLE_SIGNAL_CANDIDATES_SQL)
+                .param("systemNow", systemNow)
+                .param("simulationNow", simulationNow)
+                .param("candidateLimit", limit)
+                .query(Long.class)
+                .list();
+    }
+
+    private Optional<Long> lockExactClaimableId(
+            long signalId,
+            LocalDateTime simulationNow,
+            LocalDateTime systemNow
+    ) {
+        return jdbcClient.sql(LOCK_EXACT_CLAIMABLE_SIGNAL_SQL)
+                .param("signalId", signalId)
                 .param("systemNow", systemNow)
                 .param("simulationNow", simulationNow)
                 .query(Long.class)

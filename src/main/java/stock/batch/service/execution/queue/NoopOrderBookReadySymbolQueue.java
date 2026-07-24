@@ -18,4 +18,9 @@ public class NoopOrderBookReadySymbolQueue implements OrderBookReadySymbolQueue 
     public Optional<String> poll() {
         return Optional.empty();
     }
+
+    @Override
+    public Optional<ReconciliationLease> tryAcquireReconciliationLease(long minimumIntervalMillis) {
+        return Optional.empty();
+    }
 }
