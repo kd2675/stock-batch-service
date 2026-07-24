@@ -216,29 +216,64 @@ public class AutoMarketWriter {
                 .map(AutoParticipantCashDeposit::accountId)
                 .map(Object.class::cast)
                 .toList();
-        int lockedAccountCount = jdbcTemplate.queryForList(
-                "select id from stock_account where id in (%s) order by id asc for update"
-                        .formatted(accountPlaceholders),
+        List<Long> activeAccountIds = jdbcTemplate.queryForList(
+                """
+                select a.id
+                  from stock_account a
+                 where a.id in (%s)
+                   and a.status = 'ACTIVE'
+                 order by a.id asc
+                 for update
+                """.formatted(accountPlaceholders),
                 Long.class,
                 accountIds.toArray()
-        ).size();
-        requireChunkCount("recurring cash account lock", orderedDeposits.size(), lockedAccountCount);
+        );
+        if (activeAccountIds.isEmpty()) {
+            return 0;
+        }
+        String activeAccountPlaceholders = String.join(",", Collections.nCopies(activeAccountIds.size(), "?"));
+        List<Long> eligibleAccountIds = jdbcTemplate.queryForList(
+                """
+                select a.id
+                  from stock_account a
+                  join stock_auto_participant p on p.user_key = a.user_key
+                 where a.id in (%s)
+                   and a.status = 'ACTIVE'
+                   and p.enabled = true
+                   and p.withdrawn_at is null
+                 order by a.id asc
+                """.formatted(activeAccountPlaceholders),
+                Long.class,
+                activeAccountIds.toArray()
+        );
+        if (eligibleAccountIds.isEmpty()) {
+            return 0;
+        }
+        Set<Long> eligibleAccountIdSet = Set.copyOf(eligibleAccountIds);
+        orderedDeposits = orderedDeposits.stream()
+                .filter(deposit -> eligibleAccountIdSet.contains(deposit.accountId()))
+                .toList();
 
         String amountCases = String.join(" ", Collections.nCopies(orderedDeposits.size(), "when ? then ?"));
+        String eligibleAccountPlaceholders = String.join(",", Collections.nCopies(orderedDeposits.size(), "?"));
+        List<Object> eligibleAccountIdParameters = orderedDeposits.stream()
+                .map(AutoParticipantCashDeposit::accountId)
+                .map(Object.class::cast)
+                .toList();
         List<Object> updateParameters = new ArrayList<>(orderedDeposits.size() * 3 + 1);
         for (AutoParticipantCashDeposit deposit : orderedDeposits) {
             updateParameters.add(deposit.accountId());
             updateParameters.add(deposit.amount());
         }
         updateParameters.add(createdAt);
-        updateParameters.addAll(accountIds);
+        updateParameters.addAll(eligibleAccountIdParameters);
         int updatedAccountCount = jdbcTemplate.update(
                 """
                 update stock_account
                    set cash_balance = cash_balance + case id %s else 0 end,
                        updated_at = ?
                  where id in (%s)
-                """.formatted(amountCases, accountPlaceholders),
+                """.formatted(amountCases, eligibleAccountPlaceholders),
                 updateParameters.toArray()
         );
         requireChunkCount("recurring cash account update", orderedDeposits.size(), updatedAccountCount);

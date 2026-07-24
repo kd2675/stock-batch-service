@@ -3,7 +3,9 @@ package stock.batch.service.batch.automarket.writer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -19,6 +21,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.CannotAcquireLockException;
 
+import stock.batch.service.batch.automarket.model.AutoParticipantCashDeposit;
 import stock.batch.service.execution.queue.NoopOrderBookReadySymbolQueue;
 
 class AutoMarketWriterTest {
@@ -127,5 +130,47 @@ class AutoMarketWriterTest {
         assertThat(sqlCaptor.getValue())
                 .doesNotContain("stock_account")
                 .doesNotContain("exists");
+    }
+
+    @Test
+    void depositCashFlowChunk_participantWithdrawnAfterCandidateRead_skipsClosedParticipant() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        AutoMarketWriter writer = new AutoMarketWriter(
+                jdbcTemplate,
+                new NoopOrderBookReadySymbolQueue(),
+                new SimpleMeterRegistry()
+        );
+        when(jdbcTemplate.queryForList(
+                any(String.class),
+                eq(Long.class),
+                any(Object[].class)
+        )).thenReturn(
+                List.of(1L, 2L),
+                List.of(1L)
+        );
+        when(jdbcTemplate.update(any(String.class), any(Object[].class))).thenReturn(1);
+
+        int funded = writer.depositCashFlowChunk(
+                List.of(
+                        new AutoParticipantCashDeposit(
+                                1L,
+                                new BigDecimal("1000.00"),
+                                "AUTO_PARTICIPANT_RECURRING_DEPOSIT"
+                        ),
+                        new AutoParticipantCashDeposit(
+                                2L,
+                                new BigDecimal("2000.00"),
+                                "AUTO_PARTICIPANT_RECURRING_DEPOSIT"
+                        )
+                ),
+                "AUTO_MARKET",
+                LocalDateTime.of(2027, 1, 22, 0, 0)
+        );
+
+        assertThat(funded).isEqualTo(1);
+        ArgumentCaptor<Object[]> parametersCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate, times(2)).update(any(String.class), parametersCaptor.capture());
+        assertThat(parametersCaptor.getAllValues())
+                .allSatisfy(parameters -> assertThat(List.of(parameters)).doesNotContain(2L));
     }
 }

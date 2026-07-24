@@ -56,6 +56,7 @@ class StockMysqlDdlMigrationTest {
             "stock_auto_market_reprice_index_alter.sql",
             "stock_auto_participant_shadow_cleanup_alter.sql",
             "stock_auto_participant_profile_behavior_model_alter.sql",
+            "stock_auto_participant_withdrawal_settlement_alter.sql",
             "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"
     );
@@ -163,6 +164,8 @@ class StockMysqlDdlMigrationTest {
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_performance_state")).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_funding_budget")).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_order_budget")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_withdrawal")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_share_return")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "funding_budget_type")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "expires_at")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "auto_profile_type")).isEqualTo(1);
