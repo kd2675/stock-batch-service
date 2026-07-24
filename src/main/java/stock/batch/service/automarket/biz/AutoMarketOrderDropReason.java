@@ -7,6 +7,9 @@ enum AutoMarketOrderDropReason {
     INVALID_PRICE("invalid_price"),
     INSUFFICIENT_CASH("insufficient_cash"),
     INSUFFICIENT_HOLDING("insufficient_holding"),
+    PROFILE_RISK_LIMIT("profile_risk_limit"),
+    FUNDING_BUDGET_EMPTY("funding_budget_empty"),
+    FUNDING_BUDGET_RESERVATION_FAILED("funding_budget_reservation_failed"),
     SESSION_CLOSED("session_closed"),
     BUY_RESERVATION_FAILED("buy_reservation_failed"),
     SELL_RESERVATION_FAILED("sell_reservation_failed");

@@ -1,11 +1,13 @@
 package stock.batch.service.mysql;
 
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.OptionalLong;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -14,9 +16,15 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
+
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -35,7 +43,10 @@ class StockMysqlConcurrencyTest {
     @BeforeEach
     void setUpSchema() throws SQLException {
         try (Connection connection = connection(); Statement statement = connection.createStatement()) {
+            statement.execute("drop table if exists stock_auto_participant_order_budget");
+            statement.execute("drop table if exists stock_auto_participant_funding_budget");
             statement.execute("drop table if exists stock_order");
+            statement.execute("drop table if exists stock_holding");
             statement.execute("drop table if exists stock_account");
             statement.execute("drop table if exists stock_market_session_fence");
             statement.execute("drop table if exists stock_order_book_market_config");
@@ -49,8 +60,20 @@ class StockMysqlConcurrencyTest {
                         id bigint not null primary key,
                         user_key varchar(100) not null,
                         status varchar(20) not null,
+                        cash_balance decimal(19, 2) not null default 0,
                         revision bigint not null,
                         unique key uk_stock_account_user_key (user_key)
+                    ) engine=InnoDB
+                    """
+            );
+            statement.execute(
+                    """
+                    create table stock_holding (
+                        account_id bigint not null,
+                        symbol varchar(20) not null,
+                        quantity bigint not null,
+                        reserved_quantity bigint not null default 0,
+                        primary key (account_id, symbol)
                     ) engine=InnoDB
                     """
             );
@@ -144,6 +167,32 @@ class StockMysqlConcurrencyTest {
                         key idx_stock_batch_job_signal_lease (
                             status, lease_until, id
                         )
+                    ) engine=InnoDB
+                    """
+            );
+            statement.execute(
+                    """
+                    create table stock_auto_participant_funding_budget (
+                        id bigint not null primary key,
+                        available_amount decimal(19, 2) not null,
+                        reserved_amount decimal(19, 2) not null,
+                        spent_amount decimal(19, 2) not null,
+                        expires_business_date date null,
+                        status varchar(20) not null,
+                        updated_at datetime(6) not null default current_timestamp(6)
+                    ) engine=InnoDB
+                    """
+            );
+            statement.execute(
+                    """
+                    create table stock_auto_participant_order_budget (
+                        order_id bigint not null,
+                        budget_id bigint not null,
+                        remaining_reserved_amount decimal(19, 2) not null,
+                        spent_amount decimal(19, 2) not null,
+                        released_amount decimal(19, 2) not null,
+                        primary key (order_id, budget_id),
+                        key idx_stock_auto_order_budget_budget (budget_id, order_id)
                     ) engine=InnoDB
                     """
             );
@@ -566,6 +615,354 @@ class StockMysqlConcurrencyTest {
             firstConsumer.rollback();
             secondConsumer.rollback();
         }
+    }
+
+    @Test
+    void fundingBudgetFullConsumption_marksExhaustedWithMySqlAssignmentSemantics() throws Exception {
+        execute(
+                """
+                insert into stock_auto_participant_funding_budget(
+                    id, available_amount, reserved_amount, spent_amount, status
+                ) values (1, 0.00, 100.00, 0.00, 'ACTIVE')
+                """
+        );
+        execute(
+                """
+                insert into stock_auto_participant_order_budget(
+                    order_id, budget_id, remaining_reserved_amount, spent_amount, released_amount
+                ) values (10, 1, 100.00, 0.00, 0.00)
+                """
+        );
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        AutoParticipantFundingBudgetService service =
+                new AutoParticipantFundingBudgetService(new JdbcTemplate(dataSource));
+        TransactionTemplate transactionTemplate =
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+
+        transactionTemplate.executeWithoutResult(status -> service.consumeOrderBudget(
+                10L,
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                LocalDateTime.of(2027, 1, 18, 9, 0)
+        ));
+
+        assertThat(querySingleString(
+                "select concat(available_amount, ':', reserved_amount, ':', spent_amount, ':', status) "
+                        + "from stock_auto_participant_funding_budget where id = 1"
+        )).isEqualTo("0.00:0.00:100.00:EXHAUSTED");
+    }
+
+    @Test
+    void fundingBudgetRelease_concurrentConsumers_releaseReservationExactlyOnce() throws Exception {
+        execute(
+                """
+                insert into stock_auto_participant_funding_budget(
+                    id, available_amount, reserved_amount, spent_amount, status
+                ) values (1, 0.00, 100.00, 0.00, 'ACTIVE')
+                """
+        );
+        execute(
+                """
+                insert into stock_auto_participant_order_budget(
+                    order_id, budget_id, remaining_reserved_amount, spent_amount, released_amount
+                ) values (10, 1, 100.00, 0.00, 0.00)
+                """
+        );
+
+        try (Connection firstConsumer = transactionConnection()) {
+            long budgetId = querySingleLong(
+                    firstConsumer,
+                    """
+                    select budget_id
+                      from stock_auto_participant_order_budget
+                     where order_id = 10
+                       and remaining_reserved_amount > 0
+                     for update
+                    """
+            );
+            assertThat(budgetId).isEqualTo(1L);
+
+            var executor = Executors.newSingleThreadExecutor();
+            try {
+                var secondRelease = executor.submit(() -> {
+                    try (Connection secondConsumer = transactionConnection()) {
+                        OptionalLong secondBudgetId = queryOptionalLong(
+                                secondConsumer,
+                                """
+                                select budget_id
+                                  from stock_auto_participant_order_budget
+                                 where order_id = 10
+                                   and remaining_reserved_amount > 0
+                                 for update
+                                """
+                        );
+                        if (secondBudgetId.isEmpty()) {
+                            secondConsumer.rollback();
+                            return 0;
+                        }
+                        int updated = execute(
+                                secondConsumer,
+                                """
+                                update stock_auto_participant_order_budget
+                                   set remaining_reserved_amount = 0,
+                                       released_amount = released_amount + 100
+                                 where order_id = 10
+                                   and budget_id = 1
+                                   and remaining_reserved_amount >= 100
+                                """
+                        );
+                        secondConsumer.commit();
+                        return updated;
+                    }
+                });
+
+                Thread.sleep(200);
+                assertThat(secondRelease).isNotDone();
+                assertThat(execute(
+                        firstConsumer,
+                        """
+                        update stock_auto_participant_order_budget
+                           set remaining_reserved_amount = 0,
+                               released_amount = released_amount + 100
+                         where order_id = 10
+                           and budget_id = 1
+                           and remaining_reserved_amount >= 100
+                        """
+                )).isEqualTo(1);
+                assertThat(execute(
+                        firstConsumer,
+                        """
+                        update stock_auto_participant_funding_budget
+                           set reserved_amount = reserved_amount - 100,
+                               available_amount = available_amount + 100
+                         where id = 1
+                           and reserved_amount >= 100
+                        """
+                )).isEqualTo(1);
+                firstConsumer.commit();
+
+                assertThat(secondRelease.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isZero();
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+
+        assertThat(querySingleString(
+                "select concat(available_amount, ':', reserved_amount) from stock_auto_participant_funding_budget where id = 1"
+        )).isEqualTo("100.00:0.00");
+        assertThat(querySingleString(
+                "select concat(remaining_reserved_amount, ':', released_amount) from stock_auto_participant_order_budget where order_id = 10"
+        )).isEqualTo("0.00:100.00");
+    }
+
+    @Test
+    void fundingBudgetConsumptionAndCancellation_serializeWithoutDoubleSpendOrDoubleRelease() throws Exception {
+        execute(
+                """
+                insert into stock_auto_participant_funding_budget(
+                    id, available_amount, reserved_amount, spent_amount, status
+                ) values (1, 0.00, 100.00, 0.00, 'ACTIVE')
+                """
+        );
+        execute(
+                """
+                insert into stock_auto_participant_order_budget(
+                    order_id, budget_id, remaining_reserved_amount, spent_amount, released_amount
+                ) values (10, 1, 100.00, 0.00, 0.00)
+                """
+        );
+
+        try (Connection execution = transactionConnection()) {
+            assertThat(querySingleLong(
+                    execution,
+                    """
+                    select budget_id
+                      from stock_auto_participant_order_budget
+                     where order_id = 10
+                       and remaining_reserved_amount >= 60
+                     for update
+                    """
+            )).isEqualTo(1L);
+
+            var executor = Executors.newSingleThreadExecutor();
+            try {
+                var cancellation = executor.submit(() -> {
+                    try (Connection cancel = transactionConnection()) {
+                        long remaining = querySingleLong(
+                                cancel,
+                                """
+                                select cast(remaining_reserved_amount as unsigned)
+                                  from stock_auto_participant_order_budget
+                                 where order_id = 10
+                                 for update
+                                """
+                        );
+                        int linkUpdated = execute(
+                                cancel,
+                                """
+                                update stock_auto_participant_order_budget
+                                   set remaining_reserved_amount = 0,
+                                       released_amount = released_amount + %d
+                                 where order_id = 10
+                                   and budget_id = 1
+                                   and remaining_reserved_amount = %d
+                                """.formatted(remaining, remaining)
+                        );
+                        int budgetUpdated = execute(
+                                cancel,
+                                """
+                                update stock_auto_participant_funding_budget
+                                   set reserved_amount = reserved_amount - %d,
+                                       available_amount = available_amount + %d
+                                 where id = 1
+                                   and reserved_amount >= %d
+                                """.formatted(remaining, remaining, remaining)
+                        );
+                        cancel.commit();
+                        return linkUpdated + budgetUpdated;
+                    }
+                });
+
+                Thread.sleep(200);
+                assertThat(cancellation).isNotDone();
+                assertThat(execute(
+                        execution,
+                        """
+                        update stock_auto_participant_order_budget
+                           set remaining_reserved_amount = remaining_reserved_amount - 60,
+                               spent_amount = spent_amount + 60
+                         where order_id = 10
+                           and budget_id = 1
+                           and remaining_reserved_amount >= 60
+                        """
+                )).isEqualTo(1);
+                assertThat(execute(
+                        execution,
+                        """
+                        update stock_auto_participant_funding_budget
+                           set reserved_amount = reserved_amount - 60,
+                               spent_amount = spent_amount + 60
+                         where id = 1
+                           and reserved_amount >= 60
+                        """
+                )).isEqualTo(1);
+                execution.commit();
+
+                assertThat(cancellation.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isEqualTo(2);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+
+        assertThat(querySingleString(
+                "select concat(available_amount, ':', reserved_amount, ':', spent_amount) "
+                        + "from stock_auto_participant_funding_budget where id = 1"
+        )).isEqualTo("40.00:0.00:60.00");
+        assertThat(querySingleString(
+                "select concat(remaining_reserved_amount, ':', spent_amount, ':', released_amount) "
+                        + "from stock_auto_participant_order_budget where order_id = 10"
+        )).isEqualTo("0.00:60.00:40.00");
+    }
+
+    @Test
+    void marketMakerBalancedPair_concurrentPlansCommitOneCompletePairAndNeverHalfPair() throws Exception {
+        execute(
+                """
+                insert into stock_account(id, user_key, status, cash_balance, revision)
+                values (501, 'market-maker-501', 'ACTIVE', 100.00, 1)
+                """
+        );
+        execute(
+                """
+                insert into stock_holding(account_id, symbol, quantity, reserved_quantity)
+                values (501, 'DEMO001', 10, 0)
+                """
+        );
+
+        try (Connection firstPlan = transactionConnection()) {
+            assertThat(querySingleLong(
+                    firstPlan,
+                    "select cast(cash_balance as unsigned) from stock_account where id = 501 for update"
+            )).isEqualTo(100L);
+            assertThat(querySingleLong(
+                    firstPlan,
+                    "select quantity - reserved_quantity from stock_holding "
+                            + "where account_id = 501 and symbol = 'DEMO001' for update"
+            )).isEqualTo(10L);
+
+            var executor = Executors.newSingleThreadExecutor();
+            try {
+                var competingPlan = executor.submit(() -> reserveAndInsertBalancedPair(10L, 11L));
+
+                Thread.sleep(200);
+                assertThat(competingPlan).isNotDone();
+                reserveBalancedPair(firstPlan, 1L, 2L);
+                firstPlan.commit();
+
+                assertThat(competingPlan.get(FUTURE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)).isZero();
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+
+        assertThat(querySingleLong("select count(*) from stock_order where account_id = 501")).isEqualTo(2L);
+        assertThat(querySingleString(
+                "select concat(sum(side = 'BUY'), ':', sum(side = 'SELL')) "
+                        + "from stock_order where account_id = 501"
+        )).isEqualTo("1:1");
+        assertThat(querySingleString(
+                "select concat(cash_balance, ':', reserved_quantity) "
+                        + "from stock_account join stock_holding on stock_holding.account_id = stock_account.id "
+                        + "where stock_account.id = 501 and stock_holding.symbol = 'DEMO001'"
+        )).isEqualTo("0.00:10");
+    }
+
+    private int reserveAndInsertBalancedPair(long buyOrderId, long sellOrderId) throws SQLException {
+        try (Connection transaction = transactionConnection()) {
+            long cash = querySingleLong(
+                    transaction,
+                    "select cast(cash_balance as unsigned) from stock_account where id = 501 for update"
+            );
+            long holding = querySingleLong(
+                    transaction,
+                    "select quantity - reserved_quantity from stock_holding "
+                            + "where account_id = 501 and symbol = 'DEMO001' for update"
+            );
+            if (cash < 100L || holding < 10L) {
+                transaction.rollback();
+                return 0;
+            }
+            reserveBalancedPair(transaction, buyOrderId, sellOrderId);
+            transaction.commit();
+            return 2;
+        }
+    }
+
+    private void reserveBalancedPair(Connection transaction, long buyOrderId, long sellOrderId) throws SQLException {
+        assertThat(execute(
+                transaction,
+                "update stock_account set cash_balance = cash_balance - 100 where id = 501 and cash_balance >= 100"
+        )).isEqualTo(1);
+        assertThat(execute(
+                transaction,
+                "update stock_holding set reserved_quantity = reserved_quantity + 10 "
+                        + "where account_id = 501 and symbol = 'DEMO001' "
+                        + "and quantity - reserved_quantity >= 10"
+        )).isEqualTo(1);
+        assertThat(execute(
+                transaction,
+                """
+                insert into stock_order(
+                    id, account_id, market_type, symbol, side, status,
+                    quantity, filled_quantity, reserved_cash, created_at
+                ) values (%d, 501, 'ORDER_BOOK', 'DEMO001', 'BUY', 'PENDING', 10, 0, 100.00, now(6)),
+                         (%d, 501, 'ORDER_BOOK', 'DEMO001', 'SELL', 'PENDING', 10, 0, 0.00, now(6))
+                """.formatted(buyOrderId, sellOrderId)
+        )).isEqualTo(2);
     }
 
     private Connection connection() throws SQLException {

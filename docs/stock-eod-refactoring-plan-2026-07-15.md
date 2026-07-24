@@ -3,7 +3,7 @@
 - 작성일: 2026-07-15
 - 대상: `stock-batch-service`, `stock-back-service`, `stock-front-service`, `web-common-core`
 - 성격: 현재 코드·DB·로그·배치 메타데이터 분석을 바탕으로 한 구현 계획
-- 주의: 이 문서는 계획과 구현 상태를 함께 추적한다. 핵심 EOD 소스와 정적 계약은 구현했지만 shadow 비교, 운영 DB ALTER, 실제 MySQL 동시성·거래량 A/B, DB 전체 부하 신호 기반 admission과 재기동 live 검증은 아직 완료하지 않았다. 계획 문서와 핵심 신규 fence·cycle·coordinator·EOD API/UI 파일도 현재 각 하위 저장소에서 미추적 상태이므로 로컬 소스 구현과 Git 배포 완료를 같은 의미로 취급하지 않는다. 서버 프로세스는 에이전트가 종료하지 않는다.
+- 주의: 이 문서는 계획과 구현 상태를 함께 추적한다. 핵심 EOD 소스·정적 계약과 2026-07-19 EOD 운영 ALTER는 적용됐지만, 첫 cycle의 읽기 전용 정산 비교, 실제 MySQL 동시성·거래량 A/B, DB 전체 부하 신호 기반 admission과 재기동 live 검증은 아직 완료하지 않았다. 2026-07-23 자동 참여자 V2 정방향 ALTER와 행동 모델 SHADOW 정리는 운영 DB에 적용했지만 관련 소스 변경은 현재 stage 상태이며 아직 commit·push·신규 산출물 배포 전이다. 로컬 소스·stage·Git 전달·운영 배포를 같은 의미로 취급하지 않는다. 현재 stock-back·stock-batch 프로세스는 정지 상태이고, 사용자의 별도 요청 없이 재시작하지 않는다.
 
 ## 종합 결론
 
@@ -24,7 +24,7 @@
 
 이 계획의 정확성 요구보다 주문·체결 지연을 낮은 우선순위로 취급해서는 안 됩니다. 모든 단계는 다음 조건을 동시에 만족해야 합니다.
 
-> 2026-07-16 추가 실행 제약: 이후 남은 구현·DDL·검증도 현재 주문량과 체결량을 기준으로 수행한다. 정규장에 실행될 가능성이 있거나 주문·체결의 SQL 수·잠금 행·커밋·인덱스 쓰기를 늘리는 변경은 먼저 동일 데이터 A/B 근거를 확보하지 못하면 적용하지 않는다. 실측할 수 없는 변경은 야간 phase·shadow·기본 비활성 상태로만 두며, 운영 DB ALTER는 백엔드와 배치가 모두 종료됐다고 사용자가 확인한 유지보수 창에서만 수행한다.
+> 2026-07-16 추가 실행 제약: 이후 남은 구현·DDL·검증도 현재 주문량과 체결량을 기준으로 수행한다. 정규장에 실행될 가능성이 있거나 주문·체결의 SQL 수·잠금 행·커밋·인덱스 쓰기를 늘리는 변경은 먼저 동일 데이터 A/B 근거를 확보하지 못하면 적용하지 않는다. 실측할 수 없는 변경은 야간 phase·읽기 전용 진단·기본 비활성 상태로만 두며, 운영 DB ALTER는 백엔드와 배치가 모두 종료됐다고 사용자가 확인한 유지보수 창에서만 수행한다. 자동 참여자 행동 모델의 SHADOW 실행·비교 쓰기는 2026-07-23 제거했으며 이 규칙의 읽기 전용 진단과 혼동하지 않는다.
 
 1. 정규장 주문·정정·자동 주문·체결 경로에는 종목 PK fence 조회 1회 외의 EOD 쿼리를 넣지 않는다.
 2. 거래 중 전역 시계·거래일·cycle 행을 잠그지 않는다. cycle/attempt는 제어면에서만 접근한다.
@@ -37,7 +37,7 @@
 9. 관리자 EOD 조회는 해당 화면이 열려 있을 때만 15초 주기로 실행하고 백그라운드 폴링을 금지한다. 10초 미만으로 줄이려면 실제 거래량 부하검증을 먼저 통과해야 한다.
 10. 계좌·권리·주문 수에 비례하는 기업행사는 keyset/cohort 기반 bounded chunk로 처리하고, 한 트랜잭션이 대량 계좌 전체를 보유하지 않게 한다.
 11. 모든 구현 단위는 변경 전·후의 주문/체결 DB 왕복 수, 잠금 행·잠금 순서, `stock_order`/`stock_execution` 실행계획, p95/p99를 함께 기록한다. 이 증거가 없으면 기능 테스트가 통과해도 운영 전환하지 않는다.
-12. 실데이터 규모 부하검증을 아직 실행할 수 없는 단계는 기본 비활성·shadow·야간 phase에 둔다. 추정 처리량만으로 정규장 hot path나 hot-ledger 인덱스를 바꾸지 않는다.
+12. 실데이터 규모 부하검증을 아직 실행할 수 없는 단계는 기본 비활성·읽기 전용 진단·야간 phase에 둔다. 자동 참여자 행동 모델 SHADOW처럼 정규장 판단 비교용 쓰기 경로는 두지 않는다. 추정 처리량만으로 정규장 hot path나 hot-ledger 인덱스를 바꾸지 않는다.
 13. 다중 종목 주문 청크의 보유 잠금은 계좌 집합과 종목 집합의 교차조합이 아니라 frozen 주문에 실제 존재하는 `(account_id, symbol)` 복합키만 사용한다. 후보 500건이면 보유 잠금 키도 최대 500개이며 종목 수 증가로 무관한 잠금이 곱셈 증폭되지 않아야 한다.
 14. 계좌 스냅샷의 watermark·청약·대사 조회는 계좌 청크마다 같은 저빈도 원장을 반복 스캔하지 않게 `(account_id, id)`, `(account_id, status)`, `(close_cycle_id, reconciliation_status, account_id)` 인덱스를 사용한다. 이 인덱스는 현금흐름·권리·EOD 스냅샷에만 두고 정규장 `stock_order`·`stock_execution` INSERT 인덱스 수는 늘리지 않는다.
 15. PRE_OPEN 외부 시세는 정규장 폴링과 EOD 완료 정책을 분리한다. 정규장 경량 폴링은 종목별 부분 성공을 허용하지만, close cycle의 `MARKET_DATA_PREPARED` 전이는 모든 대상의 DB 갱신과 Redis publish가 성공해야 한다. 재시도는 같은 `(symbol, price_time, price, provider)` tick을 다시 쓰지 않으며, 이 검증과 멱등화는 `VIRTUAL_PRICE` 활성 주문·보유 및 가격 원장에만 적용하고 주문장 주문·체결 쓰기 경로에는 추가 SQL을 넣지 않는다.
@@ -143,7 +143,7 @@
 | 기업행사·현금흐름·signal | 소스 구현 | phase별 Step, processing ledger, bounded chunk, signal lease/backoff/DEAD_LETTER가 존재한다. 모든 신호는 요청 거래일을, 종목 신호는 session epoch까지 실행에 전달한다. `expected_cycle_id`는 요청 시점에 cycle이 이미 있으면 고정하고, 아직 없으면 날짜·범위 유일 제약으로 첫 실행에서 생성·재사용되는 동일 논리 cycle에 결합한다. |
 | DDL·H2·reset | 정적 구현 | canonical `stock_all.sql`, 운영 EOD ALTER 11개, H2 DDL, 두 초기화 스크립트와 DDL 계약이 존재한다. Spring Batch metadata 전용 archive 테이블·후보 인덱스는 business ALTER와 분리된 `batch-metadata-retention-mysql.sql`에 둔다. 실제 운영 DB 적용은 별도다. |
 | Git 전달 상태 | **미완료** | 구현은 현재 워킹트리에 존재하지만 2026-07-16 `git status --porcelain -uall` 파일 단위 재감사 시점에 untracked 파일이 batch 96개, back 33개, front 2개이며 이 문서 자체도 untracked다. 이 중 `src/main` 또는 프론트 `app` production 경로는 batch 49개, back 21개, front 2개다. staging·commit을 요청받지 않았으므로 Git 이력이나 배포 산출물에 포함됐다고 판정하지 않는다. 디렉터리를 한 항목으로 접는 기본 `git status` 수치는 사용하지 않는다. |
-| 관리자 EOD 조회·재시도 UI | **상세 소스 구현·live 미완료** | cycle·phase·대사·signal을 제어 테이블에서 읽고 원시 시뮬레이션 시각, cycle·최근 attempt 시작/완료/경과와 취소 뒤 반환된 매수 예약금·매도 예약수량을 표시한다. 05:30 readiness는 포트폴리오·거래일·시장·fence·가격·기업행사·regime·프로필 큐·runtime compatibility의 고정 10개 결과를 `stock_post_close_readiness_check`에 남기고 화면은 cycle PK의 최대 10행만 읽는다. build SHA는 cycle 생성·phase attempt 감사값으로 보존하되, 정상 재시작·배포는 동일 schema contract이면 이어서 실행한다. 기업행사 현금·PRE_OPEN 변환 미완료 수도 각 readiness 실패 건수로 표시한다. 시장 CLOSED 상태에서 가장 오래된 전체시장 `FAILED` cycle의 현재 phase backoff만 해제하는 재시도 API·버튼이 존재하며 `DEFERRED` 정책 대기는 우회하지 않고 Job을 직접 실행하지 않는다. 정상 phase는 10초 coordinator가 자동 선점하므로 별도 수동 실행 명령을 의도적으로 제공하지 않고, 로그인 세션 브라우저 검증만 남았다. 강제 마감도 제공하지 않는다. |
+| 관리자 EOD 조회·재시도 UI | **상세 소스 구현·live 미완료** | cycle·phase·대사·signal을 제어 테이블에서 읽고 원시 시뮬레이션 시각, cycle·최근 attempt 시작/완료/경과와 취소 뒤 반환된 매수 예약금·매도 예약수량을 표시한다. 05:30 readiness는 포트폴리오·거래일·시장·fence·가격·기업행사·regime·프로필 큐·EOD contract compatibility의 고정 10개 결과를 `stock_post_close_readiness_check`에 남기고 화면은 cycle PK의 최대 10행만 읽는다. build SHA와 물리 schema revision은 cycle 생성·phase attempt 감사값으로 보존하되, 정상 재시작·배포는 동일 `eod_contract_version`이면 이어서 실행한다. 기업행사 현금·PRE_OPEN 변환 미완료 수도 각 readiness 실패 건수로 표시한다. 시장 CLOSED 상태에서 가장 오래된 전체시장 `FAILED` cycle의 현재 phase backoff만 해제하는 재시도 API·버튼이 존재하며 `DEFERRED` 정책 대기는 우회하지 않고 Job을 직접 실행하지 않는다. 정상 phase는 10초 coordinator가 자동 선점하므로 별도 수동 실행 명령을 의도적으로 제공하지 않고, 로그인 세션 브라우저 검증만 남았다. 강제 마감도 제공하지 않는다. |
 | build/schema 실행 정체성 | 소스·배포 JAR 보강·현재 실행 불일치 확인 | build/schema version 기록과 시작 schema readiness를 구현했고, 로컬 Gradle build SHA는 현재 HEAD 뒤에 워킹트리 변경이 있으면 `-dirty`를 붙인다. CI의 content-addressed `BUILD_SHA`는 이를 그대로 우선한다. 2026-07-16 `bootJar`로 생성한 back `eacb2484517d-dirty`, batch `b26da0334f74-dirty` 산출물에는 신규 schema validator·session fence·coordinator·EOD API 클래스가 포함됨을 JAR entry로 확인했다. 다만 `-dirty`는 변경 내용 자체를 식별하지 않으므로 운영 승인 build는 여전히 모든 전달 파일을 commit한 SHA 또는 CI가 주입한 digest를 사용해야 한다. 실행 중인 두 서버는 7월 15일 15:12부터 IntelliJ `out/production` classpath를 사용하며 신규 EOD 클래스가 없었으므로 현재 health `UP`은 새 구현의 live 검증이 아니다. |
 | cycle 로그 상관관계 | 소스 구현 | `StockBatchJobRunner`가 `cycleId`를 가진 native·lightweight EOD 실행 scope에만 MDC를 설정하고 이전 값을 복원한다. 로그 패턴에도 `cycle`을 추가했다. 일반 주문·체결 worker에는 MDC 생성이나 DB 접근을 추가하지 않았으며, 별도 heartbeat 스레드처럼 실행 문맥을 넘는 비동기 로그는 기존 job·lock 식별자를 사용한다. |
 | Batch metadata 보존·archive | 소스 구현·운영 비활성 | 완료된 오래된 JobInstance만 기본 최대 25개씩 compact execution archive로 옮기는 경량 실행기를 추가했다. 실패·중단·최근 instance는 제외하고 instance별 한 transaction을 사용한다. purge는 기본 `false`이며 명시적인 job-name allow-list 없이는 기동 설정 자체를 거부한다. 운영 metadata DDL·보존일·allow-list 승인은 남았다. |
@@ -850,13 +850,26 @@ NOT EXISTS (
 - PRE_OPEN 기업행사 수량·가격 변환이 완료됐는지
 - 자동시장 일일 regime이 준비됐는지
 - Redis profile queue가 bounded DB schedule projection과 정확히 같은지
-- cycle의 build/schema version이 현재 실행 산출물과 일치하는지
+- cycle과 완료 phase의 `eod_contract_version`이 현재 EOD 재시작 계약과 정확히 일치하는지
 
 모두 통과한 경우만 `READY_TO_OPEN → OPEN`으로 이동합니다.
 
 현재 `PostCloseReadinessService`는 위 10개 검사를 `AUTO_MARKET_PREPARED` 이후 PRE_OPEN에 한 번 실행하고, 검사별 결과를 `stock_post_close_readiness_check`의 `(close_cycle_id, check_code)` PK에 정확히 10행 저장합니다. 실패 Step의 바깥 resourceless transaction이 종료돼도 진단이 남도록 별도 `REQUIRES_NEW`에서 교체하고, 실패 count와 500자 이내 메시지를 보존합니다. 다음 정상 재시도는 같은 cycle의 10행만 교체하므로 시도별 무제한 상세 이력이 늘어나지 않습니다. attempt 이력은 기존 `stock_post_close_phase_attempt`가 담당합니다.
 
 시장·fence·snapshot·regime·정산 검사는 config/control/snapshot 테이블의 단일 bounded 조회, 기업행사는 processing ledger 미완료 count, Redis는 profile enum으로 상한이 고정된 zset snapshot, 실행 정체성은 cycle PK 조회만 사용합니다. `stock_order`·`stock_execution`·`stock_holding`을 직접 조회하거나 변경하지 않는 정적 계약 테스트를 두며, 관리자 API도 readiness 원장을 재계산하지 않고 cycle PK와 display order로 저장 결과만 읽습니다. 따라서 이 상세 진단 때문에 정규장 주문·체결 SQL·잠금·commit·hot-ledger 인덱스가 증가하지 않습니다.
+
+2026-07-24 cycle 377은 초반 phase를 `2026-07-22-eod-v3`, 후반 phase를
+`2026-07-23-auto-profile-v2-direct`로 완료했고 나머지 9개 readiness 검사가 모두
+통과했지만, 이전 구현이 물리 schema revision 문자열을 phase 재시작 계약으로 사용해
+`RUNTIME_IDENTITY`에서 차단됐습니다. 이를 허용 목록으로 우회하지 않고
+`eod_contract_version`을 cycle과 phase attempt에 별도로 동결합니다. build SHA와
+`schema_version`은 실행 산출물·물리 DB revision 감사값으로 계속 보존하고,
+readiness는 완료 phase의 입출력을 현재 코드가 안전하게 이어받을 수 있는지만
+`STOCK_EOD_CONTRACT_VERSION`의 정확한 일치로 판정합니다. additive DDL·재빌드는 계약을
+바꾸지 않으며, phase·스냅샷 의미가 깨지는 변경만 계약을 올려 fail-closed합니다.
+신규 컬럼을 모르는 구형 프로세스의 기본값과 증명할 수 없는 미완료 이력은
+`UNDECLARED`로 남겨 호환으로 오인하지 않습니다. 검사는 EOD 제어행만 읽으므로
+주문·체결 hot path에는 쿼리나 잠금이 추가되지 않습니다.
 
 ### 7.7 `post-close-report-aggregation` Job
 
@@ -2089,7 +2102,7 @@ Docker가 없는 현재 환경에서는 명시적 `mysqlTest`를 통과시키지
 
 2026-07-15 진단 당시 최신 정산 보유지표가 DB에서 `NULL`이었고 활성 프로세스에서 30초 커밋 타임아웃이 관찰됐습니다. 2026-07-16 최신 10개 정산일 1,020행에서는 세 보유지표의 `NULL`이 0건으로 확인되어 그 증상은 현재 재현되지 않습니다. 다만 현재 소스의 build/schema identity와 시작 readiness는 실행 중 산출물에 없고 운영 ALTER도 미적용이므로 새 EOD 구조가 검증됐다는 뜻은 아닙니다. 사용자가 서버 종료를 확인한 유지보수 창에서 실행 산출물·스키마 버전·실제 DB 값을 다시 대조하고 MySQL A/B를 통과해야 최종 승인할 수 있습니다.
 
-### 17.6 2026-07-19 운영 ALTER 적용과 비파괴 애플리케이션 롤백
+### 17.6 2026-07-19 운영 ALTER 적용과 당시 호환 검증 이력
 
 사용자가 stock-back·stock-batch 종료를 확인한 뒤 유지보수 창을 다시 검증했습니다.
 
@@ -2140,17 +2153,11 @@ Docker가 없는 현재 환경에서는 명시적 `mysqlTest`를 통과시키지
 - 적용 후 주문 1,853,972행, 체결 1,331,656행으로 적용 직전과 동일
 - 적용 종료 후 다른 활성 InnoDB 업무 트랜잭션 0
 
-롤백은 `stock_eod_application_rollback_alter.sql`로 back·batch에 동일하게 추가했습니다. 이것은 **스키마 삭제 롤백이 아니라 구버전 애플리케이션 호환 롤백**입니다.
+구버전 애플리케이션 호환용 rollback ALTER는 운영 정책에서 제거했습니다. 이미 적용된 EOD 스키마를 구버전 signal 계약에 맞춰 부분적으로 되돌리면 phase·lease 의미가 서로 다른 애플리케이션과 DB가 함께 동작할 수 있기 때문입니다.
 
-1. 신규 EOD 테이블·컬럼·인덱스·감사 데이터는 보존한다.
-2. 구버전 stock-back의 기존 컬럼 전용 signal INSERT가 동작하도록 `next_attempt_at`을 nullable로 바꾼다.
-3. 구버전 batch가 이해하지 못하는 `DEFERRED`·`DEAD_LETTER`·`PROCESSING`과 `eligible_at`을 가진 신규 `PENDING`은 자동 재실행하지 않고 `FAILED`로 종결한다.
-4. status check를 구버전의 `PENDING`·`PROCESSING`·`COMPLETED`·`FAILED` 네 값으로 복원한다.
-5. 정방향 11개 ALTER를 다시 적용하면 NULL backfill, NOT NULL, 신규 status domain이 복구된다.
+적용 오류는 마지막 성공 지점을 확인한 뒤 멱등 정방향 ALTER로 보정합니다. 정확한 이전 스키마와 데이터가 필요한 경우에만 유지보수 창에서 만든 schema·영향 테이블 dump를 복원합니다. 과거 호환 롤백 왕복 검증은 당시 검증 이력일 뿐 현재 배포·복구 절차로 사용하지 않습니다.
 
-운영 적용 전에 별도 `STOCK_EOD_ROLLBACK_TEST_20260719` 스키마에서 `운영 이전 schema dump 복원 → 정방향 11개 → 신규 signal 세 상태 삽입 → 롤백 2회 → 구버전 컬럼 전용 INSERT → 정방향 11개 재적용`을 실제 MySQL 8.0.32로 검증했습니다. 신규 signal 3건은 fail-closed, 구버전 INSERT는 `PENDING`으로 성공, 정방향 재적용 후 `next_attempt_at` backfill과 NOT NULL 복구가 확인됐습니다. 왕복 전후 hot-ledger DDL은 동일했고 임시 스키마는 검증 후 삭제했습니다.
-
-MySQL은 개별 InnoDB DDL 문장은 원자적으로 처리하지만 여러 ALTER 파일 전체를 하나의 rollback 가능한 트랜잭션으로 묶지는 않습니다. 따라서 실행 실패 시 뒤 파일을 자동 진행하거나 신규 객체를 즉시 DROP하지 않고, 마지막 성공 지점을 확인한 뒤 멱등 정방향 재실행 또는 호환 롤백을 선택합니다. 정확한 이전 스키마와 영향 데이터로 돌아가야 할 때만 위 사전 dump를 사용합니다.
+MySQL은 개별 InnoDB DDL 문장은 원자적으로 처리하지만 여러 ALTER 파일 전체를 하나의 rollback 가능한 트랜잭션으로 묶지는 않습니다. 따라서 실행 실패 시 뒤 파일을 자동 진행하거나 신규 객체를 즉시 DROP하지 않고, 마지막 성공 지점을 확인한 뒤 멱등 정방향 ALTER로 보정합니다. 정확한 이전 스키마와 영향 데이터로 돌아가야 할 때만 위 사전 dump를 사용합니다.
 
 이 시점의 판정은 **운영 스키마 적용·정적 hot-ledger 비변경·backfill 대사 통과**입니다. 서비스가 아직 정지돼 있으므로 주문 TPS, 주문 API p95, 체결 반응 p95/p99, commit·row-lock·deadlock의 재기동 후 A/B는 아직 통과로 표시하지 않습니다. 사용자가 새 산출물로 stock-back과 stock-batch를 재시작한 뒤 startup readiness, 첫 cycle shadow, 정규장 거래량 비회귀를 이어서 확인해야 최종 운영 승인할 수 있습니다.
 
@@ -2194,3 +2201,87 @@ MySQL은 개별 InnoDB DDL 문장은 원자적으로 처리하지만 여러 ALTE
 - 생성된 첫 페이지 SQL이 물리적 sort key 컬럼을 SELECT하는 계약 테스트 추가
 
 집중 reader 테스트와 `:stock-batch-service:test --rerun-tasks` 전체가 통과했습니다. 실패 cycle은 `LEDGER_FROZEN/FAILED`에 남아 다음 일자 이동을 차단했고 snapshot과 취소 반환을 다시 만들지 않습니다. 반복 정산 실패가 JobRepository·원격 DB 부하로 이어지지 않도록 배치 PID 55133만 종료했으며 백엔드는 상태 조회를 위해 유지했습니다. 이 수정에는 DB ALTER가 필요하지 않습니다. 사용자가 수정 산출물로 배치를 다시 시작하면 동일 cycle 263의 settlement Step부터 재개한 뒤 00:00·04:30·05:30·06:00 전이와 거래량 비회귀 관찰을 이어서 완료해야 합니다.
+
+### 17.8 자동 참여자 27개 프로필 V2와 거래량 비회귀 승인 게이트
+
+27개 자동 참여자 프로필의 차이를 실행 간격·주문 수·수량·TTL에만 의존하지 않도록 공통 의사결정 모델을 도입했습니다.
+
+- `ProfilePolicy(프로필 trait) + MarketSignalSnapshot + ParticipantPortfolioSnapshot + BehavioralMemory + FundingBudgetSnapshot + SessionContext`
+- `ProfileDecision(BUY/SELL/HOLD, reason)`
+- 실행 가능성·위험 상한 적용
+- `ExecutionStyle`과 최종 `OrderIntent` 생성
+
+관리 설정의 의미도 분리했습니다.
+
+- `decision_frequency_multiplier`: 의사결정 주기만 제어
+- `orders_per_decision_multiplier`: 한 번의 의사결정에서 생성할 주문 수만 제어
+- `order_ttl_multiplier`: 주문 만료시간만 제어
+- `quantity_multiplier`: 주문 수량만 제어
+- `pricing_mode`, `exit_mode`, `inventory_mode`: 연속 가중치 임계값에 숨어 있던 알고리즘 전환을 명시적으로 표현
+
+V2 프로필 기본 모드도 프로필 유형별 명시 매핑으로 고정합니다. 관리자 요청에서 새 필드가 생략되거나 기존 가중치가 임계값을 넘어도 V2 모드와 분리된 실행 빈도·결정당 주문 수가 함께 바뀌지 않습니다. 과거 임계값 계산은 V1 결과 재현과 기존 DB 행의 1회성 ALTER backfill에만 사용하며, 마이그레이션 후 다섯 실행 정책 컬럼은 `NOT NULL`로 승격하고 백엔드·배치 시작 readiness가 이를 함께 검사합니다.
+
+루트 `verify-stock-auto-profiles.mjs`도 이 명시 매핑을 배치·백엔드 소스에서 각각 직접 파싱해 27개 프로필 전부 비교합니다. 검증기 자체가 과거 0.8/0.85/0.9 임계값을 다시 계산해 런타임 매핑 불일치를 숨기지 않도록 계약을 고정했습니다.
+
+V2 전용 `decide()`도 관리자 행동 가중치를 우회하지 않습니다. 프로필 기본 가중치에서는 기존 임계 신호가 그대로 유지되고, 0은 해당 전용 신호를 끄며, 기본값 대비 증감은 신호 강도에 비례 반영됩니다. 이 보정은 의사결정 계산만 바꾸고 주문 수·실행 빈도·DB 조회 수를 추가하지 않습니다.
+
+행동 모델은 `V1` 또는 `V2`만 선택하며 `stock_auto_participant_profile_config.behavior_model_version`을 권위값으로 사용합니다. 참여자별 선택은 제거하고 같은 프로필의 모든 계정에 동일 모델을 적용합니다. 현재 설정은 전부 V2로 전환하되, 운영 지표가 기준을 벗어나면 해당 프로필 전체를 V1으로 되돌립니다. 기존 주문은 생성 당시 `stock_order.auto_behavior_model_version`을 계속 사용합니다. 과거 SHADOW 계정은 구형 rollout CHECK를 먼저 제거한 뒤 실제 주문이 V1이었던 의미를 보존해 `V1`로 보정하고, 마지막으로 평가 모드 컬럼과 비교 집계 테이블을 제거합니다.
+
+주문·체결 hot path의 추가 DB 왕복은 허용하지 않습니다.
+
+- 현재 run의 후보가 전부 `V1`이면 V2 전용 5분·45일·전체 포트폴리오·funding/position/performance 조회를 0회로 유지한다. 시장조성형을 포함한 모든 V1은 기존 종목별 현금·보유·미체결 bulk 조회와 선택 종목 주식가치 대비 40~60% 재고 밴드를 그대로 사용한다. V2 계좌만 전체 V2 상태 bulk 조회에 포함한다.
+- 다일 가격 신호, 포트폴리오, 호가 깊이, 예산은 due 계좌·종목 단위 bulk 조회 후 실행 컨텍스트에 주입
+- 소액분산형 포트폴리오 노출은 V2에만 적용한다. 해당 profile shard의 due 계좌와 활성 후보 종목에 한해 보유수량+열린 매수 잔량을 1회 bulk 조회하고, 현재가 평가 노출이 낮은 종목을 선택한다. V1은 이 추가 조회를 실행하지 않으며 주문 수·주기·수량은 늘리지 않는다.
+- 프로필 판단 중 계좌별·주문별 추가 SELECT 금지
+- 평균단가 낮추기 시도 marker는 실제 주문 예약 트랜잭션에서 `(account_id, symbol, business_date)`당 최대 한 번만 기록하고, 첫 상태 row의 EOD 매수 체결 확인도 재실행 시 1회만 회차에 반영한다.
+- 기존 보유는 ALTER 시 현재 양수 보유만 작은 상태 테이블로 보정하며 `stock_order`·`stock_execution`을 읽거나 변경하지 않음
+- 상태 row가 없는 기존 보유는 첫 V2 평균단가 낮추기 주문에서 동일 트랜잭션으로 한 번만 초기화
+
+거래량 비회귀는 기능 테스트와 별도의 최상위 배포 승인 게이트입니다.
+
+- 동일 계좌·종목·시장 입력에서 V1 대비 성공 주문 처리량 95% 이상
+- 주문 생성 p95는 기준 대비 `max(5ms, 10%)` 이내 증가
+- 체결 worker p95/p99, DB commit p95/p99, row-lock wait, deadlock, connection timeout 악화 없음
+- 주문 1건당 DB 호출 수 증가 없음. 단, 위의 bounded 상태 초기화·일일 마커 쓰기만 별도 계측
+- 프로필별 주문/계좌/일, 평균 주문 수량, 체결률, HOLD·현금부족·보유부족·위험상한 drop 사유를 V1/V2로 비교
+- 동일 seed와 동일 snapshot 재실행 결과가 동일
+
+최근 5분 실제 체결량·참여 계좌는 주문마다 원장을 재조회하지 않기 위해 프로세스 내 bounded 관측 창을 사용합니다. 군중추종·FOMO·공포매도는 관측 창이 채워지기 전이나 재시작 후에는 fail-closed로 `HOLD`합니다. 이 값은 권위 원장이 아니며 다중 batch 노드 전체 합계도 아니므로, 다중 노드 canary에서 신호 누락이 유의미하면 DB hot ledger 조회 대신 Redis 종목별 시간 버킷을 별도 부하 검증 후 도입합니다. 보유 시작 시각도 재시작 후 증명할 수 없으면 단타형의 시간 초과 청산 근거로 사용하지 않습니다.
+
+V2에 들어간 수치 범위는 구현 완료 여부를 판정할 수 있게 만든 초기 제품 정책입니다. 현금방어형 60~70%, 스윙형 2~10거래일, 장기형 15~25거래일, 단타형 3~5분, 데이형 마감 90~150분 전 신규 행동 중지 같은 값은 실제 시장 또는 현재 시뮬레이션 데이터에서 최적성이 입증된 상수가 아닙니다. 따라서 단위 테스트는 이 값의 절대적 우수성을 승인하지 않고 다음만 고정합니다.
+
+- 동일 seed·동일 정책·동일 snapshot은 같은 결정을 만든다.
+- 프로필 이름에 필요한 상대적 행동과 위험 불변식을 지킨다.
+- canary에서 수치 범위를 조정해도 의사결정 빈도, 주문 수, TTL, 수량의 의미가 다시 결합되지 않는다.
+- 수치 조정이 주문·체결 hot path에 계좌별/주문별 DB 조회나 전역 잠금을 추가하지 않는다.
+- 실제 채택은 5~10거래일 비교와 MySQL 거래량 A/B를 모두 통과한 정책 revision만 대상으로 한다.
+
+2026-07-23 유지보수 창에서 자동 참여자 V2 정방향 ALTER 8개를 지정 순서대로 적용했고, SHADOW 정리 ALTER와 hot-ledger 최종 ALTER를 각각 두 번 실행해 멱등성을 확인했습니다. 적용 후 `behavior_evaluation_mode` 컬럼·판단 비교 테이블·구형 SHADOW CHECK·`idx_stock_order_auto_reprice`는 모두 0개이며, 자동 참여자 151개는 `V1` 151개·`V2` 0개입니다. `stock_order`는 적용 전후 2,665,502행으로 동일하고 예산·주문예산 실데이터도 각각 0행입니다. 일반 만료 후보 SQL은 실제 MySQL에서 기존 `(market_type, status, symbol)` 인덱스 range scan을 사용했습니다.
+
+2026-07-24 유지보수 창에서는 9번 `stock_auto_participant_profile_behavior_model_alter.sql`을 두 번 적용했습니다. 저장된 프로필 설정 26행은 모두 V2이고, 설정 행이 없는 프로필의 V2 기본값을 포함한 자동 참여자 151개의 유효 모델도 전부 V2입니다. `stock_auto_participant.behavior_model_version`과 구형 CHECK는 제거됐고, `stock_auto_participant_profile_config.behavior_model_version`과 프로필 CHECK가 권위 계약이 됐습니다. `stock_order.auto_behavior_model_version`은 기존 주문 의미 보존을 위해 유지했습니다. 적용 전후 `stock_order`는 2,665,502행, 미체결 주문은 0행, 목적성 예산은 0행이며 `SHOW CREATE TABLE stock_order` SHA-256도 `86433b6c94b3e64606659a9b99657009dde914578ae42305c1f8141f320d2666`으로 동일했습니다. 백엔드·배치는 종료 상태를 유지했고 자동 재시작하지 않았습니다.
+
+같은 날 별도 MySQL 8.0.32 검증 스키마에 과거 종료 주문 30만 건과 미체결 주문 100건·1만 건을 구성해 일반 만료 후보 SQL을 `EXPLAIN ANALYZE`로 비교했습니다. 미체결 100건에서 상태 선두 인덱스는 약 4.7ms, 과거 만료 인덱스는 약 157ms였고, 미체결 1만 건에서는 약 68.9ms와 약 122.4ms였습니다. 따라서 신규 hot-ledger 인덱스를 추가하지 않고 상태 선두 인덱스를 유지합니다. 1만 건 후보 정렬 시간도 체결 지연으로 전파되지 않도록 후보 발견 전체를 Redis 종목 락 밖으로 옮겼고, 락 안에는 세션 fence·계좌/보유 잠금·후보 PK 재조회·취소/반환만 남겼습니다. 후보는 계정·프로필과 한 SQL에서 읽어 락 밖 두 문장 사이의 프로필 변경 불일치도 제거했습니다.
+
+실제 Redis의 격리 검증 키에서 체결 역할이 종목 락을 보유한 동안 만료 역할의 20회 `SET NX`는 전부 평균 약 9.2ms에 즉시 실패해 대기열을 만들지 않았습니다. 잘못된 소유자의 해제는 0건, 정상 소유자의 해제만 1건이었습니다. MySQL에서도 체결 세션이 주문 PK 하나를 잠근 상태에서 만료의 정확 PK `FOR UPDATE SKIP LOCKED`는 잠긴 행만 제외하고 약 0.05초에 반환했습니다. 검증용 스키마와 Redis 키는 실행 후 제거했고 운영 `stock_order` 행 수는 2,665,502건으로 유지됐습니다.
+
+현재 판정은 **소스·DDL·H2 계약 구현과 프로필 단위 V2 운영 스키마 적용 완료, 실제 V2 거래량 승인 미완료**입니다. 모든 프로필의 현재 유효 모델은 V2이지만, 다음 실제 거래일의 프로필별 주문·체결량, 주문 생성 p95, 체결 p95/p99, DB commit·row-lock·timeout 비회귀를 확인하기 전에는 거래량 승인까지 완료됐다고 표시하지 않습니다. 비교는 기존 주문 원장과 `stock_auto_participant_profile_v2_validation_report.sql`의 bounded 기간 집계를 사용하며 판단 비교 전용 쓰기는 추가하지 않습니다.
+
+다일 가격 신호는 계좌별·주문별 조회가 아니라 현재 run에 V2 후보가 있을 때만 해당 종목을 자동장 실행 단위의 1회 bulk query로 읽습니다. 조회 범위는 V2 대상 종목과 직전 45일로 제한하고 `stock_order_book_daily_snapshot(symbol, simulation_trade_date, close_run_id)` 인덱스를 사용합니다. 종목 선택에서 보고서의 절댓값은 활동 강도에만 사용하고 부호는 이후 `ProfileDecision`의 방향에만 사용하므로 같은 크기의 악재와 호재가 대칭적인 실행 기회를 갖습니다. V1 주문은 기존 선택 결과를 보존합니다.
+
+V2 시장조성 호가의 TTL 전 재호가는 종목별 후보와 방향별 취소 수를 제한하더라도 기존 주문 이력을 넓게 읽으면 정규장 부하를 만들 수 있다. 모든 주문 쓰기에 비용을 추가하는 전용 8열 인덱스는 사용하지 않는다. 만료 worker는 한 run에서 소형 참여자·계좌 테이블의 V2 시장조성 계정을 최대 500개로 한 번만 제한 조회한 뒤 기존 계좌·상태·생성시각 인덱스로 종목별 후보를 Redis 종목 락 밖에서 조회한다. 실제 매수·매도 후보가 없는 종목은 락 자체를 시도하지 않고, 후보가 있을 때만 락 안에서 호가창 스냅샷과 정확 PK 재검증을 수행한다. 일반 만료 후보는 상태 선두 인덱스로 현재 미체결 주문만 좁히고, 신규 주문의 `expires_at` 또는 구형 NULL 주문의 프로필별 정확한 TTL을 SQL 후보 단계에서 적용한다. 과거 `idx_stock_order_auto_reprice`가 이미 적용된 환경은 정방향 `stock_auto_market_reprice_index_alter.sql` 재적용으로 제거한다. 2026-07-23의 100건·1만 건 격리 `EXPLAIN ANALYZE`와 Redis/MySQL 경합 검증으로 만료 조회·락 범위 게이트는 통과했지만, V2 계정이 실제 주문을 생성하는 canary의 주문·체결 p95/p99 비회귀는 별도 운영 승인 항목으로 남긴다.
+
+자동 참여자 V2 증분 ALTER는 아래 의존 순서를 운영 계약으로 사용합니다.
+
+1. `stock_auto_participant_profile_execution_policy_alter.sql`
+2. `stock_auto_participant_behavior_rollout_alter.sql`
+3. `stock_auto_participant_shadow_cleanup_alter.sql`
+4. `stock_auto_participant_behavior_state_alter.sql`
+5. `stock_auto_participant_realized_performance_alter.sql`
+6. `stock_auto_order_policy_snapshot_alter.sql`
+7. `stock_auto_market_reprice_index_alter.sql`
+8. `stock_close_account_profile_snapshot_alter.sql`
+9. `stock_auto_participant_profile_behavior_model_alter.sql`
+
+3번은 구형 rollout CHECK를 먼저 제거하고 과거 SHADOW 계정을 V1로 보정한 뒤 평가 모드 컬럼과 비교 집계 테이블을 제거합니다. 4번은 `stock_order.funding_budget_type`, 6번은 `expires_at`·프로필·모델 스냅샷 컬럼을 `ALGORITHM=INSTANT`로 먼저 추가합니다. 7번은 이 컬럼들이 모두 존재할 때만 세 CHECK를 한 번의 hot-ledger ALTER로 추가하고 과거 8열 재호가 인덱스를 제거합니다. 9번은 프로필 설정을 전부 V2로 전환하고 참여자별 모델 컬럼·CHECK를 제거하며 주문 스냅샷은 변경하지 않습니다. 따라서 7번을 앞당기거나 증분 ALTER 전체를 파일명순으로 실행하면 안 됩니다.
+
+이 순서는 소스·H2 계약만을 뜻하지 않습니다. 서버 종료, 사전 dump, 파일별 성공 지점 기록, `stock_order` 행 수·정의·인덱스 전후 대사, startup readiness, 실제 데이터의 `EXPLAIN ANALYZE`, 주문·체결 p95/p99 비회귀를 모두 통과해야 운영 적용이 완료됩니다. MySQL은 여러 파일을 하나의 트랜잭션으로 롤백하지 않으므로 실패 시 뒤 파일을 진행하지 않고 마지막 성공 지점부터 정방향 파일을 재적용합니다.

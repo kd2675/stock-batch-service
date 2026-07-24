@@ -7,8 +7,10 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
@@ -26,16 +28,197 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import stock.batch.service.automarket.profile.AutoProfileBehavior;
+import stock.batch.service.automarket.profile.DayTraderBehavior;
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
 import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.ProfileDecision;
+import stock.batch.service.automarket.profile.ProfileDecisionAction;
+import stock.batch.service.automarket.profile.ProfileDecisionReason;
+import stock.batch.service.automarket.profile.ProfileExecutionPolicy;
+import stock.batch.service.automarket.profile.ProfileExitMode;
+import stock.batch.service.automarket.profile.ProfileInventoryMode;
+import stock.batch.service.automarket.profile.ProfilePricingMode;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 
 class AutoParticipantOrderServiceTest {
+
+    @Test
+    void placeAutoOrders_v1DoesNotPopulateV2OnlyRuntimeTrackers() {
+        AutoMarketReader reader = mock(AutoMarketReader.class);
+        AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
+        AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
+        AutoProfileBehaviorSupport behaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        AutoProfileBehavior behavior = mock(AutoProfileBehavior.class);
+        RecentMarketActivityTracker recentMarketActivityTracker = mock(RecentMarketActivityTracker.class);
+        AutoParticipantPositionActivityTracker positionActivityTracker =
+                mock(AutoParticipantPositionActivityTracker.class);
+        AutoParticipantOrderService service = new AutoParticipantOrderService(
+                reader,
+                executor,
+                pricing,
+                behaviorSupport
+        );
+        service.setRecentMarketActivityTracker(recentMarketActivityTracker);
+        service.setPositionActivityTracker(positionActivityTracker);
+        ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 10);
+        AutoMarketConfig config = config();
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 9, 0);
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                "auto-v1",
+                1L,
+                5,
+                AutoParticipantProfileType.NOISE_TRADER
+        );
+        ProfilePolicy policy = new NoiseTraderBehavior().defaultPolicy();
+        when(reader.findLegacyTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
+                .thenReturn(List.of());
+        when(executor.loadOrderBookState(config.symbol()))
+                .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
+        when(behaviorSupport.behavior(strategy.profileType())).thenReturn(behavior);
+        when(behaviorSupport.policy(Map.of(strategy.profileType(), policy), strategy.profileType()))
+                .thenReturn(policy);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
+        when(behavior.orderTtlSeconds(config.orderTtlSeconds(), policy.forLegacyExecution()))
+                .thenReturn(config.orderTtlSeconds());
+        when(behavior.orderCount(any())).thenReturn(0);
+        when(executor.placeOrders(anyList()))
+                .thenReturn(AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0));
+
+        service.placeAutoOrders(
+                List.of(strategy),
+                config,
+                Map.of(strategy.profileType(), policy),
+                0.0,
+                now
+        );
+
+        verifyNoInteractions(recentMarketActivityTracker, positionActivityTracker);
+        verify(reader, never()).findTradingSnapshots(anyList(), anyString(), any(), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void placeAutoOrders_v2MarketMakerPinsMinimumQuoteLifetimeAndPolicyIdentity() {
+        AutoMarketReader reader = mock(AutoMarketReader.class);
+        AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
+        AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
+        AutoProfileBehaviorSupport behaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        AutoProfileBehavior behavior = mock(AutoProfileBehavior.class);
+        AutoParticipantOrderService service = new AutoParticipantOrderService(reader, executor, pricing, behaviorSupport);
+        ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 10);
+        AutoMarketConfig config = new AutoMarketConfig(
+                "STOCK001", 100, 60, 1_000_000L, BigDecimal.ONE,
+                new BigDecimal("100.00"), new BigDecimal("100.00"), null
+        );
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 9, 0);
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                "auto-mm", 1L, 5, AutoParticipantProfileType.MARKET_MAKER,
+                null, null, null, AutoParticipantBehaviorModelVersion.V2,
+                42L, now
+        );
+        ProfilePolicy policy = new NoiseTraderBehavior().defaultPolicy().withExecutionPolicy(
+                new ProfileExecutionPolicy(
+                        1.0, 1.0, ProfilePricingMode.MARKET_MAKING,
+                        ProfileExitMode.SIGNAL_DRIVEN, ProfileInventoryMode.TARGET_ALLOCATION
+                )
+        );
+        Map<AutoParticipantProfileType, ProfilePolicy> policies = Map.of(strategy.profileType(), policy);
+        when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class), eq(now.toLocalDate())))
+                .thenReturn(List.of(new AutoParticipantTradingSnapshot(
+                        1L, new BigDecimal("10000.00"), 10L, new BigDecimal("100.00"),
+                        BigDecimal.ZERO, 0L, 0L
+                )));
+        when(executor.loadOrderBookState(config.symbol()))
+                .thenReturn(new AutoMarketOrderBookState(new BigDecimal("99.00"), new BigDecimal("101.00"), 0, 0));
+        when(behaviorSupport.behavior(strategy.profileType())).thenReturn(behavior);
+        when(behaviorSupport.policy(policies, strategy.profileType())).thenReturn(policy);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
+        when(behavior.orderTtlSeconds(config.orderTtlSeconds(), policy)).thenReturn(36);
+        when(behavior.decide(any())).thenReturn(new ProfileDecision(
+                ProfileDecisionAction.BUY, ProfileDecisionReason.INVENTORY_BELOW_TARGET, 1, 1.0
+        ));
+        when(pricing.createAutoPrice(eq(config), eq(5), eq("BUY"), eq(policy), any(), any()))
+                .thenReturn(new BigDecimal("100.00"));
+        when(executor.placeOrders(anyList())).thenAnswer(invocation -> {
+            List<AutoMarketPlannedOrder> orders = invocation.getArgument(0);
+            return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 0, 0, 0);
+        });
+
+        service.placeAutoOrders(List.of(strategy), config, policies, 0.0, now);
+
+        ArgumentCaptor<List<AutoMarketPlannedOrder>> captor = ArgumentCaptor.forClass(List.class);
+        verify(executor).placeOrders(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(order -> {
+            assertThat(order.expiresAt()).isEqualTo(now.plusSeconds(120));
+            assertThat(order.profileType()).isEqualTo(AutoParticipantProfileType.MARKET_MAKER);
+            assertThat(order.behaviorModelVersion()).isEqualTo(AutoParticipantBehaviorModelVersion.V2);
+        });
+    }
+
+    @ParameterizedTest
+    @MethodSource("holdReasons")
+    void placeAutoOrders_v2HoldDecisionNeverCreatesExecutionIntent(ProfileDecisionReason holdReason) {
+        AutoMarketReader reader = mock(AutoMarketReader.class);
+        AutoMarketOrderExecutor executor = mock(AutoMarketOrderExecutor.class);
+        AutoParticipantOrderPricing pricing = mock(AutoParticipantOrderPricing.class);
+        AutoProfileBehaviorSupport behaviorSupport = mock(AutoProfileBehaviorSupport.class);
+        AutoProfileBehavior behavior = mock(AutoProfileBehavior.class);
+        AutoParticipantOrderService service = new AutoParticipantOrderService(
+                reader,
+                executor,
+                pricing,
+                behaviorSupport
+        );
+        ReflectionTestUtils.setField(service, "maxOpenOrderQuantityMultiplier", 10);
+        AutoMarketConfig config = config();
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 17, 0);
+        AutoParticipantStrategy strategy = new AutoParticipantStrategy(
+                "auto-hold",
+                1L,
+                5,
+                AutoParticipantProfileType.DAY_TRADER,
+                null,
+                null,
+                null,
+                AutoParticipantBehaviorModelVersion.V2,
+                42L,
+                now
+        );
+        ProfilePolicy policy = new DayTraderBehavior().defaultPolicy();
+        Map<AutoParticipantProfileType, ProfilePolicy> policies = Map.of(
+                strategy.profileType(),
+                policy
+        );
+        when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(), eq(now.toLocalDate())))
+                .thenReturn(List.of());
+        when(executor.loadOrderBookState(config.symbol()))
+                .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
+        when(behaviorSupport.behavior(strategy.profileType())).thenReturn(behavior);
+        when(behaviorSupport.policy(policies, strategy.profileType())).thenReturn(policy);
+        when(behavior.activityLevel(strategy)).thenReturn(5);
+        when(behavior.orderTtlSeconds(config.orderTtlSeconds(), policy))
+                .thenReturn(config.orderTtlSeconds());
+        when(behavior.decide(any())).thenReturn(ProfileDecision.hold(holdReason, 1.0));
+        when(executor.placeOrders(anyList()))
+                .thenReturn(AutoParticipantOrderGenerationResult.execution(0, 0, 0, 0, 0, 0));
+
+        AutoParticipantOrderGenerationResult result = service.placeAutoOrders(
+                List.of(strategy),
+                config,
+                policies,
+                0.0,
+                now
+        );
+
+        assertThat(result.generatedOrderCount()).isZero();
+        verifyNoInteractions(pricing);
+    }
 
     @Test
     void scaleProfileQuantity_multiplierScalesContinuouslyWithinHardLimit() {
@@ -96,7 +279,7 @@ class AutoParticipantOrderServiceTest {
                 AutoParticipantProfileType.NOISE_TRADER,
                 policy
         );
-        when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
+        when(reader.findLegacyTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(snapshots);
         when(executor.loadOrderBookState(config.symbol()))
                 .thenReturn(new AutoMarketOrderBookState(null, null, 0, 0));
@@ -149,7 +332,7 @@ class AutoParticipantOrderServiceTest {
                 AutoParticipantProfileType.NOISE_TRADER,
                 policy
         );
-        when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
+        when(reader.findLegacyTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(List.of(new AutoParticipantTradingSnapshot(
                         1L,
                         new BigDecimal("250.00"),
@@ -183,7 +366,7 @@ class AutoParticipantOrderServiceTest {
             return AutoParticipantOrderGenerationResult.execution(orders.size(), orders.size(), 0, 0, 0, 0);
         });
 
-        service.placeAutoOrders(
+        AutoParticipantOrderGenerationResult result = service.placeAutoOrders(
                 List.of(strategy),
                 config,
                 policies,
@@ -192,6 +375,7 @@ class AutoParticipantOrderServiceTest {
         );
 
         assertThat(observedStates).containsExactly("250.00:0.0", "150.00:1.0");
+        assertThat(result.decisionCount()).isEqualTo(1);
         ArgumentCaptor<AutoMarketOrderBookState> priceReferenceCaptor =
                 ArgumentCaptor.forClass(AutoMarketOrderBookState.class);
         verify(pricing, times(2)).createAutoPrice(
@@ -205,7 +389,10 @@ class AutoParticipantOrderServiceTest {
             assertThat(reference.bestBid()).isEqualByComparingTo("99.00");
             assertThat(reference.bestAsk()).isEqualByComparingTo("101.00");
         });
-        verify(reader, times(1)).findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class));
+        verify(reader, times(1))
+                .findLegacyTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class));
+        verify(reader, never())
+                .findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class), any());
         verify(executor, times(1)).loadOrderBookState(config.symbol());
     }
 
@@ -236,7 +423,7 @@ class AutoParticipantOrderServiceTest {
                 AutoParticipantProfileType.NOISE_TRADER,
                 policy
         );
-        when(reader.findTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
+        when(reader.findLegacyTradingSnapshots(anyList(), eq(config.symbol()), any(LocalDateTime.class)))
                 .thenReturn(List.of(new AutoParticipantTradingSnapshot(
                         1L,
                         BigDecimal.ZERO,
@@ -312,6 +499,10 @@ class AutoParticipantOrderServiceTest {
                         AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT
                 )
         );
+    }
+
+    private static Stream<ProfileDecisionReason> holdReasons() {
+        return Stream.of(ProfileDecisionReason.values());
     }
 
     private static AutoMarketConfig config() {

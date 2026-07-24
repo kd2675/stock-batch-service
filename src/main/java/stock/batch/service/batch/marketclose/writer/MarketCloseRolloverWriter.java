@@ -35,11 +35,13 @@ public class MarketCloseRolloverWriter {
     private final String executionRangeIndexHint;
     private final String executionCandleIndexHint;
     private final String executionAccountReportIndexHint;
+    private final boolean mySql;
 
     public MarketCloseRolloverWriter(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
         this.jdbcClient = JdbcClient.create(jdbcTemplate);
         boolean mySql = isMySql(jdbcTemplate);
+        this.mySql = mySql;
         this.openOrderCaptureTable = mySql
                 ? "stock_order force index (idx_stock_order_market_status_symbol)"
                 : "stock_order";
@@ -540,7 +542,7 @@ public class MarketCloseRolloverWriter {
                         """
                         insert into stock_close_account_snapshot(
                             close_cycle_id, close_run_id, account_id, user_key, account_status,
-                            participant_category,
+                            participant_category, participant_profile_type,
                             settlement_target, pre_cancel_cash, pre_cancel_order_reserved_cash,
                             subscription_reserved_cash, post_cancel_cash, external_net_cash_flow,
                             cash_flow_watermark_id, holding_market_value, holding_quantity,
@@ -549,6 +551,11 @@ public class MarketCloseRolloverWriter {
                         )
                         select :closeCycleId, :closeRunId, a.id, a.user_key, a.status,
                                a.participant_category,
+                               case
+                                 when a.participant_category = 'AUTO_PARTICIPANT'
+                                 then participant.profile_type
+                                 else null
+                               end,
                                case
                                  when a.status = 'ACTIVE'
                                   and a.user_key is not null
@@ -568,6 +575,8 @@ public class MarketCloseRolloverWriter {
                                coalesce(holding.holding_position_count, 0),
                                'PENDING', :snapshotAt, :snapshotAt
                           from stock_account a
+                          left join stock_auto_participant participant
+                            on participant.user_key = a.user_key
                           left join stock_close_account_snapshot previous
                             on previous.close_cycle_id = :previousCloseCycleId
                            and previous.account_id = a.id
@@ -1224,6 +1233,413 @@ public class MarketCloseRolloverWriter {
                 """,
                 closeRunId,
                 symbol
+        );
+    }
+
+    public int rebuildAutoParticipantPositionState(
+            long closeCycleId,
+            long closeRunId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        int closedPositions = jdbcTemplate.update(
+                """
+                delete from stock_auto_participant_position_state
+                 where exists (
+                       select 1
+                         from stock_close_account_snapshot a
+                        where a.close_cycle_id = ?
+                          and a.account_id = stock_auto_participant_position_state.account_id
+                          and a.participant_category = 'AUTO_PARTICIPANT'
+                   )
+                   and not exists (
+                       select 1
+                         from stock_holding_snapshot h
+                        where h.close_cycle_id = ?
+                          and h.account_id = stock_auto_participant_position_state.account_id
+                          and h.symbol = stock_auto_participant_position_state.symbol
+                          and h.quantity > 0
+                   )
+                """,
+                closeCycleId,
+                closeCycleId
+        );
+        int activePositions = mySql
+                ? upsertAutoParticipantPositionStateMySql(closeCycleId, closeRunId, businessDate, rebuiltAt)
+                : mergeAutoParticipantPositionStateH2(closeCycleId, closeRunId, businessDate, rebuiltAt);
+        int reopenedPositions = resetIntradayReopenedAutoParticipantPositions(
+                closeCycleId,
+                businessDate,
+                rebuiltAt
+        );
+        int performanceStates = mySql
+                ? upsertAutoParticipantPerformanceStateMySql(closeCycleId, businessDate, rebuiltAt)
+                : mergeAutoParticipantPerformanceStateH2(closeCycleId, businessDate, rebuiltAt);
+        return closedPositions + activePositions + reopenedPositions + performanceStates;
+    }
+
+    private int resetIntradayReopenedAutoParticipantPositions(
+            long closeCycleId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                update stock_auto_participant_position_state
+                   set position_opened_business_date = ?,
+                       holding_trading_days = 1,
+                       average_down_rounds = 0,
+                       last_average_down_business_date = null,
+                       peak_close_price = coalesce((
+                           select holding.evaluation_price
+                             from stock_holding_snapshot holding
+                            where holding.close_cycle_id = ?
+                              and holding.account_id = stock_auto_participant_position_state.account_id
+                              and holding.symbol = stock_auto_participant_position_state.symbol
+                              and holding.quantity > 0
+                       ), 0),
+                       last_seen_business_date = ?,
+                       updated_at = ?
+                 where last_seen_business_date = ?
+                   and exists (
+                       select 1
+                         from (
+                              select path.account_id,
+                                     path.symbol,
+                                     max(case when path.running_quantity <= 0
+                                              then path.execution_sequence end) as last_flat_sequence,
+                                     max(case when path.side = 'BUY'
+                                              then path.execution_sequence end) as last_buy_sequence
+                                from (
+                                     select sequenced.account_id,
+                                            sequenced.symbol,
+                                            sequenced.side,
+                                            sequenced.execution_sequence,
+                                            sequenced.close_quantity - sequenced.day_net_quantity
+                                              + sum(sequenced.quantity_delta) over (
+                                                    partition by sequenced.account_id, sequenced.symbol
+                                                    order by sequenced.executed_at, sequenced.execution_id
+                                                    rows unbounded preceding
+                                                ) as running_quantity
+                                       from (
+                                            select execution.id as execution_id,
+                                                   execution.account_id,
+                                                   execution.symbol,
+                                                   execution.side,
+                                                   execution.executed_at,
+                                                   holding.quantity as close_quantity,
+                                                   case when execution.side = 'BUY'
+                                                        then execution.quantity else -execution.quantity end
+                                                       as quantity_delta,
+                                                   sum(case when execution.side = 'BUY'
+                                                            then execution.quantity else -execution.quantity end)
+                                                       over (partition by execution.account_id, execution.symbol)
+                                                       as day_net_quantity,
+                                                   row_number() over (
+                                                       partition by execution.account_id, execution.symbol
+                                                       order by execution.executed_at, execution.id
+                                                   ) as execution_sequence
+                                              from stock_execution execution
+                                              join stock_holding_snapshot holding
+                                                on holding.close_cycle_id = ?
+                                               and holding.account_id = execution.account_id
+                                               and holding.symbol = execution.symbol
+                                               and holding.quantity > 0
+                                              join stock_close_account_snapshot account_snapshot
+                                                on account_snapshot.close_cycle_id = holding.close_cycle_id
+                                               and account_snapshot.account_id = holding.account_id
+                                               and account_snapshot.participant_category = 'AUTO_PARTICIPANT'
+                                             where execution.source = 'INTERNAL_ORDER_BOOK'
+                                               and execution.executed_at >= ?
+                                               and execution.executed_at < ?
+                                       ) sequenced
+                                ) path
+                               group by path.account_id, path.symbol
+                         ) restart
+                        where restart.account_id = stock_auto_participant_position_state.account_id
+                          and restart.symbol = stock_auto_participant_position_state.symbol
+                          and restart.last_flat_sequence is not null
+                          and restart.last_buy_sequence > restart.last_flat_sequence
+                   )
+                """,
+                businessDate,
+                closeCycleId,
+                businessDate,
+                rebuiltAt,
+                businessDate,
+                closeCycleId,
+                businessDate.atStartOfDay(),
+                businessDate.plusDays(1).atStartOfDay()
+        );
+    }
+
+    private int upsertAutoParticipantPerformanceStateMySql(
+            long closeCycleId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_performance_state(
+                    account_id, recent_profitable_trading_days, recent_closed_trading_days,
+                    last_seen_business_date, updated_at
+                )
+                select a.account_id,
+                       coalesce(rp.recent_profitable_trading_days, 0),
+                       coalesce(rp.recent_closed_trading_days, 0),
+                       ?,
+                       ?
+                  from stock_close_account_snapshot a
+                  left join (
+                       select ranked.account_id,
+                              sum(case when ranked.realized_profit > 0 then 1 else 0 end)
+                                  as recent_profitable_trading_days,
+                              count(*) as recent_closed_trading_days
+                         from (
+                              select summary.account_id,
+                                     summary.realized_profit,
+                                     row_number() over (
+                                         partition by summary.account_id
+                                         order by summary.simulation_trade_date desc
+                                     ) as recent_day_rank
+                                from stock_execution_account_day_summary summary
+                               where summary.simulation_trade_date <= ?
+                                 and summary.simulation_trade_date >= ?
+                                 and summary.sell_quantity > 0
+                         ) ranked
+                        where ranked.recent_day_rank <= 20
+                        group by ranked.account_id
+                  ) rp on rp.account_id = a.account_id
+                 where a.close_cycle_id = ?
+                   and a.participant_category = 'AUTO_PARTICIPANT'
+                on duplicate key update
+                    recent_profitable_trading_days = values(recent_profitable_trading_days),
+                    recent_closed_trading_days = values(recent_closed_trading_days),
+                    last_seen_business_date = values(last_seen_business_date),
+                    updated_at = values(updated_at)
+                """,
+                businessDate,
+                rebuiltAt,
+                businessDate,
+                businessDate.minusDays(60),
+                closeCycleId
+        );
+    }
+
+    private int mergeAutoParticipantPerformanceStateH2(
+            long closeCycleId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                merge into stock_auto_participant_performance_state(
+                    account_id, recent_profitable_trading_days, recent_closed_trading_days,
+                    last_seen_business_date, updated_at
+                ) key(account_id)
+                select a.account_id,
+                       coalesce(rp.recent_profitable_trading_days, 0),
+                       coalesce(rp.recent_closed_trading_days, 0),
+                       ?,
+                       ?
+                  from stock_close_account_snapshot a
+                  left join (
+                       select ranked.account_id,
+                              sum(case when ranked.realized_profit > 0 then 1 else 0 end)
+                                  as recent_profitable_trading_days,
+                              count(*) as recent_closed_trading_days
+                         from (
+                              select summary.account_id,
+                                     summary.realized_profit,
+                                     row_number() over (
+                                         partition by summary.account_id
+                                         order by summary.simulation_trade_date desc
+                                     ) as recent_day_rank
+                                from stock_execution_account_day_summary summary
+                               where summary.simulation_trade_date <= ?
+                                 and summary.simulation_trade_date >= ?
+                                 and summary.sell_quantity > 0
+                         ) ranked
+                        where ranked.recent_day_rank <= 20
+                        group by ranked.account_id
+                  ) rp on rp.account_id = a.account_id
+                 where a.close_cycle_id = ?
+                   and a.participant_category = 'AUTO_PARTICIPANT'
+                """,
+                businessDate,
+                rebuiltAt,
+                businessDate,
+                businessDate.minusDays(60),
+                closeCycleId
+        );
+    }
+
+    private int upsertAutoParticipantPositionStateMySql(
+            long closeCycleId,
+            long closeRunId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_position_state(
+                    account_id, symbol, position_opened_business_date, holding_trading_days,
+                    average_down_rounds, last_average_down_business_date, peak_close_price,
+                    last_seen_business_date, updated_at
+                )
+                select h.account_id,
+                       h.symbol,
+                       case
+                           when s.account_id is null then ?
+                           else s.position_opened_business_date
+                       end,
+                       case
+                           when s.account_id is null then 1
+                           when s.last_seen_business_date < ? then s.holding_trading_days + 1
+                           else s.holding_trading_days
+                       end,
+                       case
+                           when s.account_id is null then 0
+                           when coalesce(a.participant_profile_type, '') <> 'AVERAGE_DOWN_BUYER' then 0
+                           when s.last_average_down_business_date = ?
+                            and s.average_down_rounds = 0
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then 1
+                           when s.last_seen_business_date < ?
+                            and s.last_average_down_business_date = ?
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then s.average_down_rounds + 1
+                           else s.average_down_rounds
+                       end,
+                       case
+                           when coalesce(a.participant_profile_type, '') <> 'AVERAGE_DOWN_BUYER' then null
+                           when s.account_id is not null
+                            and s.last_seen_business_date < ?
+                            and s.last_average_down_business_date = ?
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then ?
+                           else s.last_average_down_business_date
+                       end,
+                       greatest(coalesce(s.peak_close_price, 0), coalesce(h.evaluation_price, 0)),
+                       greatest(coalesce(s.last_seen_business_date, ?), ?),
+                       ?
+                  from stock_holding_snapshot h
+                  join stock_close_account_snapshot a
+                    on a.close_cycle_id = h.close_cycle_id
+                   and a.account_id = h.account_id
+                   and a.participant_category = 'AUTO_PARTICIPANT'
+                  left join stock_auto_participant_position_state s
+                    on s.account_id = h.account_id
+                   and s.symbol = h.symbol
+                  left join (
+                       select account_id, symbol, sum(buy_quantity) as buy_quantity
+                         from stock_execution_daily_account_snapshot
+                        where close_run_id = ?
+                        group by account_id, symbol
+                  ) e on e.account_id = h.account_id and e.symbol = h.symbol
+                 where h.close_cycle_id = ?
+                   and h.quantity > 0
+                on duplicate key update
+                    position_opened_business_date = values(position_opened_business_date),
+                    holding_trading_days = values(holding_trading_days),
+                    average_down_rounds = values(average_down_rounds),
+                    last_average_down_business_date = values(last_average_down_business_date),
+                    peak_close_price = values(peak_close_price),
+                    last_seen_business_date = values(last_seen_business_date),
+                    updated_at = values(updated_at)
+                """,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                rebuiltAt,
+                closeRunId,
+                closeCycleId
+        );
+    }
+
+    private int mergeAutoParticipantPositionStateH2(
+            long closeCycleId,
+            long closeRunId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                merge into stock_auto_participant_position_state(
+                    account_id, symbol, position_opened_business_date, holding_trading_days,
+                    average_down_rounds, last_average_down_business_date, peak_close_price,
+                    last_seen_business_date, updated_at
+                ) key(account_id, symbol)
+                select h.account_id,
+                       h.symbol,
+                       case when s.account_id is null then ? else s.position_opened_business_date end,
+                       case
+                           when s.account_id is null then 1
+                           when s.last_seen_business_date < ? then s.holding_trading_days + 1
+                           else s.holding_trading_days
+                       end,
+                       case
+                           when s.account_id is null then 0
+                           when coalesce(a.participant_profile_type, '') <> 'AVERAGE_DOWN_BUYER' then 0
+                           when s.last_average_down_business_date = ?
+                            and s.average_down_rounds = 0
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then 1
+                           when s.last_seen_business_date < ?
+                            and s.last_average_down_business_date = ?
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then s.average_down_rounds + 1
+                           else s.average_down_rounds
+                       end,
+                       case
+                           when coalesce(a.participant_profile_type, '') <> 'AVERAGE_DOWN_BUYER' then null
+                           when s.account_id is not null
+                            and s.last_seen_business_date < ?
+                            and s.last_average_down_business_date = ?
+                            and coalesce(e.buy_quantity, 0) > 0
+                           then ?
+                           else s.last_average_down_business_date
+                       end,
+                       greatest(coalesce(s.peak_close_price, 0), coalesce(h.evaluation_price, 0)),
+                       greatest(coalesce(s.last_seen_business_date, ?), ?),
+                       ?
+                  from stock_holding_snapshot h
+                  join stock_close_account_snapshot a
+                    on a.close_cycle_id = h.close_cycle_id
+                   and a.account_id = h.account_id
+                   and a.participant_category = 'AUTO_PARTICIPANT'
+                  left join stock_auto_participant_position_state s
+                    on s.account_id = h.account_id
+                   and s.symbol = h.symbol
+                  left join (
+                       select account_id, symbol, sum(buy_quantity) as buy_quantity
+                         from stock_execution_daily_account_snapshot
+                        where close_run_id = ?
+                        group by account_id, symbol
+                  ) e on e.account_id = h.account_id and e.symbol = h.symbol
+                 where h.close_cycle_id = ?
+                   and h.quantity > 0
+                """,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                businessDate,
+                rebuiltAt,
+                closeRunId,
+                closeCycleId
         );
     }
 

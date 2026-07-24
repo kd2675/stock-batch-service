@@ -37,10 +37,7 @@ class AutoParticipantOrderPricingTest {
             policy.panicSellWeight(),
             policy.dipBuyWeight(),
             policy.holdingPatienceWeight(),
-            policy.deepLossHoldWeight(),
-            policy.recurringDepositAmount(),
-            policy.recurringDepositIntervalValue(),
-            policy.recurringDepositIntervalUnit()
+            policy.deepLossHoldWeight()
     );
 
     @Test
@@ -192,7 +189,7 @@ class AutoParticipantOrderPricingTest {
     }
 
     @Test
-    void createMarketMakingPrice_pressureMovesBothQuoteSidesInPriceDirection() {
+    void createMarketMakingPrice_pressureNeverCrossesVisibleOppositeQuote() {
         AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
 
         BigDecimal positiveBuyPrice = pricing.createMarketMakingPrice(
@@ -202,12 +199,12 @@ class AutoParticipantOrderPricingTest {
                 config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), -1.0, 0
         );
 
-        assertThat(positiveBuyPrice).isEqualByComparingTo("101.00");
-        assertThat(negativeSellPrice).isEqualByComparingTo("99.00");
+        assertThat(positiveBuyPrice).isEqualByComparingTo("99.00");
+        assertThat(negativeSellPrice).isEqualByComparingTo("101.00");
     }
 
     @Test
-    void createAutoPrice_marketMakerAtLowerLimit_keepsLegalLimitPrice() {
+    void createAutoPrice_marketMakerAtLowerLimitWithoutPassiveBuyPrice_skipsQuote() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "ZQ001",
                 "ORDERBOOK",
@@ -232,7 +229,34 @@ class AutoParticipantOrderPricingTest {
                 new AutoMarketOrderBookState(null, new BigDecimal("70.00"), 0, 100)
         );
 
-        assertThat(price).isEqualByComparingTo("70.00");
+        assertThat(price).isNull();
+    }
+
+    @Test
+    void createMarketMakingPrice_dailyLimitNormalization_neverTurnsPassiveQuoteIntoCrossingQuote() {
+        AutoMarketConfig config = new AutoMarketConfig(
+                "ZQ001",
+                "ORDERBOOK",
+                100,
+                90,
+                1000L,
+                BigDecimal.ONE,
+                new BigDecimal("130.00"),
+                new BigDecimal("100.00"),
+                new BigDecimal("30.00"),
+                null
+        );
+
+        BigDecimal price = pricing.createMarketMakingPrice(
+                config,
+                "SELL",
+                new BigDecimal("130.00"),
+                null,
+                0.0,
+                0
+        );
+
+        assertThat(price).isNull();
     }
 
     @Test
@@ -394,10 +418,7 @@ class AutoParticipantOrderPricingTest {
                 policy.panicSellWeight(),
                 policy.dipBuyWeight(),
                 policy.holdingPatienceWeight(),
-                policy.deepLossHoldWeight(),
-                policy.recurringDepositAmount(),
-                policy.recurringDepositIntervalValue(),
-                policy.recurringDepositIntervalUnit()
+                policy.deepLossHoldWeight()
         );
     }
 }

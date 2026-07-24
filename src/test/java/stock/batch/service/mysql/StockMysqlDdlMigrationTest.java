@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -19,6 +20,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
+import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
 import stock.batch.service.batch.settlement.model.AccountSettlementTarget;
 import stock.batch.service.batch.settlement.processor.PortfolioSnapshotProcessor;
@@ -37,6 +41,7 @@ class StockMysqlDdlMigrationTest {
             "stock_portfolio_snapshot_return_contract_alter.sql",
             "stock_eod_report_participant_snapshot_alter.sql",
             "stock_account_participant_category_alter.sql",
+            "stock_close_account_profile_snapshot_alter.sql",
             "stock_batch_job_signal_lease_alter.sql",
             "stock_corporate_action_processing_alter.sql",
             "stock_corporate_action_chunking_alter.sql",
@@ -44,11 +49,16 @@ class StockMysqlDdlMigrationTest {
             "stock_execution_profit_summary_alter.sql",
             "stock_eod_volume_indexes_alter.sql",
             "stock_auto_participant_cash_flow_run_alter.sql",
+            "stock_auto_participant_profile_execution_policy_alter.sql",
+            "stock_auto_participant_behavior_rollout_alter.sql",
+            "stock_auto_participant_behavior_state_alter.sql",
+            "stock_auto_order_policy_snapshot_alter.sql",
+            "stock_auto_market_reprice_index_alter.sql",
+            "stock_auto_participant_shadow_cleanup_alter.sql",
+            "stock_auto_participant_profile_behavior_model_alter.sql",
+            "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"
     );
-    private static final String EOD_APPLICATION_ROLLBACK_FILE =
-            "stock_eod_application_rollback_alter.sql";
-
     @Container
     private static final MySQLContainer MYSQL = new MySQLContainer("mysql:8.0.36")
             .withDatabaseName("STOCK_SERVICE")
@@ -80,11 +90,26 @@ class StockMysqlDdlMigrationTest {
         assertThat(tableCount(jdbcTemplate, "stock_post_close_cycle")).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_post_close_readiness_check")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_post_close_cycle", "next_retry_at")).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_post_close_cycle",
+                "eod_contract_version"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_post_close_phase_attempt",
+                "eod_contract_version"
+        )).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_close_account_snapshot")).isEqualTo(1);
         assertThat(columnCount(
                 jdbcTemplate,
                 "stock_close_account_snapshot",
                 "participant_category"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_close_account_snapshot",
+                "participant_profile_type"
         )).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_corporate_action_processing")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_batch_job_signal", "claim_token")).isEqualTo(1);
@@ -107,6 +132,22 @@ class StockMysqlDdlMigrationTest {
                 "idx_stock_close_open_order_snapshot_cycle_stream"
         )).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_cash_flow_run")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_profile_decision_day_summary")).isZero();
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "behavior_evaluation_mode"
+        )).isZero();
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "behavior_model_version"
+        )).isZero();
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_profile_config",
+                "behavior_model_version"
+        )).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_corporate_action", "record_date")).isEqualTo(1);
         assertThat(columnCount(
                 jdbcTemplate,
@@ -118,6 +159,534 @@ class StockMysqlDdlMigrationTest {
                 "stock_account_cash_flow",
                 "effective_business_date"
         )).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_position_state")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_performance_state")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_funding_budget")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_order_budget")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_order", "funding_budget_type")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_order", "expires_at")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_order", "auto_profile_type")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_order", "auto_behavior_model_version")).isEqualTo(1);
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_order",
+                "idx_stock_order_auto_reprice"
+        )).isZero();
+    }
+
+    @Test
+    void autoMarketRepriceIndexAlter_removesLegacyHotLedgerIndexAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("""
+                alter table stock_order
+                  add index idx_stock_order_auto_reprice(
+                      market_type, symbol, auto_profile_type, auto_behavior_model_version,
+                      order_type, status, created_at, id
+                  )
+                """);
+        Path migration = ddlPath("stock_auto_market_reprice_index_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_order",
+                "idx_stock_order_auto_reprice"
+        )).isZero();
+    }
+
+    @Test
+    void autoMarketRepriceCandidateQuery_usesValidMySqlAliasAndIndexHintOrder() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        AutoMarketOrderReader reader = new AutoMarketOrderReader(jdbcTemplate);
+        AutoMarketConfig config = new AutoMarketConfig(
+                "DEMO001",
+                100,
+                60,
+                1_000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("10000.00"),
+                new BigDecimal("10000.00"),
+                null
+        );
+
+        assertThat(reader.findV2MarketMakerReplacementCandidates(
+                config,
+                List.of(1L),
+                LocalDateTime.of(2027, 1, 18, 9, 0),
+                "BUY",
+                10
+        )).isEmpty();
+    }
+
+    @Test
+    void autoMarketExpiryQuery_usesStatusLeadingIndexOnMySql() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        AutoMarketOrderReader reader = new AutoMarketOrderReader(jdbcTemplate);
+        AutoMarketConfig config = new AutoMarketConfig(
+                "DEMO001",
+                100,
+                60,
+                1_000L,
+                new BigDecimal("100.00"),
+                new BigDecimal("10000.00"),
+                new BigDecimal("10000.00"),
+                null
+        );
+
+        assertThat(reader.findExpiredAutoOrders(
+                config,
+                Map.of(
+                        AutoParticipantProfileType.NOISE_TRADER,
+                        LocalDateTime.of(2027, 1, 18, 8, 59)
+                ),
+                LocalDateTime.of(2027, 1, 18, 9, 0),
+                100
+        )).isEmpty();
+        String plan = jdbcTemplate.queryForObject(
+                """
+                explain format=json
+                select o.id
+                  from stock_order o force index (idx_stock_order_market_status_symbol)
+                  join stock_account a on a.id = o.account_id
+                  join stock_auto_participant p on p.user_key = a.user_key
+                 where o.symbol = 'DEMO001'
+                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and o.market_type = 'ORDER_BOOK'
+                   and o.quantity > o.filled_quantity
+                   and (
+                        (o.expires_at is not null and o.expires_at <= '2027-01-18 09:00:00')
+                        or (
+                            o.expires_at is null
+                            and o.created_at < case coalesce(o.auto_profile_type, p.profile_type)
+                                when 'NOISE_TRADER' then '2027-01-18 08:59:00'
+                                else '2027-01-18 08:00:00'
+                            end
+                        )
+                   )
+                 order by o.created_at asc, o.id asc
+                 limit 100
+                """,
+                String.class
+        );
+        assertThat(plan).contains("idx_stock_order_market_status_symbol");
+    }
+
+    @Test
+    void autoParticipantShadowCleanupAlter_preservesExecutedV1BehaviorAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_behavior_rollout_alter.sql"),
+                false
+        );
+        jdbcTemplate.execute("""
+                alter table stock_auto_participant
+                  add column behavior_evaluation_mode varchar(20) not null default 'EXECUTE'
+                    after behavior_model_version,
+                  add constraint chk_stock_auto_participant_behavior_evaluation
+                    check (behavior_evaluation_mode in ('EXECUTE', 'SHADOW')),
+                  add constraint chk_stock_auto_participant_behavior_rollout_pair
+                    check (behavior_evaluation_mode <> 'SHADOW' or behavior_model_version = 'V2'),
+                  add constraint chk_stock_auto_participant_funding_shadow
+                    check (
+                      profile_type not in ('PAYDAY_ACCUMULATOR', 'DIVIDEND_REINVESTOR')
+                      or behavior_evaluation_mode = 'SHADOW'
+                    )
+                """);
+        jdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type,
+                    behavior_model_version, behavior_evaluation_mode, behavior_seed,
+                    created_at, updated_at
+                ) values (
+                    'migration-shadow', 'migration shadow', true, 'NOISE_TRADER',
+                    'V2', 'SHADOW', 17, current_timestamp, current_timestamp
+                )
+                """);
+        jdbcTemplate.execute("""
+                create table stock_auto_profile_decision_day_summary(
+                    business_date date not null,
+                    profile_type varchar(40) not null,
+                    primary key (business_date, profile_type)
+                )
+                """);
+        Path migration = ddlPath("stock_auto_participant_shadow_cleanup_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select behavior_model_version from stock_auto_participant where user_key = 'migration-shadow'",
+                String.class
+        )).isEqualTo("V1");
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "behavior_evaluation_mode"
+        )).isZero();
+        assertThat(tableCount(jdbcTemplate, "stock_auto_profile_decision_day_summary")).isZero();
+        assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant")).doesNotContain(
+                "chk_stock_auto_participant_behavior_evaluation",
+                "chk_stock_auto_participant_behavior_rollout_pair",
+                "chk_stock_auto_participant_funding_shadow"
+        );
+    }
+
+    @Test
+    void autoParticipantBehaviorStateAlter_upgradesLegacyOrderAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("alter table stock_order drop check chk_stock_order_funding_budget_type");
+        jdbcTemplate.execute("alter table stock_order drop column funding_budget_type");
+        jdbcTemplate.execute("drop table stock_auto_participant_order_budget");
+        jdbcTemplate.execute("drop table stock_auto_participant_funding_budget");
+        jdbcTemplate.execute("drop table stock_auto_participant_position_state");
+        jdbcTemplate.update("""
+                insert into stock_market_business_state(
+                    state_id, active_business_date, raw_simulation_date, version, created_at, updated_at
+                ) values ('DEFAULT', '2027-01-18', '2027-01-18', 0, current_timestamp, current_timestamp)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_account(
+                    id, user_key, status, participant_category, cash_balance, created_at, updated_at
+                ) values (9801, 'migration-v2-auto', 'ACTIVE', 'AUTO_PARTICIPANT', 100000, current_timestamp, current_timestamp)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type,
+                    behavior_seed, created_at, updated_at
+                ) values (
+                    'migration-v2-auto', 'migration v2 auto', true, 'AVERAGE_DOWN_BUYER',
+                    9801, current_timestamp, current_timestamp
+                )
+                """);
+        jdbcTemplate.update("""
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity, average_price, updated_at
+                ) values (9801, 'MIGRATION', 100, 0, 123.45, current_timestamp)
+                """);
+        Path migration = ddlPath("stock_auto_participant_behavior_state_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_position_state")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_funding_budget")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_auto_participant_order_budget")).isEqualTo(1);
+        assertThat(columnCount(jdbcTemplate, "stock_order", "funding_budget_type")).isEqualTo(1);
+        assertThat(showCreateTable(jdbcTemplate, "stock_order"))
+                .doesNotContain("chk_stock_order_funding_budget_type");
+        executeScript(dataSource, ddlPath("stock_auto_market_reprice_index_alter.sql"), false);
+        executeScript(dataSource, ddlPath("stock_auto_market_reprice_index_alter.sql"), false);
+        assertThat(showCreateTable(jdbcTemplate, "stock_order"))
+                .contains("chk_stock_order_funding_budget_type");
+        Map<String, Object> migratedPosition = jdbcTemplate.queryForMap("""
+                select position_opened_business_date, holding_trading_days, average_down_rounds,
+                       last_average_down_business_date, peak_close_price, last_seen_business_date
+                  from stock_auto_participant_position_state
+                 where account_id = 9801 and symbol = 'MIGRATION'
+                """);
+        assertThat(migratedPosition)
+                .containsEntry("position_opened_business_date", java.sql.Date.valueOf("2027-01-18"))
+                .containsEntry("holding_trading_days", 1)
+                .containsEntry("average_down_rounds", 0)
+                .containsEntry("last_average_down_business_date", null)
+                .containsEntry("peak_close_price", new BigDecimal("123.45"))
+                .containsEntry("last_seen_business_date", java.sql.Date.valueOf("2027-01-18"));
+    }
+
+    @Test
+    void autoParticipantBehaviorRolloutAlter_addsOnlyDirectModelAndStableSeedContract() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("alter table stock_auto_participant drop column behavior_seed");
+        jdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type, created_at, updated_at
+                ) values (
+                    'migration-direct-model', 'migration direct model', true, 'NOISE_TRADER',
+                    current_timestamp, current_timestamp
+                )
+                """);
+        Path migration = ddlPath("stock_auto_participant_behavior_rollout_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select behavior_model_version from stock_auto_participant where user_key = 'migration-direct-model'",
+                String.class
+        )).isEqualTo("V1");
+        assertThat(jdbcTemplate.queryForObject(
+                "select behavior_seed is not null from stock_auto_participant where user_key = 'migration-direct-model'",
+                Boolean.class
+        )).isTrue();
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "behavior_evaluation_mode"
+        )).isZero();
+        assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant"))
+                .contains("chk_stock_auto_participant_behavior_model")
+                .doesNotContain(
+                        "chk_stock_auto_participant_behavior_rollout_pair",
+                        "chk_stock_auto_participant_funding_shadow"
+                );
+    }
+
+    @Test
+    void autoParticipantProfileBehaviorModelAlter_movesAuthorityToProfileAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("""
+                alter table stock_auto_participant_profile_config
+                  drop check chk_stock_auto_profile_behavior_model,
+                  drop column behavior_model_version
+                """);
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_behavior_rollout_alter.sql"),
+                false
+        );
+        jdbcTemplate.update("""
+                insert into stock_auto_participant_profile_config(
+                    profile_type, order_multiplier, aggression_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days, updated_at
+                ) values (
+                    'NOISE_TRADER', 1, 1, 1, 0.5, 0.5, 0, 30, current_timestamp
+                )
+                """);
+        jdbcTemplate.update("""
+                insert into stock_auto_participant(
+                    user_key, display_name, enabled, profile_type,
+                    behavior_model_version, behavior_seed, created_at, updated_at
+                ) values (
+                    'profile-model-migration', 'profile model migration', true, 'NOISE_TRADER',
+                    'V1', 701, current_timestamp, current_timestamp
+                )
+                """);
+        String orderDdlBefore = showCreateTable(jdbcTemplate, "stock_order");
+        long orderCountBefore = requiredCount(jdbcTemplate, "select count(*) from stock_order");
+        Path migration = ddlPath("stock_auto_participant_profile_behavior_model_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant",
+                "behavior_model_version"
+        )).isZero();
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_profile_config",
+                "behavior_model_version"
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select behavior_model_version
+                  from stock_auto_participant_profile_config
+                 where profile_type = 'NOISE_TRADER'
+                """,
+                String.class
+        )).isEqualTo("V2");
+        assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant_profile_config"))
+                .contains("chk_stock_auto_profile_behavior_model");
+        assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant"))
+                .doesNotContain("chk_stock_auto_participant_behavior_model");
+        assertThat(showCreateTable(jdbcTemplate, "stock_order")).isEqualTo(orderDdlBefore);
+        assertThat(requiredCount(jdbcTemplate, "select count(*) from stock_order"))
+                .isEqualTo(orderCountBefore);
+    }
+
+    @Test
+    void eodRuntimeContractAlter_backfillsKnownCyclesAndFailsUnknownOpenCycleClosed() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("""
+                alter table stock_post_close_phase_attempt
+                  drop check chk_stock_post_close_phase_attempt_eod_contract,
+                  drop column eod_contract_version
+                """);
+        jdbcTemplate.execute("""
+                alter table stock_post_close_cycle
+                  drop check chk_stock_post_close_cycle_eod_contract,
+                  drop column eod_contract_version
+                """);
+        jdbcTemplate.update("""
+                insert into stock_post_close_cycle(
+                    business_date, scope_type, scope_key, phase, status,
+                    schema_version, created_at, updated_at
+                ) values
+                  ('2026-07-22', 'FULL_MARKET', 'ALL', 'AUTO_MARKET_PREPARED', 'FAILED',
+                   '2026-07-22-eod-v3', current_timestamp, current_timestamp),
+                  ('2026-07-19', 'FULL_MARKET', 'ALL', 'COMPLETED', 'COMPLETED',
+                   '2026-07-19-eod-v2', current_timestamp, current_timestamp),
+                  ('2026-07-24', 'FULL_MARKET', 'ALL', 'LEDGER_FROZEN', 'FAILED',
+                   'experimental-contract', current_timestamp, current_timestamp)
+                """);
+        Long compatibleCycleId = jdbcTemplate.queryForObject(
+                "select id from stock_post_close_cycle where business_date = '2026-07-22'",
+                Long.class
+        );
+        Long legacyCycleId = jdbcTemplate.queryForObject(
+                "select id from stock_post_close_cycle where business_date = '2026-07-19'",
+                Long.class
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_post_close_phase_attempt(
+                    cycle_id, phase, attempt_no, owner_id, status, started_at,
+                    completed_at, schema_version, created_at, updated_at
+                ) values
+                  (?, 'CLOSE_REQUESTED', 1, 'old-node', 'COMPLETED',
+                   current_timestamp, current_timestamp, '2026-07-22-eod-v3',
+                   current_timestamp, current_timestamp),
+                  (?, 'CLOSE_REQUESTED', 1, 'legacy-node', 'COMPLETED',
+                   current_timestamp, current_timestamp, '2026-07-19-eod-v2',
+                   current_timestamp, current_timestamp)
+                """,
+                compatibleCycleId,
+                legacyCycleId
+        );
+        Path migration = ddlPath("stock_eod_runtime_contract_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(jdbcTemplate.queryForList(
+                """
+                select eod_contract_version
+                  from stock_post_close_cycle
+                 order by business_date
+                """,
+                String.class
+        )).containsExactly("LEGACY_COMPLETED", "EOD_V1", "UNDECLARED");
+        assertThat(jdbcTemplate.queryForList(
+                """
+                select eod_contract_version
+                  from stock_post_close_phase_attempt
+                 order by cycle_id
+                """,
+                String.class
+        )).containsExactly("LEGACY_COMPLETED", "EOD_V1");
+        assertThat(requiredCount(
+                jdbcTemplate,
+                """
+                select count(*)
+                  from information_schema.columns
+                 where table_schema = database()
+                   and table_name in ('stock_post_close_cycle', 'stock_post_close_phase_attempt')
+                   and column_name = 'eod_contract_version'
+                   and is_nullable = 'NO'
+                   and column_default = 'UNDECLARED'
+                """
+        )).isEqualTo(2);
+    }
+
+    @Test
+    void autoParticipantRealizedPerformanceAlter_upgradesExistingPositionStateAndReapplies() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute("drop table stock_auto_participant_performance_state");
+        Path migration = ddlPath("stock_auto_participant_realized_performance_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_performance_state",
+                "recent_profitable_trading_days"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_performance_state",
+                "recent_closed_trading_days"
+        )).isEqualTo(1);
+        assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant_performance_state"))
+                .contains("chk_stock_auto_performance_recent_days");
+    }
+
+    @Test
+    void autoOrderPolicySnapshotAlter_upgradesLegacyOrdersWithoutAddingHotLedgerIndexes() throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        int indexCountBefore = indexCount(jdbcTemplate, "stock_order");
+        jdbcTemplate.execute("alter table stock_order drop check chk_stock_order_auto_profile_type");
+        jdbcTemplate.execute("alter table stock_order drop check chk_stock_order_auto_behavior_model");
+        jdbcTemplate.execute("alter table stock_order drop column auto_behavior_model_version");
+        jdbcTemplate.execute("alter table stock_order drop column auto_profile_type");
+        jdbcTemplate.execute("alter table stock_order drop column expires_at");
+        Path migration = ddlPath("stock_auto_order_policy_snapshot_alter.sql");
+
+        executeScript(dataSource, migration, false);
+        executeScript(dataSource, migration, false);
+
+        assertThat(
+                columnCount(jdbcTemplate, "stock_order", "expires_at")
+                        + columnCount(jdbcTemplate, "stock_order", "auto_profile_type")
+                        + columnCount(jdbcTemplate, "stock_order", "auto_behavior_model_version")
+        ).isEqualTo(3);
+        assertThat(showCreateTable(jdbcTemplate, "stock_order"))
+                .doesNotContain("chk_stock_order_auto_profile_type", "chk_stock_order_auto_behavior_model");
+        assertThat(indexCount(jdbcTemplate, "stock_order")).isEqualTo(indexCountBefore);
+
+        executeScript(dataSource, ddlPath("stock_auto_market_reprice_index_alter.sql"), false);
+        executeScript(dataSource, ddlPath("stock_auto_market_reprice_index_alter.sql"), false);
+
+        assertThat(showCreateTable(jdbcTemplate, "stock_order"))
+                .contains("chk_stock_order_auto_profile_type", "chk_stock_order_auto_behavior_model");
+        assertThat(indexCount(jdbcTemplate, "stock_order")).isEqualTo(indexCountBefore);
     }
 
     @Test
@@ -413,6 +982,115 @@ class StockMysqlDdlMigrationTest {
                 """,
                 Integer.class
         )).isEqualTo(1);
+    }
+
+    @Test
+    void profileExecutionPolicyAlter_preservesLegacyBehaviorAndDoesNotOverwriteExplicitValues()
+            throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        jdbcTemplate.execute(
+                """
+                alter table stock_auto_participant_profile_config
+                  drop check chk_stock_auto_profile_decision_frequency,
+                  drop check chk_stock_auto_profile_orders_per_decision,
+                  drop check chk_stock_auto_profile_pricing_mode,
+                  drop check chk_stock_auto_profile_exit_mode,
+                  drop check chk_stock_auto_profile_inventory_mode,
+                  drop column decision_frequency_multiplier,
+                  drop column orders_per_decision_multiplier,
+                  drop column pricing_mode,
+                  drop column exit_mode,
+                  drop column inventory_mode
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, market_making_weight,
+                    order_multiplier, aggression_multiplier, price_pressure_sensitivity,
+                    order_ttl_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days,
+                    recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
+                ) values
+                  ('MARKET_MAKER', 0.95, 1.25, 0.65, 0.30, 0.60, 1.00, 0.45, 0.00, 0.00, 0, 30, 0, 'DAY', current_timestamp),
+                  ('PROFIT_LOCKER', 0.00, 1.35, 1.25, 1.00, 0.55, 0.85, 0.00, 0.95, 1.00, 0, 30, 0, 'DAY', current_timestamp)
+                """
+        );
+
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_profile_execution_policy_alter.sql"),
+                false
+        );
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                BigDecimal.class
+        )).isEqualByComparingTo("2.0833");
+        assertThat(jdbcTemplate.queryForObject(
+                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                BigDecimal.class
+        )).isEqualByComparingTo("1.2500");
+        assertThat(jdbcTemplate.queryForObject(
+                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                String.class
+        )).isEqualTo("MARKET_MAKING");
+        assertThat(jdbcTemplate.queryForObject(
+                "select inventory_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                String.class
+        )).isEqualTo("TARGET_ALLOCATION");
+        assertThat(jdbcTemplate.queryForObject(
+                "select exit_mode from stock_auto_participant_profile_config where profile_type = 'PROFIT_LOCKER'",
+                String.class
+        )).isEqualTo("TAKE_PROFIT_FIRST");
+
+        jdbcTemplate.update(
+                """
+                update stock_auto_participant_profile_config
+                   set decision_frequency_multiplier = 9.0000,
+                       orders_per_decision_multiplier = 2.0000,
+                       pricing_mode = 'DIRECTIONAL'
+                 where profile_type = 'MARKET_MAKER'
+                """
+        );
+        executeScript(
+                dataSource,
+                ddlPath("stock_auto_participant_profile_execution_policy_alter.sql"),
+                false
+        );
+        assertThat(jdbcTemplate.queryForObject(
+                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                BigDecimal.class
+        )).isEqualByComparingTo("9.0000");
+        assertThat(jdbcTemplate.queryForObject(
+                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                BigDecimal.class
+        )).isEqualByComparingTo("2.0000");
+        assertThat(jdbcTemplate.queryForObject(
+                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                String.class
+        )).isEqualTo("DIRECTIONAL");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from information_schema.columns
+                 where table_schema = database()
+                   and table_name = 'stock_auto_participant_profile_config'
+                   and column_name in (
+                       'decision_frequency_multiplier', 'orders_per_decision_multiplier',
+                       'pricing_mode', 'exit_mode', 'inventory_mode'
+                   )
+                   and is_nullable = 'NO'
+                """,
+                Integer.class
+        )).isEqualTo(5);
     }
 
     @Test
@@ -813,108 +1491,6 @@ class StockMysqlDdlMigrationTest {
                    and source_order_status = 'PENDING'
                 """
         )).isEqualTo(1);
-    }
-
-    @Test
-    void eodApplicationRollback_preservesSchemaFailsNewSignalsClosedAndAllowsForwardReapply()
-            throws IOException {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                MYSQL.getJdbcUrl(),
-                MYSQL.getUsername(),
-                MYSQL.getPassword()
-        );
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
-
-        resetToCanonicalSchema(dataSource, jdbcTemplate);
-        String orderDdlBefore = showCreateTable(jdbcTemplate, "stock_order");
-        String executionDdlBefore = showCreateTable(jdbcTemplate, "stock_execution");
-
-        jdbcTemplate.update(
-                """
-                insert into stock_batch_job_signal(
-                    signal_type, job_name, execution_mode, status, requested_by,
-                    requested_at, eligible_at, next_attempt_at, attempt_count, max_attempts,
-                    claim_token, lease_until, created_at, updated_at
-                ) values
-                    ('ROLLBACK_PENDING', 'rollback-test', 'pending', 'PENDING', 'test',
-                     '2026-07-19 09:00:00', '2026-07-20 00:00:00', '2026-07-19 09:00:00', 0, 8,
-                     null, null, '2026-07-19 09:00:00', '2026-07-19 09:00:00'),
-                    ('ROLLBACK_DEFERRED', 'rollback-test', 'deferred', 'DEFERRED', 'test',
-                     '2026-07-19 09:00:00', null, '2026-07-19 09:05:00', 1, 8,
-                     null, null, '2026-07-19 09:00:00', '2026-07-19 09:00:00'),
-                    ('ROLLBACK_PROCESSING', 'rollback-test', 'processing', 'PROCESSING', 'test',
-                     '2026-07-19 09:00:00', null, '2026-07-19 09:00:00', 1, 8,
-                     'rollback-claim', '2026-07-19 09:10:00',
-                     '2026-07-19 09:00:00', '2026-07-19 09:00:00')
-                """
-        );
-
-        executeScript(dataSource, ddlPath(EOD_APPLICATION_ROLLBACK_FILE), false);
-        executeScript(dataSource, ddlPath(EOD_APPLICATION_ROLLBACK_FILE), false);
-
-        assertThat(requiredCount(
-                jdbcTemplate,
-                """
-                select count(*)
-                  from stock_batch_job_signal
-                 where job_name = 'rollback-test'
-                   and status = 'FAILED'
-                   and claim_token is null
-                   and lease_until is null
-                   and failure_class = 'APPLICATION_ROLLBACK'
-                """
-        )).isEqualTo(3);
-        assertThat(requiredCount(
-                jdbcTemplate,
-                """
-                select count(*)
-                  from information_schema.columns
-                 where table_schema = database()
-                   and table_name = 'stock_batch_job_signal'
-                   and column_name = 'next_attempt_at'
-                   and is_nullable = 'YES'
-                """
-        )).isEqualTo(1);
-
-        jdbcTemplate.update(
-                """
-                insert into stock_batch_job_signal(
-                    signal_type, job_name, execution_mode, symbol, payload_json, status,
-                    requested_by, requested_at, picked_at, completed_at, processed_count,
-                    message, error_message, created_at, updated_at
-                ) values ('LEGACY_SIGNAL', 'legacy-signal-test', 'legacy', null, null, 'PENDING',
-                          'test', '2026-07-19 09:30:00', null, null, null, null, null,
-                          '2026-07-19 09:30:00', '2026-07-19 09:30:00')
-                """
-        );
-
-        executeScript(dataSource, ddlPath("stock_batch_job_signal_lease_alter.sql"), false);
-
-        assertThat(requiredCount(
-                jdbcTemplate,
-                """
-                select count(*)
-                  from stock_batch_job_signal
-                 where job_name = 'legacy-signal-test'
-                   and status = 'PENDING'
-                   and next_attempt_at = requested_at
-                """
-        )).isEqualTo(1);
-        assertThat(requiredCount(
-                jdbcTemplate,
-                """
-                select count(*)
-                  from information_schema.columns
-                 where table_schema = database()
-                   and table_name = 'stock_batch_job_signal'
-                   and column_name = 'next_attempt_at'
-                   and is_nullable = 'NO'
-                """
-        )).isEqualTo(1);
-        assertThat(showCreateTable(jdbcTemplate, "stock_order")).isEqualTo(orderDdlBefore);
-        assertThat(showCreateTable(jdbcTemplate, "stock_execution")).isEqualTo(executionDdlBefore);
-        assertThat(tableCount(jdbcTemplate, "stock_post_close_cycle")).isEqualTo(1);
-        assertThat(tableCount(jdbcTemplate, "stock_close_account_snapshot")).isEqualTo(1);
     }
 
     private void resetToCanonicalSchema(

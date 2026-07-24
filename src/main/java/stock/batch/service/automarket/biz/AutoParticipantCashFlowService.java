@@ -5,6 +5,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -17,11 +18,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.ProfileFundingPolicy;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantCashDeposit;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
+import stock.batch.service.batch.automarket.model.AutoParticipantFundingBudgetGrant;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 import stock.batch.service.batch.automarket.reader.AutoParticipantCashFlowReader;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
@@ -48,7 +50,6 @@ public class AutoParticipantCashFlowService {
     private final AutoMarketReader autoMarketReader;
     private final AutoParticipantCashFlowReader autoParticipantCashFlowReader;
     private final AutoMarketWriter autoMarketWriter;
-    private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final AutoParticipantCashFlowTransactionExecutor transactionExecutor;
@@ -91,7 +92,7 @@ public class AutoParticipantCashFlowService {
             throw new IllegalStateException("Cannot fund recurring cash while any market is open");
         }
         marketSessionFenceService.assertMarketLedgerMutationAllowed("auto-participant recurring cash");
-        Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = loadProfilePolicies();
+        Map<AutoParticipantProfileType, ProfileFundingPolicy> fundingPolicies = loadFundingPolicies();
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         LocalDateTime now = clock.simulationDateTime();
         String operation = manualRun ? "MANUAL" : "SCHEDULED";
@@ -118,7 +119,7 @@ public class AutoParticipantCashFlowService {
                 });
                 break;
             }
-            List<RecurringCashCandidate> chunk = recurringCashCandidates(profilePolicies, clock, targets);
+            List<RecurringCashCandidate> chunk = recurringCashCandidates(fundingPolicies, clock, targets);
             Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId =
                     loadRecentRecurringCashFlows(chunk);
             long expectedAfterAccountId = afterAccountId;
@@ -130,6 +131,7 @@ public class AutoParticipantCashFlowService {
                         chunk,
                         recentCashFlowsByAccountId,
                         manualRun,
+                        runKey,
                         now
                 );
                 runLedger.advance(runKey, expectedAfterAccountId, nextAfterAccountId, chunkFunded);
@@ -170,22 +172,45 @@ public class AutoParticipantCashFlowService {
             List<RecurringCashCandidate> candidates,
             Map<Long, List<AutoParticipantRecentCashFlow>> recentCashFlowsByAccountId,
             boolean manualRun,
+            String runKey,
             LocalDateTime now
     ) {
         String createdBy = manualRun ? MANUAL_CREATED_BY : AUTO_MARKET_CREATED_BY;
-        List<AutoParticipantCashDeposit> deposits = candidates.stream()
+        List<RecurringCashCandidate> dueCandidates = candidates.stream()
                 .filter(candidate -> !hasRecentRecurringCashFlow(candidate, recentCashFlowsByAccountId))
+                .toList();
+        List<AutoParticipantCashDeposit> deposits = dueCandidates.stream()
                 .map(candidate -> new AutoParticipantCashDeposit(
                         candidate.accountId(),
                         candidate.policy().amount(),
                         candidate.policy().reason()
                 ))
                 .toList();
-        return autoMarketWriter.depositCashFlowChunk(deposits, createdBy, now);
+        int funded = autoMarketWriter.depositCashFlowChunk(deposits, createdBy, now);
+        List<Long> paydayAccountIds = dueCandidates.stream()
+                .filter(candidate -> candidate.profileType() == AutoParticipantProfileType.PAYDAY_ACCUMULATOR)
+                .map(RecurringCashCandidate::accountId)
+                .toList();
+        Set<Long> executablePaydayAccountIds =
+                autoParticipantCashFlowReader.findExecutableV2FundingAccountIds(
+                        paydayAccountIds,
+                        AutoParticipantProfileType.PAYDAY_ACCUMULATOR
+                );
+        List<AutoParticipantFundingBudgetGrant> paydayGrants = dueCandidates.stream()
+                .filter(candidate -> candidate.profileType() == AutoParticipantProfileType.PAYDAY_ACCUMULATOR)
+                .filter(candidate -> executablePaydayAccountIds.contains(candidate.accountId()))
+                .map(candidate -> new AutoParticipantFundingBudgetGrant(
+                        candidate.accountId(),
+                        candidate.policy().amount(),
+                        paydayBudgetSourceKey(runKey, candidate.accountId())
+                ))
+                .toList();
+        autoMarketWriter.grantPaydayFundingBudgets(paydayGrants, now.toLocalDate().plusDays(30), now);
+        return funded;
     }
 
     private List<RecurringCashCandidate> recurringCashCandidates(
-            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
+            Map<AutoParticipantProfileType, ProfileFundingPolicy> fundingPolicies,
             SimulationClockSnapshot clock,
             List<AutoParticipantRecurringCashTarget> targets
     ) {
@@ -196,12 +221,15 @@ public class AutoParticipantCashFlowService {
             if (!candidateAccountIds.add(target.accountId())) {
                 continue;
             }
-            ProfilePolicy policy = profilePolicy(profilePolicies, target.profileType());
-            RecurringCashPolicy recurringPolicy = recurringCashPolicy(target, policy, clock);
+            ProfileFundingPolicy fundingPolicy = AutoParticipantFundingPolicyResolver.resolve(
+                    fundingPolicies,
+                    target.profileType()
+            );
+            RecurringCashPolicy recurringPolicy = recurringCashPolicy(target, fundingPolicy, clock);
             if (recurringPolicy == null) {
                 continue;
             }
-            candidates.add(new RecurringCashCandidate(target.accountId(), recurringPolicy));
+            candidates.add(new RecurringCashCandidate(target.accountId(), target.profileType(), recurringPolicy));
         }
         return candidates;
     }
@@ -238,7 +266,7 @@ public class AutoParticipantCashFlowService {
 
     private RecurringCashPolicy recurringCashPolicy(
             AutoParticipantRecurringCashTarget target,
-            ProfilePolicy profilePolicy,
+            ProfileFundingPolicy fundingPolicy,
             SimulationClockSnapshot clock
     ) {
         if (AutoParticipantProfileType.DIVIDEND_REINVESTOR.equals(target.profileType())) {
@@ -261,9 +289,9 @@ public class AutoParticipantCashFlowService {
             );
         }
 
-        BigDecimal amount = profilePolicy.recurringDepositAmount();
-        BigDecimal intervalValue = profilePolicy.recurringDepositIntervalValue();
-        RecurringCashIntervalUnit intervalUnit = profilePolicy.recurringDepositIntervalUnit();
+        BigDecimal amount = fundingPolicy.recurringDepositAmount();
+        BigDecimal intervalValue = fundingPolicy.recurringDepositIntervalValue();
+        RecurringCashIntervalUnit intervalUnit = fundingPolicy.recurringDepositIntervalUnit();
         if (amount.compareTo(BigDecimal.ZERO) <= 0
                 || intervalValue == null
                 || intervalValue.compareTo(BigDecimal.ZERO) <= 0
@@ -307,15 +335,15 @@ public class AutoParticipantCashFlowService {
         };
     }
 
-    private ProfilePolicy profilePolicy(
-            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
-            AutoParticipantProfileType profileType
-    ) {
-        return autoProfileBehaviorSupport.policy(profilePolicies, profileType);
+    private String paydayBudgetSourceKey(String runKey, long accountId) {
+        UUID digest = UUID.nameUUIDFromBytes(runKey.getBytes(StandardCharsets.UTF_8));
+        return "PAYDAY:" + digest + ":" + accountId;
     }
 
-    private Map<AutoParticipantProfileType, ProfilePolicy> loadProfilePolicies() {
-        return autoProfileBehaviorSupport.policiesWithOverrides(autoMarketReader.findParticipantProfileConfigs());
+    private Map<AutoParticipantProfileType, ProfileFundingPolicy> loadFundingPolicies() {
+        return AutoParticipantFundingPolicyResolver.fromProfileConfigs(
+                autoMarketReader.findParticipantProfileConfigs()
+        );
     }
 
     static int validateAccountChunkSize(int chunkSize) {
@@ -337,6 +365,7 @@ public class AutoParticipantCashFlowService {
 
     private record RecurringCashCandidate(
             long accountId,
+            AutoParticipantProfileType profileType,
             RecurringCashPolicy policy
     ) {
     }

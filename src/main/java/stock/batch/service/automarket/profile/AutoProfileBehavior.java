@@ -1,10 +1,7 @@
 package stock.batch.service.automarket.profile;
 
-import java.math.BigDecimal;
-
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
-import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
 public interface AutoProfileBehavior {
 
@@ -21,22 +18,29 @@ public interface AutoProfileBehavior {
 
     int orderCount(ProfileSignalContext context);
 
+    default ProfileDecision decide(ProfileSignalContext context) {
+        int desiredOrderCount = orderCount(context);
+        double signalStrength = Math.clamp(
+                Math.max(Math.abs(context.pricePressure()), Math.abs(context.momentumPressure())),
+                0.0,
+                1.0
+        );
+        if (desiredOrderCount <= 0) {
+            return ProfileDecision.hold(ProfileDecisionReason.INSUFFICIENT_SIGNAL, signalStrength);
+        }
+        String side = chooseSide(context);
+        if (BUY.equals(side)) {
+            return new ProfileDecision(ProfileDecisionAction.BUY, ProfileDecisionReason.SIGNAL, desiredOrderCount, signalStrength);
+        }
+        if (SELL.equals(side)) {
+            return new ProfileDecision(ProfileDecisionAction.SELL, ProfileDecisionReason.SIGNAL, desiredOrderCount, signalStrength);
+        }
+        return ProfileDecision.hold(ProfileDecisionReason.INSUFFICIENT_SIGNAL, signalStrength);
+    }
+
     String chooseSide(ProfileSignalContext context);
 
     double buyBias(ProfileSignalContext context);
 
     int orderTtlSeconds(int baseTtlSeconds, ProfilePolicy policy);
-
-    default BigDecimal recurringDepositAmount(ProfilePolicy policy) {
-        return policy.recurringDepositAmount();
-    }
-
-    default BigDecimal recurringDepositIntervalValue(ProfilePolicy policy) {
-        return policy.recurringDepositIntervalValue();
-    }
-
-    default RecurringCashIntervalUnit recurringDepositIntervalUnit(ProfilePolicy policy) {
-        return policy.recurringDepositIntervalUnit();
-    }
-
 }

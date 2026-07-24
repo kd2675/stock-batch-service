@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -13,6 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
@@ -25,6 +27,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 
 @Component
@@ -37,56 +40,124 @@ import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 @Slf4j
 public class StockSchemaReadinessValidator implements ApplicationRunner {
 
+    private static final Set<String> AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS =
+            Arrays.stream(AutoParticipantProfileType.values())
+                    .map(profileType -> profileType.name().toLowerCase(Locale.ROOT))
+                    .collect(Collectors.toUnmodifiableSet());
+    private static final Map<String, Set<String>> FORBIDDEN_LEGACY_COLUMNS = Map.of(
+            "stock_auto_participant", Set.of("behavior_evaluation_mode", "behavior_model_version")
+    );
+    private static final Set<String> FORBIDDEN_LEGACY_TABLES = Set.of(
+            "stock_auto_profile_decision_day_summary"
+    );
+    private static final Set<String> FORBIDDEN_LEGACY_CHECKS = Set.of(
+            "chk_stock_auto_participant_behavior_evaluation",
+            "chk_stock_auto_participant_behavior_rollout_pair",
+            "chk_stock_auto_participant_funding_shadow",
+            "chk_stock_auto_participant_behavior_model"
+    );
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
-    private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.of(
-            "stock_account", Set.of("participant_category"),
-            "portfolio_snapshot", Set.of("pending_subscription_asset"),
-            "stock_corporate_action_entitlement", Set.of("forfeited_share_quantity"),
-            "stock_close_open_order_snapshot", Set.of("source_order_status")
+    private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.ofEntries(
+            Map.entry("stock_account", Set.of("participant_category")),
+            Map.entry("portfolio_snapshot", Set.of("pending_subscription_asset", "return_rate_status")),
+            Map.entry("stock_corporate_action_entitlement", Set.of("forfeited_share_quantity")),
+            Map.entry("stock_close_open_order_snapshot", Set.of("source_order_status")),
+            Map.entry("stock_auto_participant_profile_config", Set.of(
+                    "behavior_model_version",
+                    "decision_frequency_multiplier", "orders_per_decision_multiplier",
+                    "pricing_mode", "exit_mode", "inventory_mode"
+            )),
+            Map.entry("stock_auto_participant_position_state", Set.of(
+                    "position_opened_business_date", "holding_trading_days", "average_down_rounds",
+                    "peak_close_price", "last_seen_business_date"
+            )),
+            Map.entry("stock_auto_participant_performance_state", Set.of(
+                    "recent_profitable_trading_days", "recent_closed_trading_days", "last_seen_business_date"
+            )),
+            Map.entry("stock_auto_participant_funding_budget", Set.of(
+                    "account_id", "budget_type", "source_key", "granted_amount", "available_amount",
+                    "reserved_amount", "spent_amount", "status", "created_at", "updated_at"
+            )),
+            Map.entry("stock_auto_participant_order_budget", Set.of(
+                    "order_id", "budget_id", "allocated_amount", "remaining_reserved_amount",
+                    "spent_amount", "released_amount", "created_at", "updated_at"
+            )),
+            Map.entry("stock_post_close_cycle", Set.of("eod_contract_version")),
+            Map.entry("stock_post_close_phase_attempt", Set.of("eod_contract_version"))
     );
-    private static final Map<String, Set<String>> REQUIRED_CHECK_TOKENS = Map.of(
-            "chk_stock_account_participant_category", Set.of("manual_participant", "auto_participant", "listing_underwriter"),
-            "chk_stock_corporate_action_paid_date_order", Set.of("record_date"),
-            "chk_stock_corporate_action_paid_schedule_required", Set.of("record_date"),
-            "chk_stock_corporate_action_entitlement_status", Set.of("partially_subscribed"),
-            "chk_stock_corporate_action_entitlement_finalized_share_limit", Set.of("forfeited_share_quantity")
+    private static final Map<String, Set<String>> REQUIRED_CHECK_TOKENS = Map.ofEntries(
+            Map.entry("chk_stock_account_participant_category", Set.of("manual_participant", "auto_participant", "listing_underwriter")),
+            Map.entry("chk_stock_corporate_action_paid_date_order", Set.of("record_date")),
+            Map.entry("chk_stock_corporate_action_paid_schedule_required", Set.of("record_date")),
+            Map.entry("chk_stock_corporate_action_entitlement_status", Set.of("partially_subscribed")),
+            Map.entry("chk_stock_corporate_action_entitlement_finalized_share_limit", Set.of("forfeited_share_quantity")),
+            Map.entry("chk_portfolio_snapshot_return_contract", Set.of(
+                    "defined", "undefined_zero_contribution", "undefined_negative_contribution", "legacy_unverified"
+            )),
+            Map.entry("chk_stock_auto_profile_behavior_model", Set.of("v1", "v2")),
+            Map.entry("chk_stock_auto_participant_profile_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
+            Map.entry("chk_stock_auto_profile_config_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
+            Map.entry("chk_stock_auto_profile_decision_frequency", Set.of("decision_frequency_multiplier")),
+            Map.entry("chk_stock_auto_profile_orders_per_decision", Set.of("orders_per_decision_multiplier")),
+            Map.entry("chk_stock_auto_profile_pricing_mode", Set.of("directional", "market_making")),
+            Map.entry("chk_stock_auto_profile_exit_mode", Set.of("signal_driven", "take_profit_first", "hold_losses")),
+            Map.entry("chk_stock_auto_profile_inventory_mode", Set.of("signal_driven", "target_allocation")),
+            Map.entry("chk_stock_order_funding_budget_type", Set.of("payday", "dividend")),
+            Map.entry("chk_stock_order_auto_behavior_model", Set.of("v1", "v2")),
+            Map.entry("chk_stock_order_auto_profile_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
+            Map.entry("chk_stock_auto_position_holding_days", Set.of("holding_trading_days")),
+            Map.entry("chk_stock_auto_position_average_down_rounds", Set.of("average_down_rounds")),
+            Map.entry("chk_stock_auto_performance_recent_days", Set.of(
+                    "recent_profitable_trading_days", "recent_closed_trading_days"
+            )),
+            Map.entry("chk_stock_auto_funding_budget_type", Set.of("payday", "dividend")),
+            Map.entry("chk_stock_auto_funding_budget_status", Set.of("active", "exhausted", "expired")),
+            Map.entry("chk_stock_auto_funding_budget_amounts", Set.of("available_amount", "reserved_amount", "spent_amount")),
+            Map.entry("chk_stock_auto_funding_budget_source", Set.of("corporate_action_id", "corporate_action_entitlement_id")),
+            Map.entry("chk_stock_auto_order_budget_amounts", Set.of("remaining_reserved_amount", "spent_amount", "released_amount")),
+            Map.entry("chk_stock_post_close_cycle_eod_contract", Set.of("eod_contract_version")),
+            Map.entry("chk_stock_post_close_phase_attempt_eod_contract", Set.of("eod_contract_version"))
     );
-    private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.of(
-            "stock_account_cash_flow",
-            Set.of(
+    private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.ofEntries(
+            Map.entry("stock_account_cash_flow", Set.of(
                     "idx_stock_account_cash_flow_account_id",
                     "idx_stock_account_cash_flow_corporate_action"
-            ),
-            "stock_auto_participant_cash_flow_run",
-            Set.of("idx_stock_auto_participant_cash_flow_run_completed"),
-            "stock_corporate_action_entitlement",
-            Set.of(
+            )),
+            Map.entry("stock_auto_participant_cash_flow_run", Set.of("idx_stock_auto_participant_cash_flow_run_completed")),
+            Map.entry("stock_corporate_action_entitlement", Set.of(
                     "idx_stock_corporate_action_entitlement_action_status_id",
                     "idx_stock_corporate_action_entitlement_account_status"
-            ),
-            "stock_corporate_action",
-            Set.of("idx_stock_corporate_action_entitlement_close"),
-            "stock_close_account_snapshot",
-            Set.of(
+            )),
+            Map.entry("stock_corporate_action", Set.of("idx_stock_corporate_action_entitlement_close")),
+            Map.entry("stock_close_account_snapshot", Set.of(
                     "idx_stock_close_account_snapshot_cycle_target",
                     "idx_stock_close_account_snapshot_cycle_reconciliation"
-            ),
-            "stock_close_open_order_snapshot",
-            Set.of(
+            )),
+            Map.entry("stock_close_open_order_snapshot", Set.of(
                     "idx_stock_close_open_order_snapshot_cycle_release_order",
                     "idx_stock_close_open_order_snapshot_cycle_stream"
-            ),
-            "stock_batch_job_signal",
-            Set.of("idx_stock_batch_job_signal_cycle_id"),
-            "stock_order",
-            Set.of("idx_stock_order_market_status_symbol"),
-            "stock_post_close_cycle",
-            Set.of(
+            )),
+            Map.entry("stock_batch_job_signal", Set.of("idx_stock_batch_job_signal_cycle_id")),
+            Map.entry("stock_order", Set.of(
+                    "idx_stock_order_market_status_symbol",
+                    "idx_stock_order_account_status_created"
+            )),
+            Map.entry("stock_post_close_cycle", Set.of(
                     "idx_stock_post_close_cycle_scope_date_status",
                     "idx_stock_post_close_cycle_scope_status_date"
-            ),
-            "stock_post_close_phase_attempt",
-            Set.of("idx_stock_post_close_phase_attempt_cycle_id")
+            )),
+            Map.entry("stock_post_close_phase_attempt", Set.of("idx_stock_post_close_phase_attempt_cycle_id")),
+            Map.entry("stock_auto_participant_position_state", Set.of("idx_stock_auto_position_last_seen")),
+            Map.entry("stock_auto_participant_performance_state", Set.of(
+                    "idx_stock_auto_performance_last_seen"
+            )),
+            Map.entry("stock_auto_participant_funding_budget", Set.of(
+                    "uk_stock_auto_funding_budget_source",
+                    "idx_stock_auto_funding_budget_eligible",
+                    "idx_stock_auto_funding_budget_symbol",
+                    "idx_stock_auto_funding_budget_action"
+            )),
+            Map.entry("stock_auto_participant_order_budget", Set.of("idx_stock_auto_order_budget_budget"))
     );
 
     private final DataSource dataSource;
@@ -116,6 +187,19 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                     if (!actualColumns.contains(requiredColumn)) {
                         missing.add(requirement.getKey() + "." + requiredColumn + " column");
                     }
+                }
+            }
+            for (Map.Entry<String, Set<String>> legacyColumns : FORBIDDEN_LEGACY_COLUMNS.entrySet()) {
+                Set<String> actualColumns = readColumns(metadata, catalog, legacyColumns.getKey());
+                for (String forbiddenColumn : legacyColumns.getValue()) {
+                    if (actualColumns.contains(forbiddenColumn)) {
+                        missing.add(legacyColumns.getKey() + "." + forbiddenColumn + " legacy column removal");
+                    }
+                }
+            }
+            for (String forbiddenTable : FORBIDDEN_LEGACY_TABLES) {
+                if (!readColumns(metadata, catalog, forbiddenTable).isEmpty()) {
+                    missing.add(forbiddenTable + " legacy table removal");
                 }
             }
             for (Map.Entry<String, Set<String>> requirement : REQUIRED_INDEXES.entrySet()) {
@@ -148,6 +232,11 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                     }
                 }
             }
+            for (String forbiddenCheck : FORBIDDEN_LEGACY_CHECKS) {
+                if (readCheckClause(connection, forbiddenCheck).isPresent()) {
+                    missing.add(forbiddenCheck + " legacy CHECK removal");
+                }
+            }
         }
         if (!missing.isEmpty()) {
             throw new IllegalStateException(
@@ -156,9 +245,10 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
             );
         }
         log.info(
-                "Stock EOD schema readiness passed: buildVersion={}, schemaVersion={}",
+                "Stock EOD schema readiness passed: buildVersion={}, schemaVersion={}, eodContractVersion={}",
                 runtimeIdentity.buildVersion(),
-                runtimeIdentity.schemaVersion()
+                runtimeIdentity.schemaVersion(),
+                runtimeIdentity.eodContractVersion()
         );
     }
 
@@ -303,14 +393,45 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 "run_key", "operation", "last_account_id", "processed_count",
                 "completed_at", "created_at", "updated_at"
         ));
+        requirements.put("stock_auto_participant_profile_config", Set.of(
+                "behavior_model_version",
+                "decision_frequency_multiplier", "orders_per_decision_multiplier",
+                "pricing_mode", "exit_mode", "inventory_mode"
+        ));
+        requirements.put("stock_auto_participant", Set.of(
+                "behavior_seed"
+        ));
+        requirements.put("stock_order", Set.of(
+                "funding_budget_type", "expires_at", "auto_profile_type", "auto_behavior_model_version"
+        ));
+        requirements.put("stock_auto_participant_position_state", Set.of(
+                "account_id", "symbol", "position_opened_business_date", "holding_trading_days",
+                "average_down_rounds", "last_average_down_business_date", "peak_close_price",
+                "last_seen_business_date", "updated_at"
+        ));
+        requirements.put("stock_auto_participant_performance_state", Set.of(
+                "account_id", "recent_profitable_trading_days", "recent_closed_trading_days",
+                "last_seen_business_date", "updated_at"
+        ));
+        requirements.put("stock_auto_participant_funding_budget", Set.of(
+                "id", "account_id", "budget_type", "source_key", "source_symbol",
+                "corporate_action_id", "corporate_action_entitlement_id", "granted_amount",
+                "available_amount", "reserved_amount", "spent_amount", "expires_business_date",
+                "status", "created_at", "updated_at"
+        ));
+        requirements.put("stock_auto_participant_order_budget", Set.of(
+                "order_id", "budget_id", "allocated_amount", "remaining_reserved_amount",
+                "spent_amount", "released_amount", "created_at", "updated_at"
+        ));
         requirements.put("stock_post_close_cycle", Set.of(
                 "id", "business_date", "scope_type", "scope_key", "cycle_kind", "phase", "status",
                 "phase_revision", "version", "owner_id", "lease_until", "next_retry_at", "close_run_id",
-                "settlement_eligible_at", "attempt_count", "build_version", "schema_version"
+                "settlement_eligible_at", "attempt_count", "build_version", "schema_version",
+                "eod_contract_version"
         ));
         requirements.put("stock_post_close_phase_attempt", Set.of(
                 "cycle_id", "phase", "attempt_no", "batch_job_execution_id", "owner_id", "status",
-                "error_code", "error_message", "build_version", "schema_version"
+                "error_code", "error_message", "build_version", "schema_version", "eod_contract_version"
         ));
         requirements.put("stock_post_close_readiness_check", Set.of(
                 "close_cycle_id", "check_code", "display_order", "check_status",
@@ -329,7 +450,7 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         ));
         requirements.put("stock_close_account_snapshot", Set.of(
                 "close_cycle_id", "close_run_id", "account_id", "user_key", "account_status",
-                "participant_category",
+                "participant_category", "participant_profile_type",
                 "settlement_target", "pre_cancel_cash", "pre_cancel_order_reserved_cash",
                 "subscription_reserved_cash", "post_cancel_cash", "external_net_cash_flow",
                 "cash_flow_watermark_id", "holding_market_value", "holding_quantity",
@@ -371,7 +492,8 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         requirements.put("portfolio_snapshot", Set.of(
                 "close_cycle_id", "close_run_id", "pending_subscription_asset",
                 "holding_quantity", "reserved_sell_quantity",
-                "holding_position_count", "input_hash", "calculation_version", "data_quality_status",
+                "holding_position_count", "net_contribution", "total_profit", "return_rate_status",
+                "input_hash", "calculation_version", "data_quality_status",
                 "source_build_version"
         ));
         requirements.put("stock_execution_daily_account_snapshot", Set.of(

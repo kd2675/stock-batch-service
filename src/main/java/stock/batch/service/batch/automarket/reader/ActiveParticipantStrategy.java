@@ -3,6 +3,7 @@ package stock.batch.service.batch.automarket.reader;
 import java.math.BigDecimal;
 
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
@@ -12,7 +13,9 @@ record ActiveParticipantStrategy(
         AutoParticipantProfileType profileType,
         BigDecimal recurringCashAmount,
         BigDecimal recurringCashIntervalValue,
-        RecurringCashIntervalUnit recurringCashIntervalUnit
+        RecurringCashIntervalUnit recurringCashIntervalUnit,
+        AutoParticipantBehaviorModelVersion behaviorModelVersion,
+        long behaviorSeed
 ) {
     AutoParticipantStrategy toStrategy(int intensity) {
         return new AutoParticipantStrategy(
@@ -22,7 +25,10 @@ record ActiveParticipantStrategy(
                 profileType,
                 recurringCashAmount,
                 recurringCashIntervalValue,
-                recurringCashIntervalUnit
+                recurringCashIntervalUnit,
+                behaviorModelVersion,
+                behaviorSeed,
+                null
         );
     }
 }

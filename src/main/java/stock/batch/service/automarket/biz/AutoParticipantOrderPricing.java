@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 
 import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.ProfilePricingMode;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.normalizePriceWithinDailyLimit;
@@ -31,6 +32,17 @@ class AutoParticipantOrderPricing {
             ProfilePolicy policy,
             AutoMarketOrderBookState orderBookState
     ) {
+        return createAutoPrice(config, strategyActivityLevel, side, policy, orderBookState, null);
+    }
+
+    BigDecimal createAutoPrice(
+            AutoMarketConfig config,
+            int strategyActivityLevel,
+            String side,
+            ProfilePolicy policy,
+            AutoMarketOrderBookState orderBookState,
+            AutoMarketExecutionIntent intent
+    ) {
         BigDecimal bestBid = orderBookState.bestBid();
         BigDecimal bestAsk = orderBookState.bestAsk();
         double pressure = Math.clamp(
@@ -41,15 +53,17 @@ class AutoParticipantOrderPricing {
         );
         double volatility = config.volatilityMultiplier();
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), config.currentPrice());
-        if (policy.marketMakingWeight() >= 0.8) {
+        if (policy.executionPolicy().pricingMode() == ProfilePricingMode.MARKET_MAKING) {
             int maxDepthTicks = Math.clamp((int) Math.round(1.0 + volatility), 1, 3);
+            int minimumDepthTicks = intent == null ? 0 : intent.minimumQuoteDepthTicks();
             return createMarketMakingPrice(
                     config,
                     side,
                     bestBid,
                     bestAsk,
                     pressure,
-                    nextInt(0, maxDepthTicks)
+                    Math.max(minimumDepthTicks, nextInt(0, maxDepthTicks)),
+                    intent == null ? 0 : intent.inventorySkewTicks()
             );
         }
         boolean crossesOppositeQuote = chance(crossingChance(config, side, policy, pressure));
@@ -151,17 +165,55 @@ class AutoParticipantOrderPricing {
             double pressure,
             int depthTicks
     ) {
+        return createMarketMakingPrice(config, side, bestBid, bestAsk, pressure, depthTicks, 0);
+    }
+
+    BigDecimal createMarketMakingPrice(
+            AutoMarketConfig config,
+            String side,
+            BigDecimal bestBid,
+            BigDecimal bestAsk,
+            double pressure,
+            int depthTicks,
+            int inventorySkewTicks
+    ) {
         int directionalTicks = (int) Math.round(Math.clamp(pressure, -1.0, 1.0) * 2.0);
         int normalizedDepthTicks = Math.max(0, depthTicks);
         BigDecimal anchorPrice = BUY.equals(side)
                 ? (bestBid == null ? moveByTicks(config.market(), config.currentPrice(), -1) : bestBid)
                 : (bestAsk == null ? moveByTicks(config.market(), config.currentPrice(), 1) : bestAsk);
         int quoteOffsetTicks = BUY.equals(side)
-                ? directionalTicks - normalizedDepthTicks
-                : directionalTicks + normalizedDepthTicks;
+                ? directionalTicks + inventorySkewTicks - normalizedDepthTicks
+                : directionalTicks + inventorySkewTicks + normalizedDepthTicks;
         BigDecimal rawPrice = moveByTicks(config.market(), anchorPrice, quoteOffsetTicks);
+        if (BUY.equals(side)) {
+            BigDecimal passiveCeiling = bestBid;
+            if (bestAsk != null) {
+                BigDecimal belowBestAsk = moveByTicks(config.market(), bestAsk, -1);
+                passiveCeiling = passiveCeiling == null ? belowBestAsk : passiveCeiling.min(belowBestAsk);
+            }
+            if (passiveCeiling != null) {
+                rawPrice = rawPrice.min(passiveCeiling);
+            }
+        } else if (SELL.equals(side)) {
+            BigDecimal passiveFloor = bestAsk;
+            if (bestBid != null) {
+                BigDecimal aboveBestBid = moveByTicks(config.market(), bestBid, 1);
+                passiveFloor = passiveFloor == null ? aboveBestBid : passiveFloor.max(aboveBestBid);
+            }
+            if (passiveFloor != null) {
+                rawPrice = rawPrice.max(passiveFloor);
+            }
+        }
         BigDecimal tick = KoreanStockTickSizePolicy.tickSizeForQuotePrice(config.market(), rawPrice);
-        return normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        BigDecimal normalizedPrice = normalizePriceWithinDailyLimit(rawPrice.max(tick), config, tick);
+        if (BUY.equals(side) && bestAsk != null && normalizedPrice.compareTo(bestAsk) >= 0) {
+            return null;
+        }
+        if (SELL.equals(side) && bestBid != null && normalizedPrice.compareTo(bestBid) <= 0) {
+            return null;
+        }
+        return normalizedPrice;
     }
 
 }

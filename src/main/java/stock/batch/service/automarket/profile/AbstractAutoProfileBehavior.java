@@ -1,5 +1,7 @@
 package stock.batch.service.automarket.profile;
 
+import java.util.function.ToDoubleFunction;
+
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.chance;
@@ -11,7 +13,11 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     protected AbstractAutoProfileBehavior(AutoParticipantProfileType type, ProfilePolicy defaultPolicy) {
         this.type = type;
-        this.defaultPolicy = defaultPolicy;
+        this.defaultPolicy = defaultPolicy.withExecutionPolicy(ProfileExecutionPolicy.v2Default(
+                type,
+                defaultPolicy.orderMultiplier(),
+                defaultPolicy.orderTtlMultiplier()
+        ));
     }
 
     @Override
@@ -53,7 +59,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
     }
 
     protected int standardOrderCount(ProfileSignalContext context, boolean canStayIdle) {
-        if (context.policy().orderMultiplier() <= 0) {
+        if (context.policy().executionPolicy().ordersPerDecisionMultiplier() <= 0) {
             return 0;
         }
         if (canStayIdle && Math.abs(context.pricePressure()) < 0.35 && Math.abs(context.unrealizedReturn()) < 0.05) {
@@ -65,7 +71,63 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
         if (context.unrealizedReturn() > 0) {
             profitBoost += Math.min(0.75, context.unrealizedReturn() * 4.0 * context.policy().overconfidenceWeight());
         }
-        return Math.clamp((int) Math.round(baseOrderCount * context.policy().orderMultiplier() * profitBoost), canStayIdle ? 0 : 1, 8);
+        return Math.clamp((int) Math.round(
+                baseOrderCount * context.policy().executionPolicy().ordersPerDecisionMultiplier() * profitBoost
+        ), canStayIdle ? 0 : 1, 8);
+    }
+
+    protected ProfileDecision signalDecision(
+            String side,
+            ProfileDecisionReason reason,
+            int orderCount,
+            double signalStrength
+    ) {
+        if (side == null || orderCount <= 0) {
+            return ProfileDecision.hold(reason, signalStrength);
+        }
+        return new ProfileDecision(
+                BUY.equals(side) ? ProfileDecisionAction.BUY : ProfileDecisionAction.SELL,
+                reason,
+                orderCount,
+                Math.clamp(Math.abs(signalStrength), 0.0, 1.0)
+        );
+    }
+
+    /**
+     * Applies an administrator override without changing the profile's default V2 thresholds.
+     * A zero weight disables the signal, while the profile default produces the original value.
+     */
+    protected double weightedSignal(
+            ProfileSignalContext context,
+            double rawSignal,
+            ToDoubleFunction<ProfilePolicy> weightSelector
+    ) {
+        if (!Double.isFinite(rawSignal)) {
+            return 0.0;
+        }
+        double configuredWeight = Math.clamp(weightSelector.applyAsDouble(context.policy()), 0.0, 1.0);
+        if (configuredWeight == 0.0) {
+            return 0.0;
+        }
+        double defaultWeight = Math.clamp(weightSelector.applyAsDouble(defaultPolicy), 0.0, 1.0);
+        double relativeWeight = defaultWeight > 0.0
+                ? configuredWeight / defaultWeight
+                : configuredWeight;
+        return Math.clamp(rawSignal * relativeWeight, -1.0, 1.0);
+    }
+
+    protected int liquidationOrderCount(ProfileSignalContext context) {
+        if (!context.hasHolding()) {
+            return 0;
+        }
+        long maxOrderQuantity = context.config() == null
+                ? context.availableQuantity()
+                : Math.max(1L, context.config().maxOrderQuantity());
+        long requiredOrders = Math.floorDiv(
+                context.availableQuantity() + maxOrderQuantity - 1,
+                maxOrderQuantity
+        );
+        return Math.clamp((int) Math.min(requiredOrders, 8L), 1, 8);
     }
 
     protected double weightedBuyBias(ProfileSignalContext context) {
@@ -110,7 +172,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
             return null;
         }
         ProfilePolicy policy = context.policy();
-        if (context.isWinning() && policy.profitTakingWeight() >= 0.90) {
+        if (context.isWinning() && policy.executionPolicy().exitMode() == ProfileExitMode.TAKE_PROFIT_FIRST) {
             return SELL;
         }
         if (context.momentumPressure() > 0.35 && policy.momentumWeight() >= 0.90) {
@@ -149,7 +211,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     protected boolean shouldHoldInsteadOfSell(ProfileSignalContext context) {
         ProfilePolicy policy = context.policy();
-        return policy.holdingPatienceWeight() >= 0.85
+        return policy.executionPolicy().exitMode() == ProfileExitMode.HOLD_LOSSES
                 || (context.unrealizedReturn() <= -0.05 && policy.lossAversionWeight() >= 0.85)
                 || (context.unrealizedReturn() <= -0.25 && policy.deepLossHoldWeight() >= 0.70);
     }

@@ -19,6 +19,7 @@ import java.util.function.Supplier;
 
 import stock.batch.service.batch.marketclose.model.MarketCloseOrderRow;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.marketclose.model.PostCloseCycle;
 import stock.batch.service.marketclose.model.PostCloseCycleStatus;
@@ -47,6 +48,7 @@ public class MarketCloseRolloverService {
     private final TransactionTemplate transactionTemplate;
     private final MarketSessionFenceService marketSessionFenceService;
     private final PostCloseCycleService postCloseCycleService;
+    private final AutoParticipantFundingBudgetService fundingBudgetService;
 
     @Value("${stock.batch.market-close.deadlock-retry-max-attempts:5}")
     private int deadlockRetryMaxAttempts = 5;
@@ -517,6 +519,7 @@ public class MarketCloseRolloverService {
                             .formatted(orderIds.size(), cancelled)
             );
         }
+        fundingBudgetService.releaseCancelledOrderBudgets(orderIds, closedAt);
         Map<Long, BigDecimal> reservedCashByAccount = new TreeMap<>();
         Map<MarketCloseRolloverWriter.HoldingReservationKey, Long> reservedQuantityByHolding =
                 new TreeMap<>(java.util.Comparator
@@ -733,6 +736,10 @@ public class MarketCloseRolloverService {
                             .formatted(orders.size(), cancelledCount)
             );
         }
+        fundingBudgetService.releaseCancelledOrderBudgets(
+                orders.stream().map(MarketCloseOrderRow::id).toList(),
+                closedAt
+        );
         creditCancelledBuyReservations(orders, closedAt);
         releaseCancelledSellReservations(symbol, orders, closedAt);
         return cancelledCount;

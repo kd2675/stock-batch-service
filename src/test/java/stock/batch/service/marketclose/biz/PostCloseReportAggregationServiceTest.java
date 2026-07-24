@@ -167,6 +167,35 @@ class PostCloseReportAggregationServiceTest {
                 .hasMessageContaining("must be between 1 and 200");
     }
 
+    @Test
+    void expireUnusedFundingBudgetChunk_usesPostCloseClockDateAndCheckpoint() {
+        PostCloseCycleService cycleService = mock(PostCloseCycleService.class);
+        MarketSessionFenceService fenceService = mock(MarketSessionFenceService.class);
+        PostCloseReportAggregationUnitService unitService = mock(PostCloseReportAggregationUnitService.class);
+        PostCloseReportAggregationService service = new PostCloseReportAggregationService(
+                cycleService,
+                fenceService,
+                mock(MarketCloseRolloverWriter.class),
+                unitService
+        );
+        LocalDateTime expiredAt = LocalDateTime.of(2026, 7, 16, 0, 10);
+        when(fenceService.hasOpenMarket()).thenReturn(false);
+        when(cycleService.findById(10L)).thenReturn(Optional.of(overnightCashAppliedCycle()));
+        when(unitService.expireUnusedFundingBudgetChunk(
+                expiredAt.toLocalDate(), expiredAt, 12L, 500
+        )).thenReturn(new stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService
+                .FundingBudgetExpiryChunk(2, 14L, false));
+
+        var result = service.expireUnusedFundingBudgetChunk(10L, expiredAt, 12L);
+
+        assertThat(result).isEqualTo(new PostCloseReportAggregationService.FundingBudgetExpiryChunk(
+                2, 14L, false
+        ));
+        verify(unitService).expireUnusedFundingBudgetChunk(
+                expiredAt.toLocalDate(), expiredAt, 12L, 500
+        );
+    }
+
     private PostCloseCycle overnightCashAppliedCycle() {
         return new PostCloseCycle(
                 10L,

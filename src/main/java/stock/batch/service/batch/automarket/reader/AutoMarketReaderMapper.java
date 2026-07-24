@@ -6,11 +6,13 @@ import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipant;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
+import web.common.core.utils.DeterministicSeed;
 
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -58,13 +60,17 @@ final class AutoMarketReaderMapper {
                         rs.getInt("secondary_volatility_pressure_bias"),
                         rs.getInt("secondary_liquidity_pressure_bias"),
                         rs.getInt("secondary_execution_aggression_pressure_bias")
-                )
+                ),
+                rs.getTimestamp("report_created_at") == null
+                        ? null
+                        : rs.getTimestamp("report_created_at").toLocalDateTime()
         );
     }
 
     static AutoParticipantProfileConfig toProfileConfig(ResultSet rs) throws SQLException {
         return new AutoParticipantProfileConfig(
                 AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                AutoParticipantBehaviorModelVersion.parseOrDefault(rs.getString("behavior_model_version")),
                 rs.getBigDecimal("news_weight"),
                 rs.getBigDecimal("momentum_weight"),
                 rs.getBigDecimal("contrarian_weight"),
@@ -76,6 +82,8 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("panic_sell_weight"),
                 rs.getBigDecimal("dip_buy_weight"),
                 rs.getBigDecimal("order_multiplier"),
+                rs.getBigDecimal("decision_frequency_multiplier"),
+                rs.getBigDecimal("orders_per_decision_multiplier"),
                 rs.getBigDecimal("aggression_multiplier"),
                 rs.getBigDecimal("price_pressure_sensitivity"),
                 rs.getBigDecimal("order_ttl_multiplier"),
@@ -83,6 +91,9 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("holding_patience_weight"),
                 rs.getBigDecimal("deep_loss_hold_weight"),
                 rs.getBigDecimal("profit_taking_weight"),
+                rs.getString("pricing_mode"),
+                rs.getString("exit_mode"),
+                rs.getString("inventory_mode"),
                 rs.getBigDecimal("recurring_deposit_amount"),
                 rs.getBigDecimal("recurring_deposit_interval_value"),
                 RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_deposit_interval_unit")),
@@ -100,6 +111,14 @@ final class AutoMarketReaderMapper {
         );
     }
 
+    private static long behaviorSeed(ResultSet rs) throws SQLException {
+        long value = rs.getLong("behavior_seed");
+        if (!rs.wasNull()) {
+            return value;
+        }
+        return DeterministicSeed.fromUtf8(rs.getString("user_key"));
+    }
+
     static ActiveParticipantStrategy toActiveParticipantStrategy(ResultSet rs) throws SQLException {
         return new ActiveParticipantStrategy(
                 rs.getString("user_key"),
@@ -107,7 +126,9 @@ final class AutoMarketReaderMapper {
                 AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
                 rs.getBigDecimal("recurring_cash_amount"),
                 rs.getBigDecimal("recurring_cash_interval_value"),
-                RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit"))
+                RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit")),
+                AutoParticipantBehaviorModelVersion.parseOrDefault(rs.getString("behavior_model_version")),
+                behaviorSeed(rs)
         );
     }
 
@@ -167,7 +188,12 @@ final class AutoMarketReaderMapper {
                 rs.getLong("quantity"),
                 rs.getLong("filled_quantity"),
                 rs.getBigDecimal("reserved_cash"),
+                rs.getBigDecimal("limit_price"),
                 AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
+                stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.parseOrDefault(
+                        rs.getString("behavior_model_version")
+                ),
+                rs.getTimestamp("expires_at") == null ? null : rs.getTimestamp("expires_at").toLocalDateTime(),
                 rs.getTimestamp("created_at").toLocalDateTime()
         );
     }
@@ -185,6 +211,33 @@ final class AutoMarketReaderMapper {
     }
 
     static AutoParticipantTradingSnapshot toTradingSnapshot(ResultSet rs) throws SQLException {
+        return new AutoParticipantTradingSnapshot(
+                rs.getLong("account_id"),
+                zeroIfNull(rs.getBigDecimal("cash_balance")),
+                Math.max(0L, rs.getLong("available_quantity")),
+                zeroIfNull(rs.getBigDecimal("average_price")),
+                zeroIfNull(rs.getBigDecimal("recent_dividend_cash_amount")),
+                Math.max(0L, rs.getLong("open_buy_quantity")),
+                Math.max(0L, rs.getLong("open_sell_quantity")),
+                Math.max(0L, rs.getLong("holding_quantity")),
+                Math.max(0L, rs.getLong("reserved_quantity")),
+                zeroIfNull(rs.getBigDecimal("open_buy_reserved_cash")),
+                zeroIfNull(rs.getBigDecimal("portfolio_holding_market_value")),
+                zeroIfNull(rs.getBigDecimal("liquid_portfolio_asset")),
+                Math.max(0, rs.getInt("portfolio_position_count")),
+                zeroIfNull(rs.getBigDecimal("payday_available_budget")),
+                zeroIfNull(rs.getBigDecimal("dividend_available_budget")),
+                rs.getObject("position_opened_business_date", java.time.LocalDate.class),
+                Math.max(0, rs.getInt("holding_trading_days")),
+                Math.max(0, rs.getInt("average_down_rounds")),
+                rs.getObject("last_average_down_business_date", java.time.LocalDate.class),
+                zeroIfNull(rs.getBigDecimal("peak_close_price")),
+                Math.max(0, rs.getInt("recent_profitable_trading_days")),
+                Math.max(0, rs.getInt("recent_closed_trading_days"))
+        );
+    }
+
+    static AutoParticipantTradingSnapshot toLegacyTradingSnapshot(ResultSet rs) throws SQLException {
         return new AutoParticipantTradingSnapshot(
                 rs.getLong("account_id"),
                 zeroIfNull(rs.getBigDecimal("cash_balance")),

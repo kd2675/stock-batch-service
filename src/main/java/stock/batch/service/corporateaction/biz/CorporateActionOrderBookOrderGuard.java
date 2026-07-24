@@ -14,6 +14,7 @@ import java.util.function.Function;
 import stock.batch.service.batch.corporateaction.model.DelistingOrderRow;
 import stock.batch.service.batch.corporateaction.reader.CorporateActionOrderReader;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 
 @Component
 @RequiredArgsConstructor
@@ -24,6 +25,7 @@ class CorporateActionOrderBookOrderGuard {
 
     private final CorporateActionOrderReader corporateActionOrderReader;
     private final CorporateActionWriter corporateActionWriter;
+    private final AutoParticipantFundingBudgetService fundingBudgetService;
 
     <T> Set<String> findSymbolsWithOpenOrders(List<T> rows, Function<T, String> symbolExtractor) {
         return corporateActionOrderReader.findSymbolsWithOpenOrderBookOrders(rows.stream().map(symbolExtractor).toList());
@@ -53,6 +55,10 @@ class CorporateActionOrderBookOrderGuard {
                             .formatted(orders.size(), cancelledCount)
             );
         }
+        fundingBudgetService.releaseCancelledOrderBudgets(
+                orders.stream().map(DelistingOrderRow::id).toList(),
+                now
+        );
         releaseReservedAssets(symbol, orders, now);
         return cancelledCount;
     }

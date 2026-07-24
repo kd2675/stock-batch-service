@@ -24,6 +24,7 @@ public class PostCloseReportAggregationService {
      * single overnight run may process so recovery never re-reads an unbounded execution range.
      */
     private static final int MAX_SYMBOL_CHUNK_SIZE = 200;
+    private static final int MAX_FUNDING_BUDGET_CHUNK_SIZE = 1_000;
 
     private final PostCloseCycleService postCloseCycleService;
     private final MarketSessionFenceService marketSessionFenceService;
@@ -33,9 +34,13 @@ public class PostCloseReportAggregationService {
     @Value("${stock.batch.post-close.report-aggregation.symbol-chunk-size:25}")
     private int symbolChunkSize = 25;
 
+    @Value("${stock.batch.post-close.report-aggregation.funding-budget-chunk-size:500}")
+    private int fundingBudgetChunkSize = 500;
+
     @PostConstruct
     void validateVolumeConfiguration() {
         validateSymbolChunkSize(symbolChunkSize);
+        validateFundingBudgetChunkSize(fundingBudgetChunkSize);
     }
 
     public ReportAggregationChunk aggregateOrderBookDailySnapshotChunk(
@@ -88,6 +93,54 @@ public class PostCloseReportAggregationService {
         return unitService.rebuildAccountDaySummary(
                 cycle.businessDate(),
                 rebuiltAt
+        );
+    }
+
+    public int rebuildAutoParticipantPositionState(long closeCycleId, LocalDateTime rebuiltAt) {
+        requireClosedMarket();
+        PostCloseCycle cycle = requireFrozenFullMarketCycle(closeCycleId);
+        return unitService.rebuildAutoParticipantPositionState(
+                cycle.id(),
+                requireCloseRunId(cycle),
+                cycle.businessDate(),
+                rebuiltAt
+        );
+    }
+
+    public FundingBudgetExpiryChunk expireUnusedFundingBudgetChunk(
+            long closeCycleId,
+            LocalDateTime expiredAt,
+            long afterBudgetId
+    ) {
+        requireClosedMarket();
+        requireFrozenFullMarketCycle(closeCycleId);
+        var result = unitService.expireUnusedFundingBudgetChunk(
+                expiredAt.toLocalDate(),
+                expiredAt,
+                afterBudgetId,
+                validateFundingBudgetChunkSize(fundingBudgetChunkSize)
+        );
+        return new FundingBudgetExpiryChunk(
+                result.expiredCount(),
+                result.lastBudgetId(),
+                result.finished()
+        );
+    }
+
+    public FundingBudgetReconciliationChunk validateFundingBudgetReconciliationChunk(
+            long closeCycleId,
+            long afterBudgetId
+    ) {
+        requireClosedMarket();
+        requireFrozenFullMarketCycle(closeCycleId);
+        var result = unitService.validateFundingBudgetReconciliationChunk(
+                afterBudgetId,
+                validateFundingBudgetChunkSize(fundingBudgetChunkSize)
+        );
+        return new FundingBudgetReconciliationChunk(
+                result.processedCount(),
+                result.lastBudgetId(),
+                result.finished()
         );
     }
 
@@ -152,6 +205,16 @@ public class PostCloseReportAggregationService {
         return chunkSize;
     }
 
+    static int validateFundingBudgetChunkSize(int chunkSize) {
+        if (chunkSize < 1 || chunkSize > MAX_FUNDING_BUDGET_CHUNK_SIZE) {
+            throw new IllegalStateException(
+                    "stock.batch.post-close.report-aggregation.funding-budget-chunk-size must be between 1 and %d: %d"
+                            .formatted(MAX_FUNDING_BUDGET_CHUNK_SIZE, chunkSize)
+            );
+        }
+        return chunkSize;
+    }
+
     @FunctionalInterface
     private interface SymbolAggregator {
         int aggregate(String symbol);
@@ -165,5 +228,19 @@ public class PostCloseReportAggregationService {
             }
             lastSymbol = lastSymbol == null ? "" : lastSymbol;
         }
+    }
+
+    public record FundingBudgetReconciliationChunk(
+            int processedCount,
+            long lastBudgetId,
+            boolean finished
+    ) {
+    }
+
+    public record FundingBudgetExpiryChunk(
+            int expiredCount,
+            long lastBudgetId,
+            boolean finished
+    ) {
     }
 }

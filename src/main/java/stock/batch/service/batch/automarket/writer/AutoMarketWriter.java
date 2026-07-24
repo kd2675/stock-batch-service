@@ -2,6 +2,7 @@ package stock.batch.service.batch.automarket.writer;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -21,6 +22,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipantCashDeposit;
+import stock.batch.service.batch.automarket.model.AutoParticipantFundingBudgetGrant;
 import stock.batch.service.execution.queue.OrderBookReadySymbolQueue;
 
 @Component
@@ -265,6 +267,43 @@ public class AutoMarketWriter {
         return orderedDeposits.size();
     }
 
+    public int grantPaydayFundingBudgets(
+            List<AutoParticipantFundingBudgetGrant> grants,
+            LocalDate expiresBusinessDate,
+            LocalDateTime createdAt
+    ) {
+        if (grants.isEmpty()) {
+            return 0;
+        }
+        String values = String.join(",", Collections.nCopies(
+                grants.size(),
+                "(?, 'PAYDAY', ?, null, null, null, ?, ?, 0, 0, ?, 'ACTIVE', ?, ?)"
+        ));
+        List<Object> parameters = new ArrayList<>(grants.size() * 6);
+        for (AutoParticipantFundingBudgetGrant grant : grants) {
+            parameters.add(grant.accountId());
+            parameters.add(grant.sourceKey());
+            parameters.add(grant.amount());
+            parameters.add(grant.amount());
+            parameters.add(expiresBusinessDate);
+            parameters.add(createdAt);
+            parameters.add(createdAt);
+        }
+        int inserted = jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_funding_budget(
+                    account_id, budget_type, source_key, source_symbol,
+                    corporate_action_id, corporate_action_entitlement_id,
+                    granted_amount, available_amount, reserved_amount, spent_amount,
+                    expires_business_date, status, created_at, updated_at
+                ) values %s
+                """.formatted(values),
+                parameters.toArray()
+        );
+        requireChunkCount("payday funding budget insert", grants.size(), inserted);
+        return inserted;
+    }
+
     private void requireChunkCount(String operation, int expectedCount, int actualCount) {
         if (expectedCount != actualCount) {
             throw new IllegalStateException(
@@ -487,9 +526,9 @@ public class AutoMarketWriter {
         }
         String values = String.join(",", Collections.nCopies(
                 orders.size(),
-                "(?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?)"
+                "(?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?, ?, ?, ?, ?)"
         ));
-        List<Object> parameters = new ArrayList<>(orders.size() * 9);
+        List<Object> parameters = new ArrayList<>(orders.size() * 13);
         for (LimitOrderInsert order : orders) {
             parameters.add(order.clientOrderId());
             parameters.add(order.accountId());
@@ -498,6 +537,10 @@ public class AutoMarketWriter {
             parameters.add(order.price());
             parameters.add(order.quantity());
             parameters.add(order.reservedCash());
+            parameters.add(order.fundingBudgetType());
+            parameters.add(order.expiresAt());
+            parameters.add(order.autoProfileType());
+            parameters.add(order.autoBehaviorModelVersion());
             parameters.add(createdAt);
             parameters.add(createdAt);
         }
@@ -508,7 +551,8 @@ public class AutoMarketWriter {
                     insert into stock_order(
                         client_order_id, account_id, symbol, market_type, side, order_type, status,
                         limit_price, quantity, filled_quantity, average_fill_price,
-                        reserved_cash, created_at, updated_at
+                        reserved_cash, funding_budget_type, expires_at, auto_profile_type,
+                        auto_behavior_model_version, created_at, updated_at
                     )
                     values %s
                     """.formatted(values),
@@ -522,6 +566,80 @@ public class AutoMarketWriter {
             enqueueInsertedSymbolsAfterCommit(orders);
         }
         return insertedCount;
+    }
+
+    public int markAverageDownDecisions(
+            List<PositionStateKey> positions,
+            LocalDate businessDate,
+            LocalDateTime updatedAt
+    ) {
+        if (positions == null || positions.isEmpty()) {
+            return 0;
+        }
+        List<PositionStateKey> orderedPositions = positions.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .sorted(Comparator.comparingLong(PositionStateKey::accountId).thenComparing(PositionStateKey::symbol))
+                .toList();
+        if (orderedPositions.isEmpty()) {
+            return 0;
+        }
+        if (orderedPositions.size() > MAX_LIMIT_ORDER_INSERT_ROWS) {
+            throw new IllegalArgumentException(
+                    "Average-down position-state update exceeds the maximum row count: %d > %d"
+                            .formatted(orderedPositions.size(), MAX_LIMIT_ORDER_INSERT_ROWS)
+            );
+        }
+        String predicates = String.join(" or ", Collections.nCopies(
+                orderedPositions.size(),
+                "(account_id = ? and symbol = ?)"
+        ));
+        List<Object> parameters = new ArrayList<>(orderedPositions.size() * 2 + 2);
+        parameters.add(businessDate);
+        parameters.add(updatedAt);
+        orderedPositions.forEach(position -> {
+                    parameters.add(position.accountId());
+                    parameters.add(position.symbol());
+                });
+        int updatedCount = jdbcTemplate.update(
+                "update stock_auto_participant_position_state "
+                        + "set last_average_down_business_date = ?, updated_at = ? "
+                        + "where " + predicates,
+                parameters.toArray()
+        );
+        if (updatedCount == orderedPositions.size()) {
+            return updatedCount;
+        }
+
+        List<Object> insertParameters = new ArrayList<>(orderedPositions.size() * 2 + 4);
+        insertParameters.add(businessDate);
+        insertParameters.add(businessDate);
+        insertParameters.add(businessDate);
+        insertParameters.add(updatedAt);
+        orderedPositions.forEach(position -> {
+            insertParameters.add(position.accountId());
+            insertParameters.add(position.symbol());
+        });
+        int insertedCount = jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_position_state(
+                    account_id, symbol, position_opened_business_date, holding_trading_days,
+                    average_down_rounds, last_average_down_business_date, peak_close_price,
+                    last_seen_business_date, updated_at
+                )
+                select h.account_id, h.symbol, ?, 1, 0, ?, h.average_price, ?, ?
+                  from stock_holding h
+                 where (%s)
+                   and not exists (
+                       select 1
+                         from stock_auto_participant_position_state s
+                        where s.account_id = h.account_id
+                          and s.symbol = h.symbol
+                   )
+                """.formatted(predicates),
+                insertParameters.toArray()
+        );
+        return updatedCount + insertedCount;
     }
 
     private void enqueueInsertedSymbolsAfterCommit(List<LimitOrderInsert> orders) {
@@ -547,6 +665,9 @@ public class AutoMarketWriter {
     public record HoldingReservationKey(long accountId, String symbol) {
     }
 
+    public record PositionStateKey(long accountId, String symbol) {
+    }
+
     public record HoldingReservationState(
             HoldingReservationKey key,
             long quantity,
@@ -565,7 +686,47 @@ public class AutoMarketWriter {
             String side,
             BigDecimal price,
             long quantity,
-            BigDecimal reservedCash
+            BigDecimal reservedCash,
+            String fundingBudgetType,
+            LocalDateTime expiresAt,
+            String autoProfileType,
+            String autoBehaviorModelVersion
     ) {
+        public LimitOrderInsert(
+                String clientOrderId,
+                long accountId,
+                String symbol,
+                String side,
+                BigDecimal price,
+                long quantity,
+                BigDecimal reservedCash
+        ) {
+            this(clientOrderId, accountId, symbol, side, price, quantity, reservedCash, null, null, null, null);
+        }
+
+        public LimitOrderInsert(
+                String clientOrderId,
+                long accountId,
+                String symbol,
+                String side,
+                BigDecimal price,
+                long quantity,
+                BigDecimal reservedCash,
+                String fundingBudgetType
+        ) {
+            this(
+                    clientOrderId,
+                    accountId,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    reservedCash,
+                    fundingBudgetType,
+                    null,
+                    null,
+                    null
+            );
+        }
     }
 }

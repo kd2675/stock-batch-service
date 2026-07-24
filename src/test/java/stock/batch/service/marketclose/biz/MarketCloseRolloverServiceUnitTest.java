@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.marketclose.model.MarketCloseOrderRow;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.marketclose.model.PostCloseCycle;
 import stock.batch.service.marketclose.model.PostCloseCycleStatus;
@@ -334,7 +335,8 @@ class MarketCloseRolloverServiceUnitTest {
                 orderBookSymbolLock,
                 transactionTemplate(),
                 mock(MarketSessionFenceService.class),
-                postCloseCycleService
+                postCloseCycleService,
+                mock(AutoParticipantFundingBudgetService.class)
         );
     }
 }

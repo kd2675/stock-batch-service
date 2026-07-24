@@ -123,7 +123,8 @@ class StockDdlContractTest {
             "stock_execution_daily_account_last_executed_at_alter.sql",
             "stock_execution_profit_summary_alter.sql",
             "stock_eod_volume_indexes_alter.sql",
-            "stock_auto_participant_cash_flow_run_alter.sql"
+            "stock_auto_participant_cash_flow_run_alter.sql",
+            "stock_eod_runtime_contract_alter.sql"
     );
 
     private static final Pattern HOT_LEDGER_INDEX_DDL = Pattern.compile(
@@ -184,6 +185,9 @@ class StockDdlContractTest {
             "idx_stock_post_close_cycle_scope_date_status",
             "idx_stock_post_close_cycle_scope_status_date",
             "idx_stock_post_close_phase_attempt_cycle_id",
+            "eod_contract_version",
+            "chk_stock_post_close_cycle_eod_contract",
+            "chk_stock_post_close_phase_attempt_eod_contract",
             "idx_stock_post_close_cycle_metric_run",
             "stock_market_close_run",
             "stock_holding_snapshot",
@@ -857,6 +861,29 @@ class StockDdlContractTest {
                         "DROP INDEX idx_stock_order_status_symbol"
                 );
         assertThat(batchDdl).doesNotContain("ALTER TABLE stock_order\n  ADD INDEX");
+    }
+
+    @Test
+    void autoMarketRepriceIndexAlterDdl_removesWriteAmplifyingIndexAndStaysSynced() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_auto_market_reprice_index_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_auto_market_reprice_index_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "information_schema.statistics",
+                "idx_stock_order_auto_reprice",
+                "DROP INDEX idx_stock_order_auto_reprice",
+                "ALGORITHM=INPLACE",
+                "LOCK=NONE"
+        );
+        assertThat(batchDdl.toLowerCase()).doesNotContain("add index idx_stock_order_auto_reprice");
+        assertThat(batchDdl).doesNotContain("stock_execution");
     }
 
     @Test

@@ -78,7 +78,8 @@ public class AutoMarketOrderExpiryJobService {
 
     public int expireAutoMarketOrders() {
         long startedNanos = System.nanoTime();
-        if (!isRegularSessionActive()) {
+        SimulationClockSnapshot clock = regularSessionClock();
+        if (clock == null) {
             return 0;
         }
         List<AutoMarketConfig> allConfigs = autoMarketReader.findEnabledMaintenanceConfigs();
@@ -93,10 +94,24 @@ public class AutoMarketOrderExpiryJobService {
         );
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies =
                 autoProfileBehaviorSupport.policiesWithOverrides(autoMarketReader.findParticipantProfileConfigs());
+        List<Long> activeV2MarketMakerAccountIds =
+                autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds();
 
         int expiredOrders = 0;
         for (AutoMarketConfig config : configs) {
-            expiredOrders += expireSymbolOrders(config, profilePolicies);
+            // Candidate discovery may scan every open order for the symbol. Keep it outside the
+            // execution-critical Redis symbol lock; exact rows are locked and revalidated only
+            // after the lock and session fence have both been acquired.
+            AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
+                    autoMarketOrderExpiryService.planExpiryCandidates(
+                            config,
+                            profilePolicies,
+                            clock.simulationDateTime(),
+                            activeV2MarketMakerAccountIds
+                    );
+            if (plan.hasWork()) {
+                expiredOrders += expireSymbolOrders(config, plan);
+            }
         }
         log.info(
                 "Auto market order expiry completed: symbols={}, availableSymbols={}, expiredOrders={}, elapsedMs={}",
@@ -110,7 +125,7 @@ public class AutoMarketOrderExpiryJobService {
 
     private int expireSymbolOrders(
             AutoMarketConfig config,
-            Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies
+            AutoMarketOrderExpiryService.ExpiryCandidatePlan plan
     ) {
         return orderBookSymbolLock.tryLock(config.symbol())
                 .map(lock -> {
@@ -119,9 +134,9 @@ public class AutoMarketOrderExpiryJobService {
                             return runIntInTransactionWithDeadlockRetry(
                                     config.symbol(),
                                     () -> marketSessionFenceService.lockOpenOrderBookFences(List.of(config.symbol()))
-                                            .map(approval -> autoMarketOrderExpiryService.expireOldAutoOrders(
+                                            .map(approval -> autoMarketOrderExpiryService.expirePlannedOrders(
                                                     config,
-                                                    profilePolicies,
+                                                    plan,
                                                     approval.businessEffectiveAt()
                                             ))
                                             .orElse(0)
@@ -143,11 +158,12 @@ public class AutoMarketOrderExpiryJobService {
                 });
     }
 
-    private boolean isRegularSessionActive() {
+    private SimulationClockSnapshot regularSessionClock() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
-        return clock.running()
+        boolean regularSessionActive = clock.running()
                 && simulationMarketSessionService.sessionAt(clock.simulationDateTime())
                 == SimulationMarketSession.REGULAR;
+        return regularSessionActive ? clock : null;
     }
 
     private int runIntInTransaction(Supplier<Integer> action) {

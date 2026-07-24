@@ -83,7 +83,7 @@ public class PostCloseReadinessService {
                         truncate(queueCheck.message())
                 ),
                 result("RUNTIME_IDENTITY", identityFailures,
-                        "Cycle and completed phase schemas are compatible; builds remain auditable")
+                        "Cycle and completed phases use the current EOD contract; build and schema revisions remain auditable")
         );
         replaceReadinessChecks(closeCycleId, checks, checkedAt);
 

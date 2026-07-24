@@ -43,6 +43,8 @@ class AutoParticipantCashFlowServiceTest {
         jdbcTemplate.update("delete from stock_market_business_state");
         jdbcTemplate.update("delete from stock_auto_participant_cash_flow_run");
         jdbcTemplate.update("delete from stock_account_cash_flow");
+        jdbcTemplate.update("delete from stock_auto_participant_order_budget");
+        jdbcTemplate.update("delete from stock_auto_participant_funding_budget");
         jdbcTemplate.update("delete from stock_order");
         jdbcTemplate.update("delete from stock_holding");
         jdbcTemplate.update("delete from stock_account");
@@ -82,6 +84,7 @@ class AutoParticipantCashFlowServiceTest {
 
     @Test
     void fundRecurringCash_participantRecurringCashOverridesProfileRecurringDeposit() {
+        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V1");
         insertAutoParticipant("stock-auto-custom", "PAYDAY_ACCUMULATOR", true, "50000.00", "0.5", "HOUR");
         insertActiveAccount("stock-auto-custom", "0.00");
 
@@ -108,6 +111,43 @@ class AutoParticipantCashFlowServiceTest {
                 join stock_account a on a.id = f.account_id
                 where a.user_key = 'stock-auto-custom'
                   and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
+                """)).isZero();
+        assertThat(queryLong("select count(*) from stock_auto_participant_funding_budget")).isZero();
+    }
+
+    @Test
+    void fundRecurringCash_v2ExecutePaydayParticipant_createsPurposeBudget() {
+        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V2");
+        insertAutoParticipant("stock-auto-v2-payday", "PAYDAY_ACCUMULATOR", true, "50000.00", "1", "DAY");
+        insertActiveAccount("stock-auto-v2-payday", "0.00");
+
+        int funded = autoParticipantCashFlowService.fundRecurringCash();
+
+        assertThat(funded).isEqualTo(1);
+        assertThat(queryDecimal("""
+                select available_amount
+                  from stock_auto_participant_funding_budget b
+                  join stock_account a on a.id = b.account_id
+                 where a.user_key = 'stock-auto-v2-payday'
+                   and b.budget_type = 'PAYDAY'
+                   and b.status = 'ACTIVE'
+                """)).isEqualByComparingTo("50000.00");
+    }
+
+    @Test
+    void fundRecurringCash_v2ExecuteNonPurposeProfile_doesNotCreatePurposeBudget() {
+        insertProfileBehaviorModel("NOISE_TRADER", "V2");
+        insertAutoParticipant("stock-auto-v2-noise", "NOISE_TRADER", true, "50000.00", "1", "DAY");
+        insertActiveAccount("stock-auto-v2-noise", "0.00");
+
+        int funded = autoParticipantCashFlowService.fundRecurringCash();
+
+        assertThat(funded).isEqualTo(1);
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_auto_participant_funding_budget b
+                  join stock_account a on a.id = b.account_id
+                 where a.user_key = 'stock-auto-v2-noise'
                 """)).isZero();
     }
 
@@ -523,6 +563,21 @@ class AutoParticipantCashFlowServiceTest {
                 recurringCashAmount == null ? null : new BigDecimal(recurringCashAmount),
                 recurringCashIntervalValue == null ? null : new BigDecimal(recurringCashIntervalValue),
                 recurringCashIntervalUnit
+        );
+    }
+
+    private void insertProfileBehaviorModel(String profileType, String modelVersion) {
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days, updated_at
+                ) values (?, ?, 1.00, 1.00, 1.00, 0.50, 0.50, 0.00, 30, current_timestamp)
+                """,
+                profileType,
+                modelVersion
         );
     }
 

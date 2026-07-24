@@ -13,6 +13,7 @@ import org.mockito.InOrder;
 import stock.batch.service.batch.corporateaction.model.DelistingOrderRow;
 import stock.batch.service.batch.corporateaction.reader.CorporateActionOrderReader;
 import stock.batch.service.batch.corporateaction.writer.CorporateActionWriter;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 
 class CorporateActionOrderBookOrderGuardTest {
 
@@ -20,9 +21,11 @@ class CorporateActionOrderBookOrderGuardTest {
     void cancelOpenOrderBookOrders_locksAccountHoldingOrderThenReleasesInAccountOrder() {
         CorporateActionOrderReader reader = mock(CorporateActionOrderReader.class);
         CorporateActionWriter writer = mock(CorporateActionWriter.class);
+        AutoParticipantFundingBudgetService fundingBudgetService = mock(AutoParticipantFundingBudgetService.class);
         CorporateActionOrderBookOrderGuard guard = new CorporateActionOrderBookOrderGuard(
                 reader,
-                writer
+                writer,
+                fundingBudgetService
         );
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 18, 0);
         DelistingOrderRow buyHighAccount = new DelistingOrderRow(1L, 3L, "DL001", "BUY", 10L, new BigDecimal("3000.00"));
@@ -43,12 +46,13 @@ class CorporateActionOrderBookOrderGuardTest {
 
         guard.cancelOpenOrderBookOrderChunk("DL001", now, 200);
 
-        InOrder inOrder = org.mockito.Mockito.inOrder(reader, writer);
+        InOrder inOrder = org.mockito.Mockito.inOrder(reader, writer, fundingBudgetService);
         inOrder.verify(reader).findOpenOrderBookOrderCandidates("DL001", 200);
         inOrder.verify(reader).lockAccountsForUpdate(candidates);
         inOrder.verify(reader).lockSellHoldingsForUpdate("DL001", candidates);
         inOrder.verify(reader).lockOpenOrderBookOrdersForUpdate(candidates);
         inOrder.verify(writer).cancelOrders(List.of(1L, 2L, 3L, 4L), now);
+        inOrder.verify(fundingBudgetService).releaseCancelledOrderBudgets(List.of(1L, 2L, 3L, 4L), now);
         inOrder.verify(writer).creditCashChunk(java.util.Map.of(
                 1L, new BigDecimal("1000.00"),
                 3L, new BigDecimal("3000.00")

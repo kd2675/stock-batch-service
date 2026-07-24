@@ -1,6 +1,7 @@
 package stock.batch.service.batch.automarket.model;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 public record AutoMarketConfig(
         String symbol,
@@ -16,7 +17,8 @@ public record AutoMarketConfig(
         AutoMarketDistributionBias primaryDistributionBias,
         AutoMarketDistributionBias secondaryDistributionBias,
         AutoMarketPressure primaryPressure,
-        AutoMarketPressure secondaryPressure
+        AutoMarketPressure secondaryPressure,
+        LocalDateTime reportCreatedAt
 ) {
     private static final double PRIMARY_REGIME_WEIGHT = 0.70;
     private static final double SECONDARY_MODIFIER_WEIGHT = 0.30;
@@ -30,6 +32,29 @@ public record AutoMarketConfig(
                 : secondaryDistributionBias;
         primaryPressure = primaryPressure == null ? AutoMarketPressure.NEUTRAL : primaryPressure;
         secondaryPressure = secondaryPressure == null ? AutoMarketPressure.NEUTRAL : secondaryPressure;
+    }
+
+    public AutoMarketConfig(
+            String symbol,
+            String market,
+            int maxOrderQuantity,
+            int orderTtlSeconds,
+            long tradableShares,
+            BigDecimal tickSize,
+            BigDecimal currentPrice,
+            BigDecimal previousClose,
+            BigDecimal priceLimitRate,
+            Integer reportScore,
+            AutoMarketDistributionBias primaryDistributionBias,
+            AutoMarketDistributionBias secondaryDistributionBias,
+            AutoMarketPressure primaryPressure,
+            AutoMarketPressure secondaryPressure
+    ) {
+        this(
+                symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize,
+                currentPrice, previousClose, priceLimitRate, reportScore, primaryDistributionBias,
+                secondaryDistributionBias, primaryPressure, secondaryPressure, null
+        );
     }
 
     public AutoMarketConfig(
@@ -59,8 +84,41 @@ public record AutoMarketConfig(
                 reportScore,
                 primaryDistributionBias,
                 secondaryDistributionBias,
+                null
+        );
+    }
+
+    public AutoMarketConfig(
+            String symbol,
+            String market,
+            int maxOrderQuantity,
+            int orderTtlSeconds,
+            long tradableShares,
+            BigDecimal tickSize,
+            BigDecimal currentPrice,
+            BigDecimal previousClose,
+            BigDecimal priceLimitRate,
+            Integer reportScore,
+            AutoMarketDistributionBias primaryDistributionBias,
+            AutoMarketDistributionBias secondaryDistributionBias,
+            LocalDateTime reportCreatedAt
+    ) {
+        this(
+                symbol,
+                market,
+                maxOrderQuantity,
+                orderTtlSeconds,
+                tradableShares,
+                tickSize,
+                currentPrice,
+                previousClose,
+                priceLimitRate,
+                reportScore,
+                primaryDistributionBias,
+                secondaryDistributionBias,
                 AutoMarketPressure.NEUTRAL,
-                AutoMarketPressure.NEUTRAL
+                AutoMarketPressure.NEUTRAL,
+                reportCreatedAt
         );
     }
 
@@ -123,7 +181,7 @@ public record AutoMarketConfig(
         return new AutoMarketConfig(
                 symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize, currentPrice,
                 previousClose, priceLimitRate, reportScore, primaryDistributionBias, secondaryDistributionBias,
-                regime.pressure(), secondaryPressure
+                regime.pressure(), secondaryPressure, reportCreatedAt
         );
     }
 
@@ -134,7 +192,7 @@ public record AutoMarketConfig(
         return new AutoMarketConfig(
                 symbol, market, maxOrderQuantity, orderTtlSeconds, tradableShares, tickSize, currentPrice,
                 previousClose, priceLimitRate, reportScore, primaryDistributionBias, secondaryDistributionBias,
-                primaryPressure, modifier.pressure()
+                primaryPressure, modifier.pressure(), reportCreatedAt
         );
     }
 

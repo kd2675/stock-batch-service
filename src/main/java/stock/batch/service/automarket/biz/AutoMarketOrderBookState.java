@@ -32,4 +32,15 @@ record AutoMarketOrderBookState(
         }
         return Math.clamp((double) (openBuyQuantity - openSellQuantity) / totalQuantity, -1, 1);
     }
+
+    double spreadTicks(BigDecimal tickSize) {
+        if (bestBid == null || bestAsk == null || tickSize == null || tickSize.signum() <= 0) {
+            return 0.0;
+        }
+        BigDecimal spread = bestAsk.subtract(bestBid);
+        if (spread.signum() <= 0) {
+            return 0.0;
+        }
+        return spread.divide(tickSize, 8, java.math.RoundingMode.HALF_UP).doubleValue();
+    }
 }

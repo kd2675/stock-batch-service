@@ -7,6 +7,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketHistoricalSignal;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
@@ -14,6 +15,7 @@ import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -96,11 +98,18 @@ class AutoMarketReaderTest {
                     user_key varchar(64) not null,
                     display_name varchar(64) not null,
                     profile_type varchar(64) not null,
+                    behavior_seed bigint null,
                     enabled boolean not null,
                     withdrawn_at timestamp null,
                     recurring_cash_amount decimal(19, 2) null,
                     recurring_cash_interval_value decimal(19, 2) null,
                     recurring_cash_interval_unit varchar(32) null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_participant_profile_config (
+                    profile_type varchar(64) not null primary key,
+                    behavior_model_version varchar(20) not null default 'V2'
                 )
                 """);
         realJdbcTemplate.execute("""
@@ -210,11 +219,18 @@ class AutoMarketReaderTest {
                     user_key varchar(64) not null,
                     display_name varchar(64) not null,
                     profile_type varchar(64) not null,
+                    behavior_seed bigint null,
                     enabled boolean not null,
                     withdrawn_at timestamp null,
                     recurring_cash_amount decimal(19, 2) null,
                     recurring_cash_interval_value decimal(19, 2) null,
                     recurring_cash_interval_unit varchar(32) null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_auto_participant_profile_config (
+                    profile_type varchar(64) not null primary key,
+                    behavior_model_version varchar(20) not null default 'V2'
                 )
                 """);
         realJdbcTemplate.execute("""
@@ -329,6 +345,7 @@ class AutoMarketReaderTest {
                     average_price decimal(19, 2) not null
                 )
                 """);
+        createSnapshotPriceTable(realJdbcTemplate);
         realJdbcTemplate.execute("""
                 create table stock_account_cash_flow (
                     account_id bigint not null,
@@ -339,6 +356,7 @@ class AutoMarketReaderTest {
                 )
                 """);
         createSnapshotOrderTable(realJdbcTemplate);
+        createBehaviorStateTables(realJdbcTemplate);
         LocalDateTime since = LocalDateTime.of(2026, 6, 29, 9, 0);
         realJdbcTemplate.update("insert into stock_account(id, cash_balance) values (?, ?)", 10L, new BigDecimal("100000.00"));
         realJdbcTemplate.update("insert into stock_account(id, cash_balance) values (?, ?)", 20L, new BigDecimal("50000.00"));
@@ -349,6 +367,17 @@ class AutoMarketReaderTest {
                 10L,
                 3L,
                 new BigDecimal("50000.00")
+        );
+        realJdbcTemplate.update(
+                "insert into stock_price(symbol, current_price) values ('STOCK001', 51000), ('STOCK002', 30000)"
+        );
+        realJdbcTemplate.update(
+                "insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price) values (?, ?, ?, ?, ?)",
+                10L,
+                "STOCK002",
+                2L,
+                0L,
+                new BigDecimal("28000.00")
         );
         realJdbcTemplate.update(
                 "insert into stock_account_cash_flow(account_id, flow_type, reason, amount, created_at) values (?, 'DEPOSIT', 'DIVIDEND_PAYMENT', ?, ?)",
@@ -364,6 +393,12 @@ class AutoMarketReaderTest {
         );
         insertSnapshotOrder(realJdbcTemplate, 1L, 10L, "BUY", new BigDecimal("51000.00"), 6L, 1L);
         insertSnapshotOrder(realJdbcTemplate, 2L, 10L, "SELL", new BigDecimal("52000.00"), 4L, 1L);
+        realJdbcTemplate.update("""
+                insert into stock_auto_participant_performance_state(
+                    account_id, recent_profitable_trading_days, recent_closed_trading_days,
+                    last_seen_business_date, updated_at
+                ) values (10, 7, 10, DATE '2026-07-01', current_timestamp)
+                """);
         AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
 
         List<AutoParticipantTradingSnapshot> snapshots = realReader.findTradingSnapshots(List.of(10L, 20L), "STOCK001", since);
@@ -377,6 +412,14 @@ class AutoMarketReaderTest {
         assertThat(snapshot.recentDividendCashAmount()).isEqualByComparingTo(new BigDecimal("3000.00"));
         assertThat(snapshot.openBuyQuantity()).isEqualTo(5L);
         assertThat(snapshot.openSellQuantity()).isEqualTo(3L);
+        assertThat(snapshot.holdingQuantity()).isEqualTo(10L);
+        assertThat(snapshot.reservedQuantity()).isEqualTo(3L);
+        assertThat(snapshot.openBuyReservedCash()).isEqualByComparingTo(new BigDecimal("255000.00"));
+        assertThat(snapshot.portfolioHoldingMarketValue()).isEqualByComparingTo(new BigDecimal("570000.00"));
+        assertThat(snapshot.liquidPortfolioAsset()).isEqualByComparingTo(new BigDecimal("925000.00"));
+        assertThat(snapshot.portfolioPositionCount()).isEqualTo(2);
+        assertThat(snapshot.recentProfitableTradingDays()).isEqualTo(7);
+        assertThat(snapshot.recentClosedTradingDays()).isEqualTo(10);
         AutoParticipantTradingSnapshot emptyHoldingSnapshot = snapshots.get(1);
         assertThat(emptyHoldingSnapshot.accountId()).isEqualTo(20L);
         assertThat(emptyHoldingSnapshot.availableQuantity()).isZero();
@@ -384,8 +427,8 @@ class AutoMarketReaderTest {
     }
 
     @Test
-    void findTradingSnapshots_readsManyParticipantsWithoutRepeatedAccountIdBinding() {
-        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_many_snapshot_test");
+    void findLegacyTradingSnapshots_doesNotRequireV2PortfolioOrBehaviorTables() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_legacy_snapshot_test");
         realJdbcTemplate.execute("""
                 create table stock_account (
                     id bigint not null,
@@ -411,6 +454,88 @@ class AutoMarketReaderTest {
                 )
                 """);
         createSnapshotOrderTable(realJdbcTemplate);
+        LocalDateTime since = LocalDateTime.of(2026, 6, 29, 9, 0);
+        realJdbcTemplate.update(
+                "insert into stock_account(id, cash_balance) values (?, ?)",
+                10L,
+                new BigDecimal("100000.00")
+        );
+        realJdbcTemplate.update(
+                """
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity, average_price
+                ) values (?, ?, ?, ?, ?)
+                """,
+                10L,
+                "STOCK001",
+                10L,
+                3L,
+                new BigDecimal("50000.00")
+        );
+        realJdbcTemplate.update(
+                """
+                insert into stock_account_cash_flow(
+                    account_id, flow_type, reason, amount, created_at
+                ) values (?, 'DEPOSIT', 'DIVIDEND_PAYMENT', ?, ?)
+                """,
+                10L,
+                new BigDecimal("3000.00"),
+                since.plusMinutes(1)
+        );
+        insertSnapshotOrder(realJdbcTemplate, 1L, 10L, "BUY", new BigDecimal("51000.00"), 6L, 1L);
+        insertSnapshotOrder(realJdbcTemplate, 2L, 10L, "SELL", new BigDecimal("52000.00"), 4L, 1L);
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+
+        AutoParticipantTradingSnapshot snapshot = realReader.findLegacyTradingSnapshots(
+                List.of(10L),
+                "STOCK001",
+                since
+        ).getFirst();
+
+        assertThat(
+                "%d:%d:%d:%d:%d".formatted(
+                        snapshot.accountId(),
+                        snapshot.availableQuantity(),
+                        snapshot.openBuyQuantity(),
+                        snapshot.openSellQuantity(),
+                        snapshot.portfolioPositionCount()
+                )
+        ).isEqualTo("10:7:5:3:1");
+        assertThat(snapshot.recentDividendCashAmount()).isEqualByComparingTo("3000.00");
+        assertThat(snapshot.paydayAvailableBudget()).isZero();
+        assertThat(snapshot.positionOpenedBusinessDate()).isNull();
+    }
+
+    @Test
+    void findTradingSnapshots_readsManyParticipantsWithoutRepeatedAccountIdBinding() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_many_snapshot_test");
+        realJdbcTemplate.execute("""
+                create table stock_account (
+                    id bigint not null,
+                    cash_balance decimal(19, 2) not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_holding (
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    quantity bigint not null,
+                    reserved_quantity bigint not null,
+                    average_price decimal(19, 2) not null
+                )
+                """);
+        createSnapshotPriceTable(realJdbcTemplate);
+        realJdbcTemplate.execute("""
+                create table stock_account_cash_flow (
+                    account_id bigint not null,
+                    flow_type varchar(32) not null,
+                    reason varchar(64) not null,
+                    amount decimal(19, 2) not null,
+                    created_at timestamp not null
+                )
+                """);
+        createSnapshotOrderTable(realJdbcTemplate);
+        createBehaviorStateTables(realJdbcTemplate);
         List<Long> accountIds = IntStream.rangeClosed(1, 42)
                 .mapToObj(accountId -> (long) accountId)
                 .toList();
@@ -437,6 +562,47 @@ class AutoMarketReaderTest {
         assertThat(snapshots.getLast().recentDividendCashAmount()).isEqualByComparingTo(new BigDecimal("4200.00"));
     }
 
+    @Test
+    void findProjectedSymbolQuantities_combinesHoldingsAndOpenBuyRemainders() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_projected_exposure_test");
+        realJdbcTemplate.execute("""
+                create table stock_holding (
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    quantity bigint not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_order (
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    market_type varchar(20) not null,
+                    side varchar(10) not null,
+                    status varchar(30) not null,
+                    quantity bigint not null,
+                    filled_quantity bigint not null
+                )
+                """);
+        realJdbcTemplate.update("insert into stock_holding values (10, 'STOCK001', 10)");
+        realJdbcTemplate.update("insert into stock_holding values (20, 'STOCK001', 99)");
+        realJdbcTemplate.update("insert into stock_order values (10, 'STOCK001', 'ORDER_BOOK', 'BUY', 'PARTIALLY_FILLED', 5, 3)");
+        realJdbcTemplate.update("insert into stock_order values (10, 'STOCK002', 'ORDER_BOOK', 'BUY', 'PENDING', 4, 0)");
+        realJdbcTemplate.update("insert into stock_order values (10, 'STOCK002', 'ORDER_BOOK', 'SELL', 'PENDING', 9, 0)");
+        realJdbcTemplate.update("insert into stock_order values (10, 'STOCK002', 'ORDER_BOOK', 'BUY', 'FILLED', 8, 8)");
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+
+        Map<Long, Map<String, Long>> quantities = realReader.findProjectedSymbolQuantities(
+                List.of(10L),
+                List.of("STOCK001", "STOCK002")
+        );
+
+        assertThat(quantities).containsOnlyKeys(10L);
+        assertThat(quantities.get(10L)).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "STOCK001", 12L,
+                "STOCK002", 4L
+        ));
+    }
+
     private void createSnapshotOrderTable(JdbcTemplate jdbcTemplate) {
         jdbcTemplate.execute("""
                 create table stock_order (
@@ -449,7 +615,42 @@ class AutoMarketReaderTest {
                     status varchar(30) not null,
                     limit_price decimal(19, 2),
                     quantity bigint not null,
-                    filled_quantity bigint not null
+                    filled_quantity bigint not null,
+                    reserved_cash decimal(19, 2) not null default 0
+                )
+                """);
+    }
+
+    private void createBehaviorStateTables(JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.execute("""
+                create table stock_auto_participant_funding_budget (
+                    id bigint generated by default as identity primary key,
+                    account_id bigint not null,
+                    budget_type varchar(16) not null,
+                    source_symbol varchar(20),
+                    available_amount decimal(19, 2) not null,
+                    expires_business_date date,
+                    status varchar(16) not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create table stock_auto_participant_position_state (
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    position_opened_business_date date,
+                    holding_trading_days int not null,
+                    average_down_rounds int not null,
+                    last_average_down_business_date date,
+                    peak_close_price decimal(19, 2) not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create table stock_auto_participant_performance_state (
+                    account_id bigint not null primary key,
+                    recent_profitable_trading_days int not null default 0,
+                    recent_closed_trading_days int not null default 0,
+                    last_seen_business_date date not null,
+                    updated_at timestamp not null
                 )
                 """);
     }
@@ -467,17 +668,87 @@ class AutoMarketReaderTest {
                 """
                 insert into stock_order(
                     id, account_id, symbol, market_type, side, order_type, status,
-                    limit_price, quantity, filled_quantity
+                    limit_price, quantity, filled_quantity, reserved_cash
                 )
-                values (?, ?, 'STOCK001', 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, ?)
+                values (?, ?, 'STOCK001', 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, ?, ?)
                 """,
                 id,
                 accountId,
                 side,
                 price,
                 quantity,
-                filledQuantity
+                filledQuantity,
+                "BUY".equals(side) ? price.multiply(BigDecimal.valueOf(quantity - filledQuantity)) : BigDecimal.ZERO
         );
+    }
+
+    private void createSnapshotPriceTable(JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.execute("""
+                create table stock_price (
+                    symbol varchar(20) not null,
+                    current_price decimal(19, 2) not null
+                )
+                """);
+    }
+
+    @Test
+    void findHistoricalMarketSignals_readsOnlyCompletedFullMarketTradingCycles() {
+        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_historical_signal_test");
+        realJdbcTemplate.execute("""
+                create table stock_post_close_cycle (
+                    id bigint primary key,
+                    close_run_id bigint,
+                    business_date date not null,
+                    scope_type varchar(20) not null,
+                    scope_key varchar(40) not null,
+                    cycle_kind varchar(20) not null,
+                    status varchar(20) not null
+                )
+                """);
+        realJdbcTemplate.execute("""
+                create table stock_order_book_daily_snapshot (
+                    close_run_id bigint not null,
+                    symbol varchar(20) not null,
+                    simulation_trade_date date not null,
+                    close_price decimal(19, 2) not null,
+                    execution_quantity bigint not null
+                )
+                """);
+        for (int day = 1; day <= 21; day++) {
+            LocalDate date = LocalDate.of(2027, 1, 1).plusDays(day - 1L);
+            realJdbcTemplate.update(
+                    "insert into stock_post_close_cycle values (?, ?, ?, 'FULL_MARKET', 'ALL', 'TRADING', 'COMPLETED')",
+                    (long) day,
+                    (long) day,
+                    date
+            );
+            realJdbcTemplate.update(
+                    "insert into stock_order_book_daily_snapshot values (?, 'STOCK001', ?, ?, ?)",
+                    (long) day,
+                    date,
+                    BigDecimal.valueOf(100L + day),
+                    1_000L * day
+            );
+        }
+        realJdbcTemplate.update(
+                "insert into stock_post_close_cycle values (99, 99, '2027-01-21', 'SYMBOL', 'STOCK001', 'TRADING', 'COMPLETED')"
+        );
+        realJdbcTemplate.update(
+                "insert into stock_order_book_daily_snapshot values (99, 'STOCK001', '2027-01-21', 999, 999999)"
+        );
+        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
+
+        AutoMarketHistoricalSignal signal = realReader.findHistoricalMarketSignals(
+                List.of("stock001"),
+                LocalDate.of(2027, 1, 22)
+        ).get("STOCK001");
+
+        assertThat(signal.completedTradingDayCount()).isEqualTo(21);
+        assertThat(signal.return1Day()).isCloseTo(1.0 / 120.0, org.assertj.core.data.Offset.offset(0.0000001));
+        assertThat(signal.return10Day()).isCloseTo(10.0 / 111.0, org.assertj.core.data.Offset.offset(0.0000001));
+        assertThat(signal.return20Day()).isCloseTo(20.0 / 101.0, org.assertj.core.data.Offset.offset(0.0000001));
+        assertThat(signal.averageVolume5Day()).isEqualTo(19_000L);
+        assertThat(signal.averageVolume20Day()).isEqualTo(11_500L);
     }
 
     @Test

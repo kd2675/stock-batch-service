@@ -23,8 +23,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
+import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
+import stock.batch.service.automarket.profile.ProfileDecisionReason;
 import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 class AutoMarketOrderExecutorTest {
@@ -34,7 +37,12 @@ class AutoMarketOrderExecutorTest {
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketWriter writer = mock(AutoMarketWriter.class);
         MarketSessionFenceService fenceService = mock(MarketSessionFenceService.class);
-        AutoMarketOrderExecutor executor = new AutoMarketOrderExecutor(orderReader, writer, fenceService);
+        AutoMarketOrderExecutor executor = new AutoMarketOrderExecutor(
+                orderReader,
+                writer,
+                fenceService,
+                mock(AutoParticipantFundingBudgetService.class)
+        );
         List<AutoMarketPlannedOrder> orders = List.of(
                 new AutoMarketPlannedOrder(1L, "STOCK001", "BUY", new BigDecimal("1000.00"), 1)
         );
@@ -87,6 +95,75 @@ class AutoMarketOrderExecutorTest {
         assertThat(insertsCaptor.getValue())
                 .extracting(AutoMarketWriter.LimitOrderInsert::reservedCash)
                 .containsExactly(new BigDecimal("2000.00"), new BigDecimal("3600.00"));
+    }
+
+    @Test
+    void placeOrders_persistsPinnedExpiryProfileAndModelOnAcceptedOrder() {
+        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
+        AutoMarketWriter writer = mock(AutoMarketWriter.class);
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 9, 0);
+        LocalDateTime expiresAt = now.plusSeconds(120);
+        AutoMarketOrderExecutor executor = newOpenExecutor(orderReader, writer, now);
+        AutoMarketPlannedOrder plannedOrder = new AutoMarketPlannedOrder(
+                1L, "STOCK001", "BUY", new BigDecimal("1000.00"), 2,
+                null, ProfileDecisionReason.INVENTORY_BELOW_TARGET, expiresAt,
+                AutoParticipantProfileType.MARKET_MAKER, AutoParticipantBehaviorModelVersion.V2
+        );
+        when(writer.insertLimitOrders(any(), eq(now))).thenReturn(1);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<AutoMarketWriter.LimitOrderInsert>> insertsCaptor = ArgumentCaptor.forClass(List.class);
+
+        executor.placeOrders(List.of(plannedOrder));
+
+        verify(writer).insertLimitOrders(insertsCaptor.capture(), eq(now));
+        assertThat(insertsCaptor.getValue()).singleElement().satisfies(insert -> {
+            assertThat(insert.expiresAt()).isEqualTo(expiresAt);
+            assertThat(insert.autoProfileType()).isEqualTo("MARKET_MAKER");
+            assertThat(insert.autoBehaviorModelVersion()).isEqualTo("V2");
+        });
+    }
+
+    @Test
+    void placeOrders_balancedV2MarketMaker_reservesAndStoresCompletePair() {
+        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
+        AutoMarketWriter writer = mock(AutoMarketWriter.class);
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 9, 0);
+        AutoMarketOrderExecutor executor = newOpenExecutor(orderReader, writer, now);
+        List<AutoMarketPlannedOrder> pair = List.of(
+                marketMakerPairOrder("BUY", 2L),
+                marketMakerPairOrder("SELL", 2L)
+        );
+        when(writer.insertLimitOrders(any(), eq(now))).thenReturn(2);
+
+        AutoParticipantOrderGenerationResult result = executor.placeOrders(pair);
+
+        assertThat(result.generatedOrderCount()).isEqualTo(2);
+        assertThat(result.reservedBuyCount()).isEqualTo(1);
+        assertThat(result.reservedSellCount()).isEqualTo(1);
+    }
+
+    @Test
+    void placeOrders_balancedV2MarketMakerWithInsufficientSellInventory_rejectsBothSides() {
+        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
+        AutoMarketWriter writer = mock(AutoMarketWriter.class);
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 9, 0);
+        AutoMarketOrderExecutor executor = newOpenExecutor(orderReader, writer, now);
+        AutoMarketWriter.HoldingReservationKey key = new AutoMarketWriter.HoldingReservationKey(1L, "STOCK001");
+        when(writer.lockHoldingReservationStatesForUpdate(List.of(key))).thenReturn(Map.of(
+                key,
+                new AutoMarketWriter.HoldingReservationState(key, 1L, 0L)
+        ));
+
+        AutoParticipantOrderGenerationResult result = executor.placeOrders(List.of(
+                marketMakerPairOrder("BUY", 2L),
+                marketMakerPairOrder("SELL", 2L)
+        ));
+
+        assertThat(result.generatedOrderCount()).isZero();
+        assertThat(result.droppedOrderCount(AutoMarketOrderDropReason.BUY_RESERVATION_FAILED)).isEqualTo(1);
+        assertThat(result.droppedOrderCount(AutoMarketOrderDropReason.SELL_RESERVATION_FAILED)).isEqualTo(1);
+        verify(writer).reserveBuyCashChunk(Map.of(), now);
+        verify(writer).reserveSellQuantityChunk(Map.of(), now);
     }
 
     @Test
@@ -233,6 +310,38 @@ class AutoMarketOrderExecutorTest {
     }
 
     @Test
+    void placeOrders_averageDownDecision_marksIntradayCooldownAfterAcceptedInsert() {
+        AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
+        AutoMarketWriter writer = mock(AutoMarketWriter.class);
+        LocalDateTime now = LocalDateTime.of(2026, 7, 3, 9, 0);
+        AutoMarketOrderExecutor executor = newOpenExecutor(orderReader, writer, now);
+        AutoMarketPlannedOrder order = new AutoMarketPlannedOrder(
+                1L,
+                "STOCK001",
+                "BUY",
+                new BigDecimal("1000.00"),
+                2,
+                null,
+                ProfileDecisionReason.AVERAGE_DOWN
+        );
+        when(writer.insertLimitOrders(any(), eq(now))).thenReturn(1);
+        when(writer.markAverageDownDecisions(
+                List.of(new AutoMarketWriter.PositionStateKey(1L, "STOCK001")),
+                now.toLocalDate(),
+                now
+        )).thenReturn(1);
+
+        AutoParticipantOrderGenerationResult result = executor.placeOrders(List.of(order));
+
+        assertThat(result.generatedOrderCount()).isEqualTo(1);
+        verify(writer).markAverageDownDecisions(
+                List.of(new AutoMarketWriter.PositionStateKey(1L, "STOCK001")),
+                now.toLocalDate(),
+                now
+        );
+    }
+
+    @Test
     void expireOrders_locksResourcesBeforeOrdersThenReleasesReservations() {
         AutoMarketOrderReader orderReader = mock(AutoMarketOrderReader.class);
         AutoMarketWriter writer = mock(AutoMarketWriter.class);
@@ -301,6 +410,26 @@ class AutoMarketOrderExecutorTest {
         when(writer.reserveSellQuantityChunk(any(), eq(now))).thenAnswer(invocation ->
                 invocation.<Map<?, ?>>getArgument(0).size()
         );
-        return new AutoMarketOrderExecutor(orderReader, writer, fenceService);
+        return new AutoMarketOrderExecutor(
+                orderReader,
+                writer,
+                fenceService,
+                mock(AutoParticipantFundingBudgetService.class)
+        );
+    }
+
+    private AutoMarketPlannedOrder marketMakerPairOrder(String side, long quantity) {
+        return new AutoMarketPlannedOrder(
+                1L,
+                "STOCK001",
+                side,
+                new BigDecimal("1000.00"),
+                quantity,
+                null,
+                ProfileDecisionReason.INVENTORY_BALANCED,
+                LocalDateTime.of(2027, 1, 18, 9, 2),
+                AutoParticipantProfileType.MARKET_MAKER,
+                AutoParticipantBehaviorModelVersion.V2
+        );
     }
 }

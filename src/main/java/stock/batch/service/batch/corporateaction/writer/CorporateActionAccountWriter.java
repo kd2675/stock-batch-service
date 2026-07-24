@@ -113,6 +113,74 @@ public class CorporateActionAccountWriter {
         );
     }
 
+    public int grantDividendReinvestmentBudgetChunk(
+            long actionId,
+            List<DividendEntitlementRow> entitlements,
+            LocalDate effectiveBusinessDate,
+            LocalDateTime createdAt
+    ) {
+        if (entitlements.isEmpty()) {
+            return 0;
+        }
+        List<Long> entitlementIds = entitlements.stream()
+                .map(DividendEntitlementRow::id)
+                .distinct()
+                .sorted()
+                .toList();
+        String placeholders = String.join(",", Collections.nCopies(entitlementIds.size(), "?"));
+        List<Object> parameters = new ArrayList<>(entitlementIds.size() + 3);
+        parameters.add(actionId);
+        parameters.add(effectiveBusinessDate.plusDays(30));
+        parameters.add(createdAt);
+        parameters.add(createdAt);
+        parameters.addAll(entitlementIds);
+        return jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_funding_budget(
+                    account_id, budget_type, source_key, source_symbol,
+                    corporate_action_id, corporate_action_entitlement_id,
+                    granted_amount, available_amount, reserved_amount, spent_amount,
+                    expires_business_date, status, created_at, updated_at
+                )
+                select e.account_id,
+                       'DIVIDEND',
+                       concat('DIVIDEND:', ?, ':', e.id),
+                       e.symbol,
+                       e.action_id,
+                       e.id,
+                       e.cash_amount,
+                       e.cash_amount,
+                       0,
+                       0,
+                       ?,
+                       'ACTIVE',
+                       ?,
+                       ?
+                  from stock_corporate_action_entitlement e
+                  join stock_account a on a.id = e.account_id
+                  join stock_auto_participant p on p.user_key = a.user_key
+                  left join stock_auto_participant_profile_config pc
+                    on pc.profile_type = p.profile_type
+                 where e.id in (%s)
+                   and e.action_id = ?
+                   and e.cash_amount > 0
+                   and a.status = 'ACTIVE'
+                   and p.profile_type = 'DIVIDEND_REINVESTOR'
+                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
+                   and p.enabled = true
+                   and p.withdrawn_at is null
+                """.formatted(placeholders),
+                append(parameters, actionId)
+        );
+    }
+
+    private Object[] append(List<Object> parameters, Object value) {
+        List<Object> appended = new ArrayList<>(parameters.size() + 1);
+        appended.addAll(parameters);
+        appended.add(value);
+        return appended.toArray();
+    }
+
     public int withdrawCashForSubscriptionChunk(
             List<CapitalIncreaseSubscriptionDecision> decisions,
             LocalDateTime updatedAt

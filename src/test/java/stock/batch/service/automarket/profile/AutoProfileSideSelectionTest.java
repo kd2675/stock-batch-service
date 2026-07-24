@@ -13,7 +13,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
-import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 
 class AutoProfileSideSelectionTest {
 
@@ -163,6 +162,99 @@ class AutoProfileSideSelectionTest {
     }
 
     @Test
+    void marketMakerV1_multipleEligibleSymbols_preservesLegacyPerSymbolAllocationBand() {
+        MarketMakerBehavior behavior = new MarketMakerBehavior();
+        ProfileSignalContext base = context(behavior, 5, 0, 5, BigDecimal.valueOf(1_000), 0);
+        ProfileSignalContext context = new ProfileSignalContext(
+                base.strategy(),
+                base.config(),
+                base.policy(),
+                base.activityLevel(),
+                base.momentumPressure(),
+                base.herdPressure(),
+                base.unrealizedReturn(),
+                base.availableQuantity(),
+                base.cashBalance(),
+                base.recentDividendCashAmount(),
+                base.atLowerPriceLimit(),
+                1,
+                base.noise(),
+                new ParticipantPortfolioSnapshot(
+                        5L,
+                        0L,
+                        BigDecimal.ZERO,
+                        new BigDecimal("500.00"),
+                        new BigDecimal("3000.00"),
+                        3,
+                        0L,
+                        3
+                ),
+                MarketSignalSnapshot.EMPTY
+        );
+
+        assertThat(behavior.chooseSide(context)).isEqualTo(AutoProfileBehavior.BUY);
+    }
+
+    @Test
+    void marketMakerV2_balancedInventory_requestsPairedQuotes() {
+        MarketMakerBehavior behavior = new MarketMakerBehavior();
+        ProfileSignalContext context = context(behavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0);
+
+        ProfileDecision decision = behavior.decide(context);
+
+        assertThat(decision.reason()).isEqualTo(ProfileDecisionReason.INVENTORY_BALANCED);
+        assertThat(decision.desiredOrderCount()).isEven();
+        assertThat(decision.desiredOrderCount()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void marketMakerV2_portfolioInventoryAboveTarget_keepsPairedDecisionWithoutEmbeddingExecutionDetails() {
+        MarketMakerBehavior behavior = new MarketMakerBehavior();
+        ProfileSignalContext base = context(behavior, 5, 0, 6, BigDecimal.valueOf(400), 0);
+        ProfileSignalContext context = new ProfileSignalContext(
+                base.strategy(),
+                base.config(),
+                base.policy(),
+                base.activityLevel(),
+                base.momentumPressure(),
+                base.herdPressure(),
+                base.unrealizedReturn(),
+                base.availableQuantity(),
+                base.cashBalance(),
+                base.recentDividendCashAmount(),
+                base.atLowerPriceLimit(),
+                base.orderIndex(),
+                base.noise(),
+                new ParticipantPortfolioSnapshot(
+                        6L,
+                        0L,
+                        BigDecimal.ZERO,
+                        new BigDecimal("600.00"),
+                        new BigDecimal("1000.00"),
+                        1
+                ),
+                MarketSignalSnapshot.EMPTY
+        );
+
+        ProfileDecision decision = behavior.decide(context);
+
+        assertThat(decision.reason()).isEqualTo(ProfileDecisionReason.INVENTORY_BALANCED);
+        assertThat(decision.desiredOrderCount()).isEven();
+        assertThat(decision.signalStrength()).isBetween(0.99, 1.0);
+    }
+
+    @Test
+    void observerV2_strongMomentumBypassesLegacyPriceOnlyIdleGate() {
+        ObserverBehavior behavior = new ObserverBehavior();
+        ProfileSignalContext context = context(behavior, 5, 0.90, 10, BigDecimal.valueOf(1_000), 0);
+
+        ProfileDecision decision = behavior.decide(context);
+
+        assertThat(decision.action()).isNotEqualTo(ProfileDecisionAction.HOLD);
+        assertThat(decision.desiredOrderCount()).isEqualTo(1);
+    }
+
+    @Test
     void lossAverse_losingPosition_staysIdleInsteadOfAveragingDown() {
         LossAverseBehavior behavior = new LossAverseBehavior();
 
@@ -196,16 +288,9 @@ class AutoProfileSideSelectionTest {
     }
 
     @Test
-    void buyBias_recurringFundingMetadataDoesNotChangeTradingPreference() {
-        ProfilePolicy basePolicy = new NoiseTraderBehavior().defaultPolicy();
-        ProfilePolicy fundedPolicy = withRecurringDeposit(basePolicy, new BigDecimal("100000000.00"));
-        PolicyBehavior baseBehavior = new PolicyBehavior(basePolicy);
-        PolicyBehavior fundedBehavior = new PolicyBehavior(fundedPolicy);
-
-        double baseBias = baseBehavior.buyBias(context(baseBehavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0));
-        double fundedBias = fundedBehavior.buyBias(context(fundedBehavior, 5, 0, 10, BigDecimal.valueOf(1_000), 0));
-
-        assertThat(fundedBias).isEqualTo(baseBias);
+    void profilePolicy_doesNotExposeFundingMetadata() {
+        assertThat(ProfilePolicy.class.getDeclaredMethods())
+                .noneMatch(method -> method.getName().equals("fundingPolicy"));
     }
 
     @Test
@@ -352,32 +437,6 @@ class AutoProfileSideSelectionTest {
                 Arguments.of("panic seller", new PanicSellerBehavior(), 5, -0.80, 0),
                 Arguments.of("stop loss trader", new StopLossTraderBehavior(), 5, -0.80, 0),
                 Arguments.of("value anchor", new ValueAnchorBehavior(), 5, 0.80, 0)
-        );
-    }
-
-    private static ProfilePolicy withRecurringDeposit(ProfilePolicy policy, BigDecimal amount) {
-        return new ProfilePolicy(
-                policy.newsWeight(),
-                policy.momentumWeight(),
-                policy.contrarianWeight(),
-                policy.lossAversionWeight(),
-                policy.herdingWeight(),
-                policy.marketMakingWeight(),
-                policy.overconfidenceWeight(),
-                policy.profitTakingWeight(),
-                policy.orderMultiplier(),
-                policy.aggressionMultiplier(),
-                policy.pricePressureSensitivity(),
-                policy.orderTtlMultiplier(),
-                policy.noiseWeight(),
-                policy.quantityMultiplier(),
-                policy.panicSellWeight(),
-                policy.dipBuyWeight(),
-                policy.holdingPatienceWeight(),
-                policy.deepLossHoldWeight(),
-                amount,
-                BigDecimal.ONE,
-                RecurringCashIntervalUnit.DAY
         );
     }
 

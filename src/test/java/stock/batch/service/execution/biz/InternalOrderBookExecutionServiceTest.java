@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import stock.batch.service.automarket.biz.AutoParticipantPositionActivityTracker;
 import stock.batch.service.simulation.SimulationClockService;
 
 import java.math.BigDecimal;
@@ -30,6 +31,9 @@ class InternalOrderBookExecutionServiceTest {
 
     @Autowired
     private SimulationClockService simulationClockService;
+
+    @Autowired
+    private AutoParticipantPositionActivityTracker positionActivityTracker;
 
     @BeforeEach
     void setUp() {
@@ -131,6 +135,27 @@ class InternalOrderBookExecutionServiceTest {
                 .isEqualTo(2L);
         assertThat(queryLong("select count(*) from stock_price_tick where symbol = '005930' and provider = 'internal-order-book'"))
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void executeEligibleOrders_committedBuy_startsRegisteredIntradayPositionClock() {
+        insertAccount("tracked-buyer", "9930000.00", "10000000.00");
+        insertAccount("tracked-seller", "100000.00", "10000000.00");
+        insertHolding("tracked-seller", "005930", 1, 1, "50000.00");
+        long buyerAccountId = queryLong("select id from stock_account where user_key = 'tracked-buyer'");
+        positionActivityTracker.register(buyerAccountId, "005930", 0L, LocalDateTime.now());
+        insertOrder("tracked-buy", "tracked-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("tracked-sell", "tracked-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 2);
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+        LocalDateTime executedAt = jdbcTemplate.queryForObject(
+                "select max(executed_at) from stock_execution where source = 'INTERNAL_ORDER_BOOK'",
+                LocalDateTime.class
+        );
+
+        assertThat(matchCount).isEqualTo(1);
+        assertThat(positionActivityTracker.snapshot(buyerAccountId, "005930", executedAt.plusSeconds(240)))
+                .isEqualTo(new AutoParticipantPositionActivityTracker.PositionAgeSnapshot(240L, true));
     }
 
     @Test

@@ -311,7 +311,7 @@ public class OrderBookExecutionReader {
         return jdbcClient.sql(
                 """
                 select id, account_id, symbol, side, order_type, limit_price, quantity, filled_quantity,
-                       average_fill_price, reserved_cash, created_at
+                       average_fill_price, reserved_cash, created_at, funding_budget_type
                   from %s
                  where id in (:buyOrderId, :sellOrderId)
                   and market_type = 'ORDER_BOOK'
@@ -381,7 +381,8 @@ public class OrderBookExecutionReader {
                 rs.getLong("filled_quantity"),
                 rs.getBigDecimal("average_fill_price"),
                 rs.getBigDecimal("reserved_cash"),
-                rs.getTimestamp("created_at").toLocalDateTime()
+                rs.getTimestamp("created_at").toLocalDateTime(),
+                rs.getString("funding_budget_type")
         );
     }
 

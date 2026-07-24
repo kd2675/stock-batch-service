@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,6 +34,7 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketHistoricalSignal;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 import stock.batch.service.batch.automarket.model.AutoParticipantSymbolStrategy;
@@ -44,6 +47,7 @@ import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
 import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.SmallDiversifierBehavior;
 import web.common.core.simulation.SimulationClockSnapshot;
 import web.common.core.simulation.SimulationMarketSession;
 
@@ -176,7 +180,7 @@ class AutoMarketServiceUnitTest {
     }
 
     @Test
-    void runAutoMarketStep_orderGenerationFailureDoesNotCompleteClaimedSchedules() {
+    void runAutoMarketStep_v1GenerationFailure_skipsV2SignalsAndDoesNotCompleteSchedules() {
         AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
         AutoMarketDailyRegimeService autoMarketDailyRegimeService = mock(AutoMarketDailyRegimeService.class);
         AutoParticipantOrderService autoParticipantOrderService = mock(AutoParticipantOrderService.class);
@@ -199,7 +203,7 @@ class AutoMarketServiceUnitTest {
                 simulationMarketSessionService,
                 transactionTemplate,
                 autoMarketProfileLock,
-                readyProfileQueue(AutoParticipantProfileType.NOISE_TRADER),
+                readyProfileQueue(AutoParticipantProfileType.SMALL_DIVERSIFIER),
                 directExecutor,
                 new AutoMarketGenerationSlotLimiter(12),
                 meterRegistry
@@ -236,13 +240,14 @@ class AutoMarketServiceUnitTest {
                 "auto-001",
                 1L,
                 5,
-                AutoParticipantProfileType.NOISE_TRADER,
+                AutoParticipantProfileType.SMALL_DIVERSIFIER,
                 null,
                 null,
                 null
         );
-        ProfilePolicy noisePolicy = new NoiseTraderBehavior().defaultPolicy();
-        Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies = Map.of(AutoParticipantProfileType.NOISE_TRADER, noisePolicy);
+        ProfilePolicy smallDiversifierPolicy = new SmallDiversifierBehavior().defaultPolicy();
+        Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies =
+                Map.of(AutoParticipantProfileType.SMALL_DIVERSIFIER, smallDiversifierPolicy);
         when(simulationClockService.currentSnapshot()).thenReturn(clock);
         when(simulationMarketSessionService.sessionAt(clock.simulationDateTime()))
                 .thenReturn(SimulationMarketSession.REGULAR);
@@ -251,12 +256,22 @@ class AutoMarketServiceUnitTest {
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(profileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(profilePolicies);
-        when(profileBehaviorSupport.policy(profilePolicies, AutoParticipantProfileType.NOISE_TRADER)).thenReturn(noisePolicy);
-        when(autoMarketReader.findDueParticipantSymbolStrategies(List.of(config), AutoParticipantProfileType.NOISE_TRADER, now, 100))
+        when(profileBehaviorSupport.policy(profilePolicies, AutoParticipantProfileType.SMALL_DIVERSIFIER))
+                .thenReturn(smallDiversifierPolicy);
+        when(autoMarketReader.findDueParticipantSymbolStrategies(
+                List.of(config),
+                AutoParticipantProfileType.SMALL_DIVERSIFIER,
+                now,
+                100
+        ))
                 .thenReturn(List.of(new AutoParticipantSymbolStrategy("STOCK001", strategy, now.minusSeconds(1), 50)));
         when(autoMarketReader.hasMissingParticipantSchedules(List.of(config))).thenReturn(false);
         when(autoMarketReader.findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusHours(1)))
                 .thenReturn(Map.of("STOCK001", new BigDecimal("70000.00")));
+        when(autoMarketReader.findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusMinutes(5)))
+                .thenReturn(Map.of("STOCK001", new BigDecimal("70000.00")));
+        when(autoMarketReader.findHistoricalMarketSignals(List.of("STOCK001"), now.toLocalDate()))
+                .thenReturn(Map.of());
         when(scheduleService.claimDueStrategies(List.of(strategy), profilePolicies, now, false))
                 .thenReturn(List.of(strategy));
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
@@ -264,12 +279,28 @@ class AutoMarketServiceUnitTest {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now))
+        when(autoParticipantOrderService.placeAutoOrders(
+                List.of(strategy),
+                config,
+                profilePolicies,
+                0.0,
+                0.0,
+                AutoMarketHistoricalSignal.EMPTY,
+                now,
+                Map.of("auto-001", 1)
+        ))
                 .thenThrow(new CannotAcquireLockException("deadlock"));
 
         int processedCount = service.runAutoMarketStep();
 
         assertThat(processedCount).isZero();
+        verify(autoMarketReader, times(1))
+                .findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusHours(1));
+        verify(autoMarketReader, never())
+                .findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusMinutes(5));
+        verify(autoMarketReader, never())
+                .findHistoricalMarketSignals(List.of("STOCK001"), now.toLocalDate());
+        verify(autoMarketReader, never()).findProjectedSymbolQuantities(anyList(), anyList());
         verify(scheduleService, never()).completeStrategies(any(), any(), any());
     }
 
@@ -351,7 +382,16 @@ class AutoMarketServiceUnitTest {
         assertThat(processedCount).isZero();
         assertThat(readyProfileQueue.readyAtByProfile)
                 .containsEntry(AutoParticipantProfileType.MARKET_MAKER, now.plusSeconds(1));
-        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble(), any(LocalDateTime.class));
+        verify(autoParticipantOrderService, never()).placeAutoOrders(
+                any(),
+                any(),
+                any(),
+                anyDouble(),
+                anyDouble(),
+                any(AutoMarketHistoricalSignal.class),
+                any(LocalDateTime.class),
+                anyMap()
+        );
     }
 
     @Test
@@ -434,7 +474,16 @@ class AutoMarketServiceUnitTest {
         assertThat(processedCount).isZero();
         verify(scheduleService, never()).ensureSchedules(any(), any(), any());
         verify(scheduleService, never()).claimDueStrategies(any(), any(), any(), eq(true));
-        verify(autoParticipantOrderService, never()).placeAutoOrders(any(), any(), any(), anyDouble(), any(LocalDateTime.class));
+        verify(autoParticipantOrderService, never()).placeAutoOrders(
+                any(),
+                any(),
+                any(),
+                anyDouble(),
+                anyDouble(),
+                any(AutoMarketHistoricalSignal.class),
+                any(LocalDateTime.class),
+                anyMap()
+        );
     }
 
     @Test
@@ -521,6 +570,10 @@ class AutoMarketServiceUnitTest {
         when(autoMarketReader.hasMissingParticipantSchedules(List.of(config))).thenReturn(false);
         when(autoMarketReader.findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusHours(1)))
                 .thenReturn(Map.of("STOCK001", new BigDecimal("70000.00")));
+        when(autoMarketReader.findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusMinutes(5)))
+                .thenReturn(Map.of("STOCK001", new BigDecimal("70000.00")));
+        when(autoMarketReader.findHistoricalMarketSignals(List.of("STOCK001"), now.toLocalDate()))
+                .thenReturn(Map.of());
         when(scheduleService.claimDueStrategies(List.of(strategy), profilePolicies, now, false))
                 .thenReturn(List.of(strategy));
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
@@ -528,7 +581,16 @@ class AutoMarketServiceUnitTest {
             TransactionCallback<Object> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(autoParticipantOrderService.placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now))
+        when(autoParticipantOrderService.placeAutoOrders(
+                List.of(strategy),
+                config,
+                profilePolicies,
+                0.0,
+                0.0,
+                AutoMarketHistoricalSignal.EMPTY,
+                now,
+                Map.of("auto-001", 1)
+        ))
                 .thenThrow(new CannotAcquireLockException("deadlock"))
                 .thenReturn(new AutoParticipantOrderGenerationResult(
                         3,
@@ -559,7 +621,16 @@ class AutoMarketServiceUnitTest {
                 "reason",
                 AutoMarketOrderDropReason.BUY_RESERVATION_FAILED.metricTag()
         ).count()).isEqualTo(1.0);
-        verify(autoParticipantOrderService, times(2)).placeAutoOrders(List.of(strategy), config, profilePolicies, 0.0, now);
+        verify(autoParticipantOrderService, times(2)).placeAutoOrders(
+                List.of(strategy),
+                config,
+                profilePolicies,
+                0.0,
+                0.0,
+                AutoMarketHistoricalSignal.EMPTY,
+                now,
+                Map.of("auto-001", 1)
+        );
         verify(scheduleService, times(1)).completeStrategies(List.of(strategy), profilePolicies, now);
     }
 

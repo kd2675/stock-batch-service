@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 
 @Component
 public class AutoParticipantCashFlowReader {
@@ -45,6 +46,35 @@ public class AutoParticipantCashFlowReader {
                 .param("limit", limit)
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toRecurringCashTarget(rs))
                 .list();
+    }
+
+    public Set<Long> findExecutableV2FundingAccountIds(
+            List<Long> accountIds,
+            AutoParticipantProfileType profileType
+    ) {
+        if (accountIds == null || accountIds.isEmpty() || profileType == null) {
+            return Set.of();
+        }
+        return Set.copyOf(jdbcClient.sql(
+                """
+                select a.id
+                  from stock_account a
+                  join stock_auto_participant p on p.user_key = a.user_key
+                  left join stock_auto_participant_profile_config pc
+                    on pc.profile_type = p.profile_type
+                 where a.id in (:accountIds)
+                   and a.status = 'ACTIVE'
+                   and p.enabled = true
+                   and p.withdrawn_at is null
+                   and p.profile_type = :profileType
+                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
+                 order by a.id asc
+                """
+        )
+                .param("accountIds", accountIds.stream().distinct().sorted().toList())
+                .param("profileType", profileType.name())
+                .query(Long.class)
+                .list());
     }
 
     public List<AutoParticipantRecentCashFlow> findRecentCashFlows(

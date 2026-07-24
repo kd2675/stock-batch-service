@@ -4,9 +4,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -24,6 +26,7 @@ import stock.batch.service.marketclose.model.PostClosePhaseClaim;
 import stock.batch.service.marketclose.model.PostCloseScopeType;
 
 @Service
+@Slf4j
 public class PostCloseCycleService {
 
     private static final String FULL_MARKET_SCOPE_KEY = "ALL";
@@ -36,6 +39,7 @@ public class PostCloseCycleService {
     private final long deferredRetrySeconds;
     private final String buildVersion;
     private final String schemaVersion;
+    private final String eodContractVersion;
 
     public PostCloseCycleService(
             JdbcClient jdbcClient,
@@ -63,6 +67,7 @@ public class PostCloseCycleService {
         this.deferredRetrySeconds = deferredRetrySeconds;
         this.buildVersion = normalizeVersion(runtimeIdentity.buildVersion());
         this.schemaVersion = normalizeVersion(runtimeIdentity.schemaVersion());
+        this.eodContractVersion = normalizeVersion(runtimeIdentity.eodContractVersion());
     }
 
     @Transactional
@@ -97,11 +102,11 @@ public class PostCloseCycleService {
                                 close_run_id, settlement_eligible_at, attempt_count,
                                 next_retry_at,
                                 started_at, completed_at, last_error_code, last_error_message,
-                                build_version, schema_version, created_at, updated_at
+                                build_version, schema_version, eod_contract_version, created_at, updated_at
                             )
                             values (?, 'FULL_MARKET', 'ALL', 'SKIPPED', ?,
                                     'COMPLETED', 'COMPLETED', 1, 0, null, null,
-                                    null, null, 0, null, ?, ?, null, null, ?, ?, ?, ?)
+                                    null, null, 0, null, ?, ?, null, null, ?, ?, ?, ?, ?)
                             """
                     )
                     .param(businessDate)
@@ -110,6 +115,7 @@ public class PostCloseCycleService {
                     .param(now)
                     .param(buildVersion)
                     .param(schemaVersion)
+                    .param(eodContractVersion)
                     .param(now)
                     .param(now)
                     .update();
@@ -248,9 +254,10 @@ public class PostCloseCycleService {
                             cycle_id, phase, attempt_no, batch_job_execution_id,
                             owner_id, status, started_at, completed_at,
                             error_code, error_message, build_version, schema_version,
+                            eod_contract_version,
                             created_at, updated_at
                         )
-                        values (?, ?, ?, null, ?, 'RUNNING', ?, null, null, null, ?, ?, ?, ?)
+                        values (?, ?, ?, null, ?, 'RUNNING', ?, null, null, null, ?, ?, ?, ?, ?)
                         """
                 )
                 .param(cycleId)
@@ -260,6 +267,7 @@ public class PostCloseCycleService {
                 .param(now)
                 .param(buildVersion)
                 .param(schemaVersion)
+                .param(eodContractVersion)
                 .param(now)
                 .param(now)
                 .update();
@@ -769,39 +777,42 @@ public class PostCloseCycleService {
     }
 
     /**
-     * A restart or rolling deployment may continue an existing cycle with a different build SHA.
-     * The cycle keeps its creator build for audit, while every phase attempt records the build that
-     * actually executed it. Readiness therefore gates on the durable schema contract, not exact
-     * build equality or whether a local IDE build could resolve a SHA. This bounded control-table
-     * lookup never reaches trading ledgers.
+     * Build and physical-schema revisions remain immutable audit values. Restart compatibility is
+     * determined only by the explicit EOD input/output contract, so additive DDL and a new build do
+     * not strand an otherwise valid cycle. A breaking phase or snapshot contract must increment
+     * STOCK_EOD_CONTRACT_VERSION and therefore fails closed. This bounded control-table lookup never
+     * reaches trading ledgers.
      */
     public boolean isRuntimeCompatible(long cycleId) {
-        Boolean compatible = jdbcClient.sql(
+        List<String> recordedContractVersions = jdbcClient.sql(
                         """
-                        select exists (
-                            select 1
-                             from stock_post_close_cycle cycle
-                             where cycle.id = ?
-                               and cycle.schema_version = ?
-                               and not exists (
-                                   select 1
-                                     from stock_post_close_phase_attempt attempt
-                                    where attempt.cycle_id = cycle.id
-                                      and attempt.status = 'COMPLETED'
-                                      and (
-                                          attempt.schema_version is null
-                                          or attempt.schema_version <> ?
-                                      )
-                               )
-                        )
+                        select cycle.eod_contract_version
+                          from stock_post_close_cycle cycle
+                         where cycle.id = ?
+                        union
+                        select attempt.eod_contract_version
+                          from stock_post_close_phase_attempt attempt
+                         where attempt.cycle_id = ?
+                           and attempt.status = 'COMPLETED'
                         """
                 )
                 .param(cycleId)
-                .param(schemaVersion)
-                .param(schemaVersion)
-                .query(Boolean.class)
-                .single();
-        return Boolean.TRUE.equals(compatible);
+                .param(cycleId)
+                .query((rs, rowNum) -> rs.getString("eod_contract_version"))
+                .list();
+        boolean compatible = !recordedContractVersions.isEmpty()
+                && recordedContractVersions.stream()
+                .allMatch(eodContractVersion::equals);
+        if (!compatible) {
+            log.warn(
+                    "Post-close EOD contract is incompatible: cycleId={}, currentContract={}, "
+                            + "recordedContracts={}",
+                    cycleId,
+                    eodContractVersion,
+                    recordedContractVersions
+            );
+        }
+        return compatible;
     }
 
     private PostCloseCycle ensureCycle(
@@ -822,10 +833,10 @@ public class PostCloseCycleService {
                                 close_run_id, settlement_eligible_at, attempt_count,
                                 next_retry_at,
                                 started_at, completed_at, last_error_code, last_error_message,
-                                build_version, schema_version, created_at, updated_at
+                                build_version, schema_version, eod_contract_version, created_at, updated_at
                             )
                             values (?, ?, ?, 'TRADING', null, 'CLOSE_REQUESTED', 'PENDING', 1, 0, null, null,
-                                    null, null, 0, null, null, null, null, null, ?, ?, ?, ?)
+                                    null, null, 0, null, null, null, null, null, ?, ?, ?, ?, ?)
                             """
                     )
                     .param(businessDate)
@@ -833,6 +844,7 @@ public class PostCloseCycleService {
                     .param(scopeKey)
                     .param(buildVersion)
                     .param(schemaVersion)
+                    .param(eodContractVersion)
                     .param(now)
                     .param(now)
                     .update();

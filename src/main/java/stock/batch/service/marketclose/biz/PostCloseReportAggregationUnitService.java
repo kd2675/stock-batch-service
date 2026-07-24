@@ -16,6 +16,7 @@ import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 import stock.batch.service.batch.execution.job.ExecutionAccountDaySummaryFlushJob;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.execution.biz.ExecutionAccountDaySummaryAccumulator;
 
 @Service
@@ -24,18 +25,21 @@ class PostCloseReportAggregationUnitService {
     private final MarketCloseRolloverWriter writer;
     private final ExecutionAccountDaySummaryAccumulator summaryAccumulator;
     private final BatchJobLockRegistry batchJobLockRegistry;
+    private final AutoParticipantFundingBudgetService fundingBudgetService;
     private final TransactionTemplate requiresNewTransaction;
 
     PostCloseReportAggregationUnitService(
             MarketCloseRolloverWriter writer,
             ExecutionAccountDaySummaryAccumulator summaryAccumulator,
             BatchJobLockRegistry batchJobLockRegistry,
+            AutoParticipantFundingBudgetService fundingBudgetService,
             @Qualifier(BatchRepositoryDataSourceConfig.BUSINESS_TRANSACTION_MANAGER)
             PlatformTransactionManager transactionManager
     ) {
         this.writer = writer;
         this.summaryAccumulator = summaryAccumulator;
         this.batchJobLockRegistry = batchJobLockRegistry;
+        this.fundingBudgetService = fundingBudgetService;
         this.requiresNewTransaction = new TransactionTemplate(transactionManager);
         this.requiresNewTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -121,5 +125,43 @@ class PostCloseReportAggregationUnitService {
                     status -> batchJobLockRegistry.release(lockName, lockOwner)
             );
         }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int rebuildAutoParticipantPositionState(
+            long closeCycleId,
+            long closeRunId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        return writer.rebuildAutoParticipantPositionState(
+                closeCycleId,
+                closeRunId,
+                businessDate,
+                rebuiltAt
+        );
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public AutoParticipantFundingBudgetService.FundingBudgetExpiryChunk expireUnusedFundingBudgetChunk(
+            LocalDate businessDate,
+            LocalDateTime expiredAt,
+            long afterBudgetId,
+            int chunkSize
+    ) {
+        return fundingBudgetService.expireUnusedBudgetChunk(
+                businessDate,
+                expiredAt,
+                afterBudgetId,
+                chunkSize
+        );
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public AutoParticipantFundingBudgetService.FundingBudgetReconciliationChunk validateFundingBudgetReconciliationChunk(
+            long afterBudgetId,
+            int chunkSize
+    ) {
+        return fundingBudgetService.validateReconciliationChunk(afterBudgetId, chunkSize);
     }
 }

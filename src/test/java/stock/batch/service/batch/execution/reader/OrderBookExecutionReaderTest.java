@@ -68,6 +68,7 @@ class OrderBookExecutionReaderTest {
                     filled_quantity bigint not null,
                     average_fill_price decimal(19, 2),
                     reserved_cash decimal(19, 2),
+                    funding_budget_type varchar(20),
                     created_at timestamp not null
                 )
                 """);

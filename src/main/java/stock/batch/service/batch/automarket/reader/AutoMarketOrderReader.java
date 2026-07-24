@@ -15,7 +15,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoMarketOrderBookSnapshot;
 import stock.batch.service.batch.automarket.model.AutoOrder;
+import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 
 @Component
@@ -24,18 +26,129 @@ public class AutoMarketOrderReader {
     private final JdbcClient jdbcClient;
     private final String lockClause;
     private final String lockedOrderTable;
+    private final String expiryOrderTable;
+    private final String marketMakerReplacementOrderTable;
 
     public AutoMarketOrderReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
         boolean mysql = isMySql(jdbcTemplate);
         this.lockClause = mysql ? "for update skip locked" : "for update";
         this.lockedOrderTable = mysql ? "stock_order force index (primary)" : "stock_order";
+        this.expiryOrderTable = mysql
+                ? "stock_order o force index (idx_stock_order_market_status_symbol)"
+                : "stock_order o";
+        this.marketMakerReplacementOrderTable = mysql
+                ? "stock_order o force index (idx_stock_order_account_status_created)"
+                : "stock_order o";
     }
 
-    public List<AutoOrder> findExpiredAutoOrders(AutoMarketConfig config, LocalDateTime candidateThreshold, int limit) {
-        List<Long> orderIds = findExpiredAutoOrderIds(config.symbol(), candidateThreshold, limit);
-        if (orderIds.isEmpty()) {
+    public List<AutoOrder> findExpiredAutoOrders(
+            AutoMarketConfig config,
+            Map<AutoParticipantProfileType, LocalDateTime> thresholdsByProfile,
+            LocalDateTime now,
+            int limit
+    ) {
+        if (thresholdsByProfile == null || thresholdsByProfile.isEmpty()) {
+            throw new IllegalArgumentException("Auto-order expiry thresholds are required");
+        }
+        List<AutoParticipantProfileType> profileTypes = thresholdsByProfile.keySet()
+                .stream()
+                .sorted()
+                .toList();
+        LocalDateTime fallbackThreshold = thresholdsByProfile.values()
+                .stream()
+                .min(LocalDateTime::compareTo)
+                .orElseThrow();
+        String profileThresholdCases = profileTypes.stream()
+                .map(profileType -> "when '%s' then :threshold_%s".formatted(
+                        profileType.name(),
+                        profileType.name().toLowerCase(Locale.ROOT)
+                ))
+                .collect(Collectors.joining(System.lineSeparator()));
+        JdbcClient.StatementSpec statement = jdbcClient.sql(
+                """
+                select o.id,
+                       o.account_id,
+                       o.symbol,
+                       o.side,
+                       o.quantity,
+                       o.filled_quantity,
+                       o.reserved_cash,
+                       o.limit_price,
+                       coalesce(o.auto_profile_type, p.profile_type) as profile_type,
+                       coalesce(o.auto_behavior_model_version, 'V1') as behavior_model_version,
+                       o.expires_at,
+                       o.created_at
+                  from %s
+                join stock_account a on a.id = o.account_id
+                join stock_auto_participant p on p.user_key = a.user_key
+                where o.symbol = :symbol
+                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                  and o.market_type = 'ORDER_BOOK'
+                  and o.quantity > o.filled_quantity
+                  and (
+                       (o.expires_at is not null and o.expires_at <= :now)
+                       or (
+                           o.expires_at is null
+                           and o.created_at < case coalesce(o.auto_profile_type, p.profile_type)
+                               %s
+                               else :fallbackThreshold
+                           end
+                       )
+                  )
+                order by o.created_at asc, o.id asc
+                limit :limit
+                """.formatted(expiryOrderTable, profileThresholdCases)
+        )
+                .param("symbol", config.symbol())
+                .param("fallbackThreshold", fallbackThreshold)
+                .param("now", now)
+                .param("limit", Math.max(1, limit));
+        for (AutoParticipantProfileType profileType : profileTypes) {
+            statement = statement.param(
+                    "threshold_" + profileType.name().toLowerCase(Locale.ROOT),
+                    thresholdsByProfile.get(profileType)
+            );
+        }
+        return statement
+                .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
+                .list();
+    }
+
+    public List<Long> findActiveV2MarketMakerAccountIds(int limit) {
+        return jdbcClient.sql(
+                """
+                select a.id
+                  from stock_auto_participant p
+                  join stock_account a on a.user_key = p.user_key
+                  left join stock_auto_participant_profile_config pc
+                    on pc.profile_type = p.profile_type
+                 where p.enabled = true
+                   and p.withdrawn_at is null
+                   and p.profile_type = 'MARKET_MAKER'
+                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
+                   and a.status = 'ACTIVE'
+                 order by a.id asc
+                 limit :limit
+                """
+        )
+                .param("limit", Math.max(1, limit))
+                .query(Long.class)
+                .list();
+    }
+
+    public List<AutoOrder> findV2MarketMakerReplacementCandidates(
+            AutoMarketConfig config,
+            List<Long> accountIds,
+            LocalDateTime createdBefore,
+            String side,
+            int limit
+    ) {
+        if (accountIds == null || accountIds.isEmpty()) {
             return List.of();
+        }
+        if (!"BUY".equals(side) && !"SELL".equals(side)) {
+            throw new IllegalArgumentException("Market-maker replacement side must be BUY or SELL: " + side);
         }
         return jdbcClient.sql(
                 """
@@ -46,21 +159,32 @@ public class AutoMarketOrderReader {
                        o.quantity,
                        o.filled_quantity,
                        o.reserved_cash,
-                       p.profile_type,
+                       o.limit_price,
+                       o.auto_profile_type as profile_type,
+                       o.auto_behavior_model_version as behavior_model_version,
+                       o.expires_at,
                        o.created_at
-                from stock_order o
-                join stock_account a on a.id = o.account_id
-                join stock_auto_participant p on p.user_key = a.user_key
-                where o.symbol = :symbol
-                  and o.id in (:orderIds)
-                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                  and o.market_type = 'ORDER_BOOK'
-                  and o.quantity > o.filled_quantity
-                order by o.created_at asc, o.id asc
-                """
+                  from %s
+                 where o.symbol = :symbol
+                   and o.account_id in (:accountIds)
+                   and o.market_type = 'ORDER_BOOK'
+                   and o.order_type = 'LIMIT'
+                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                   and o.quantity > o.filled_quantity
+                   and o.auto_profile_type = 'MARKET_MAKER'
+                   and o.auto_behavior_model_version = 'V2'
+                   and o.side = :side
+                   and o.limit_price is not null
+                   and o.created_at < :createdBefore
+                 order by o.created_at asc, o.id asc
+                 limit :limit
+                """.formatted(marketMakerReplacementOrderTable)
         )
                 .param("symbol", config.symbol())
-                .param("orderIds", orderIds)
+                .param("accountIds", accountIds)
+                .param("side", side)
+                .param("createdBefore", createdBefore)
+                .param("limit", Math.max(1, limit))
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
                 .list();
     }
@@ -110,27 +234,6 @@ public class AutoMarketOrderReader {
                 .param("accountId", config.accountId())
                 .param("side", side)
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
-                .list();
-    }
-
-    private List<Long> findExpiredAutoOrderIds(String symbol, LocalDateTime candidateThreshold, int limit) {
-        return jdbcClient.sql(
-                """
-                select o.id
-                from stock_order o
-                where o.symbol = :symbol
-                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                  and o.market_type = 'ORDER_BOOK'
-                  and o.quantity > o.filled_quantity
-                  and o.created_at < :candidateThreshold
-                order by o.created_at asc, o.id asc
-                limit :limit
-                """
-        )
-                .param("symbol", symbol)
-                .param("candidateThreshold", candidateThreshold)
-                .param("limit", Math.max(1, limit))
-                .query(Long.class)
                 .list();
     }
 
@@ -185,7 +288,10 @@ public class AutoMarketOrderReader {
                             rs.getLong("quantity"),
                             rs.getLong("filled_quantity"),
                             rs.getBigDecimal("reserved_cash"),
+                            candidate == null ? null : candidate.limitPrice(),
                             candidate == null ? null : candidate.profileType(),
+                            candidate == null ? null : candidate.behaviorModelVersion(),
+                            candidate == null ? null : candidate.expiresAt(),
                             candidate == null ? null : candidate.createdAt()
                     );
                 })
@@ -197,6 +303,32 @@ public class AutoMarketOrderReader {
             return findBestBuyPrice(symbol);
         }
         return findBestSellPrice(symbol);
+    }
+
+    public AutoMarketOrderBookSnapshot findOrderBookSnapshot(String symbol) {
+        return jdbcClient.sql(
+                """
+                select max(case when side = 'BUY' then limit_price end) as best_bid,
+                       min(case when side = 'SELL' then limit_price end) as best_ask,
+                       coalesce(sum(case when side = 'BUY' then quantity - filled_quantity else 0 end), 0)
+                           as open_buy_quantity,
+                       coalesce(sum(case when side = 'SELL' then quantity - filled_quantity else 0 end), 0)
+                           as open_sell_quantity
+                  from stock_order
+                 where market_type = 'ORDER_BOOK'
+                   and symbol = :symbol
+                   and status in ('PENDING', 'PARTIALLY_FILLED')
+                   and quantity > filled_quantity
+                """
+        )
+                .param("symbol", symbol)
+                .query((rs, rowNum) -> new AutoMarketOrderBookSnapshot(
+                        rs.getBigDecimal("best_bid"),
+                        rs.getBigDecimal("best_ask"),
+                        rs.getLong("open_buy_quantity"),
+                        rs.getLong("open_sell_quantity")
+                ))
+                .single();
     }
 
     public BigDecimal findBestExternalPrice(String symbol, String side, long excludedAccountId) {

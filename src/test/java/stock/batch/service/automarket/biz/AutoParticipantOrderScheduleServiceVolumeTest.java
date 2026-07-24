@@ -12,9 +12,14 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import stock.batch.service.automarket.profile.NoiseTraderBehavior;
+import stock.batch.service.automarket.profile.ProfileExecutionPolicy;
+import stock.batch.service.automarket.profile.ProfileExitMode;
+import stock.batch.service.automarket.profile.ProfileInventoryMode;
 import stock.batch.service.automarket.profile.ProfilePolicy;
+import stock.batch.service.automarket.profile.ProfilePricingMode;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
+import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -132,12 +137,140 @@ class AutoParticipantOrderScheduleServiceVolumeTest {
         )).containsExactly(100L, 1L, 0L, 100L);
     }
 
+    @Test
+    void ensureSchedules_zeroDecisionFrequency_removesExistingSchedule() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 15, 9, 0);
+        AutoParticipantStrategy strategy = strategy(
+                "stock-auto-disabled",
+                1L,
+                AutoParticipantBehaviorModelVersion.V2
+        );
+        insertDueSchedules(List.of(strategy), now.minusMinutes(1));
+        ProfilePolicy disabledPolicy = new NoiseTraderBehavior().defaultPolicy().withExecutionPolicy(
+                new ProfileExecutionPolicy(
+                        0.0,
+                        1.0,
+                        ProfilePricingMode.DIRECTIONAL,
+                        ProfileExitMode.SIGNAL_DRIVEN,
+                        ProfileInventoryMode.SIGNAL_DRIVEN
+                )
+        );
+
+        service.ensureSchedules(
+                List.of(strategy),
+                Map.of(AutoParticipantProfileType.NOISE_TRADER, disabledPolicy),
+                now
+        );
+
+        assertThat(scheduleCount()).isZero();
+    }
+
+    @Test
+    void ensureSchedules_v1Execution_usesLegacyCadenceWhenV2PolicyIsDisabled() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 15, 9, 0);
+        AutoParticipantStrategy strategy = strategy("stock-auto-v1", 1L);
+        ProfilePolicy configuredPolicy = new NoiseTraderBehavior().defaultPolicy().withExecutionPolicy(
+                new ProfileExecutionPolicy(
+                        0.0,
+                        0.0,
+                        ProfilePricingMode.MARKET_MAKING,
+                        ProfileExitMode.TAKE_PROFIT_FIRST,
+                        ProfileInventoryMode.TARGET_ALLOCATION
+                )
+        );
+
+        int scheduled = service.ensureSchedules(
+                List.of(strategy),
+                Map.of(AutoParticipantProfileType.NOISE_TRADER, configuredPolicy),
+                now
+        );
+
+        Integer intervalSeconds = jdbcTemplate.queryForObject(
+                "select run_interval_seconds from stock_auto_participant_order_schedule where user_key = ?",
+                Integer.class,
+                strategy.userKey()
+        );
+        assertThat(List.of(scheduled, intervalSeconds)).containsExactly(1, 10);
+    }
+
+    @Test
+    void ensureSchedules_v2OrderCountChange_doesNotChangeDecisionInterval() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 15, 9, 0);
+        AutoParticipantStrategy strategy = strategy(
+                "stock-auto-v2-independent",
+                1L,
+                AutoParticipantBehaviorModelVersion.V2
+        );
+        ProfilePolicy base = new NoiseTraderBehavior().defaultPolicy();
+        ProfilePolicy slowOneOrder = base.withExecutionPolicy(new ProfileExecutionPolicy(
+                0.5,
+                1.0,
+                ProfilePricingMode.DIRECTIONAL,
+                ProfileExitMode.SIGNAL_DRIVEN,
+                ProfileInventoryMode.SIGNAL_DRIVEN
+        ));
+        ProfilePolicy slowFourOrders = base.withExecutionPolicy(new ProfileExecutionPolicy(
+                0.5,
+                4.0,
+                ProfilePricingMode.DIRECTIONAL,
+                ProfileExitMode.SIGNAL_DRIVEN,
+                ProfileInventoryMode.SIGNAL_DRIVEN
+        ));
+        ProfilePolicy fastFourOrders = base.withExecutionPolicy(new ProfileExecutionPolicy(
+                2.0,
+                4.0,
+                ProfilePricingMode.DIRECTIONAL,
+                ProfileExitMode.SIGNAL_DRIVEN,
+                ProfileInventoryMode.SIGNAL_DRIVEN
+        ));
+
+        service.ensureSchedules(
+                List.of(strategy),
+                Map.of(AutoParticipantProfileType.NOISE_TRADER, slowOneOrder),
+                now
+        );
+        int initialInterval = runIntervalSeconds(strategy.userKey());
+        service.ensureSchedules(
+                List.of(strategy),
+                Map.of(AutoParticipantProfileType.NOISE_TRADER, slowFourOrders),
+                now.plusSeconds(1)
+        );
+        int orderCountChangedInterval = runIntervalSeconds(strategy.userKey());
+        service.ensureSchedules(
+                List.of(strategy),
+                Map.of(AutoParticipantProfileType.NOISE_TRADER, fastFourOrders),
+                now.plusSeconds(2)
+        );
+        int frequencyChangedInterval = runIntervalSeconds(strategy.userKey());
+
+        assertThat(List.of(initialInterval, orderCountChangedInterval, frequencyChangedInterval))
+                .containsExactly(20, 20, 5);
+    }
+
     private AutoParticipantStrategy strategy(String userKey, long accountId) {
+        return strategy(
+                userKey,
+                accountId,
+                AutoParticipantBehaviorModelVersion.V1
+        );
+    }
+
+    private AutoParticipantStrategy strategy(
+            String userKey,
+            long accountId,
+            AutoParticipantBehaviorModelVersion modelVersion
+    ) {
         return new AutoParticipantStrategy(
                 userKey,
                 accountId,
                 5,
-                AutoParticipantProfileType.NOISE_TRADER
+                AutoParticipantProfileType.NOISE_TRADER,
+                null,
+                null,
+                null,
+                modelVersion,
+                accountId,
+                null
         );
     }
 
@@ -200,6 +333,15 @@ class AutoParticipantOrderScheduleServiceVolumeTest {
                 Long.class
         );
         return count == null ? 0L : count;
+    }
+
+    private int runIntervalSeconds(String userKey) {
+        Integer interval = jdbcTemplate.queryForObject(
+                "select run_interval_seconds from stock_auto_participant_order_schedule where user_key = ?",
+                Integer.class,
+                userKey
+        );
+        return interval == null ? 0 : interval;
     }
 
     private static final class CountingJdbcTemplate extends JdbcTemplate {

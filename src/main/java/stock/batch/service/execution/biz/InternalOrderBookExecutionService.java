@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
@@ -20,6 +21,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.batch.execution.model.OrderBookHoldingRow;
 import stock.batch.service.batch.execution.model.OrderBookMatchCandidate;
 import stock.batch.service.batch.execution.model.OrderBookOrderRow;
@@ -53,6 +55,23 @@ public class InternalOrderBookExecutionService {
     private final OrderBookSymbolLock orderBookSymbolLock;
     private final OrderBookReadySymbolQueue readySymbolQueue;
     private final ExecutionAccountDaySummaryAccumulator executionAccountDaySummaryAccumulator;
+    private final AutoParticipantFundingBudgetService fundingBudgetService;
+    private stock.batch.service.automarket.biz.RecentMarketActivityTracker recentMarketActivityTracker;
+    private stock.batch.service.automarket.biz.AutoParticipantPositionActivityTracker positionActivityTracker;
+
+    @Autowired(required = false)
+    void setRecentMarketActivityTracker(
+            stock.batch.service.automarket.biz.RecentMarketActivityTracker recentMarketActivityTracker
+    ) {
+        this.recentMarketActivityTracker = recentMarketActivityTracker;
+    }
+
+    @Autowired(required = false)
+    void setPositionActivityTracker(
+            stock.batch.service.automarket.biz.AutoParticipantPositionActivityTracker positionActivityTracker
+    ) {
+        this.positionActivityTracker = positionActivityTracker;
+    }
 
     public InternalOrderBookExecutionService(
             ExecutionCostCalculator executionCostCalculator,
@@ -64,7 +83,8 @@ public class InternalOrderBookExecutionService {
             TransactionTemplate transactionTemplate,
             OrderBookSymbolLock orderBookSymbolLock,
             OrderBookReadySymbolQueue readySymbolQueue,
-            ExecutionAccountDaySummaryAccumulator executionAccountDaySummaryAccumulator
+            ExecutionAccountDaySummaryAccumulator executionAccountDaySummaryAccumulator,
+            AutoParticipantFundingBudgetService fundingBudgetService
     ) {
         this.executionCostCalculator = executionCostCalculator;
         this.orderBookExecutionReader = orderBookExecutionReader;
@@ -76,6 +96,7 @@ public class InternalOrderBookExecutionService {
         this.orderBookSymbolLock = orderBookSymbolLock;
         this.readySymbolQueue = readySymbolQueue;
         this.executionAccountDaySummaryAccumulator = executionAccountDaySummaryAccumulator;
+        this.fundingBudgetService = fundingBudgetService;
     }
 
     @Value("${stock.batch.execution.scan-limit:300}")
@@ -444,6 +465,24 @@ public class InternalOrderBookExecutionService {
                     sellAmounts,
                     executedAt
             );
+            if (recentMarketActivityTracker != null) {
+                recentMarketActivityTracker.record(
+                        buyOrder.symbol(),
+                        quantity,
+                        buyOrder.accountId(),
+                        sellOrder.accountId(),
+                        executedAt
+                );
+            }
+            if (positionActivityTracker != null) {
+                positionActivityTracker.record(
+                        buyOrder.symbol(),
+                        quantity,
+                        buyOrder.accountId(),
+                        sellOrder.accountId(),
+                        executedAt
+                );
+            }
         });
         return true;
     }
@@ -506,6 +545,14 @@ public class InternalOrderBookExecutionService {
         orderBookExecutionWriter.adjustCash(order.accountId(), release.subtract(shortfall), executedAt);
         upsertHolding(order.accountId(), order.symbol(), quantity, amounts.netAmount(), executedAt);
         updateOrderAfterFill(order, quantity, executionPrice, reservedForMatchedQuantity, executedAt);
+        if (order.fundingBudgetType() != null) {
+            fundingBudgetService.consumeOrderBudget(
+                    order.id(),
+                    reservedForMatchedQuantity,
+                    actualCost,
+                    executedAt
+            );
+        }
     }
 
     private BigDecimal calculateReservedCashToRelease(OrderBookOrderRow order, long quantity, BigDecimal executionPrice) {
@@ -571,6 +618,9 @@ public class InternalOrderBookExecutionService {
     private void rejectBuyOrder(OrderBookOrderRow order, LocalDateTime rejectedAt) {
         orderBookExecutionWriter.creditCash(order.accountId(), order.reservedCash(), rejectedAt);
         orderBookExecutionWriter.rejectBuyOrder(order, rejectedAt);
+        if (order.fundingBudgetType() != null) {
+            fundingBudgetService.releaseCancelledOrderBudgets(List.of(order.id()), rejectedAt);
+        }
     }
 
     private void rejectSellOrder(OrderBookOrderRow order, LocalDateTime rejectedAt) {

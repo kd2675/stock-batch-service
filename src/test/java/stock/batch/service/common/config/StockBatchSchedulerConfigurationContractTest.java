@@ -141,11 +141,16 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT:25}");
         assertThat(applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size"))
                 .isEqualTo("${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE:25}");
+        assertThat(applicationProperties.getProperty("stock.batch.post-close.report-aggregation.funding-budget-chunk-size"))
+                .isEqualTo("${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_FUNDING_BUDGET_CHUNK_SIZE:500}");
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.corporate-action.action-batch-limit")))
                 .isEqualTo(25);
         assertThat(defaultNumber(
                 applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size")
         )).isEqualTo(25);
+        assertThat(defaultNumber(
+                applicationProperties.getProperty("stock.batch.post-close.report-aggregation.funding-budget-chunk-size")
+        )).isEqualTo(500);
     }
 
     @Test

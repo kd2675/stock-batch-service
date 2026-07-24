@@ -9,6 +9,7 @@ import org.springframework.batch.infrastructure.support.transaction.Resourceless
 import org.springframework.dao.CannotAcquireLockException;
 
 import stock.batch.service.batch.common.policy.BatchJobLockRegistry;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.batch.execution.job.ExecutionAccountDaySummaryFlushJob;
 import stock.batch.service.batch.marketclose.writer.MarketCloseRolloverWriter;
 import stock.batch.service.execution.biz.ExecutionAccountDaySummaryAccumulator;
@@ -41,6 +42,7 @@ class PostCloseReportAggregationUnitServiceTest {
                 writer,
                 accumulator,
                 lockRegistry,
+                mock(AutoParticipantFundingBudgetService.class),
                 new ResourcelessTransactionManager()
         );
         when(writer.snapshotOrderBookDailySymbols(
@@ -90,6 +92,7 @@ class PostCloseReportAggregationUnitServiceTest {
                 writer,
                 accumulator,
                 lockRegistry,
+                mock(AutoParticipantFundingBudgetService.class),
                 new ResourcelessTransactionManager()
         );
         when(writer.snapshotDailyAccountExecutions(
@@ -127,6 +130,7 @@ class PostCloseReportAggregationUnitServiceTest {
                 writer,
                 accumulator,
                 lockRegistry,
+                mock(AutoParticipantFundingBudgetService.class),
                 new ResourcelessTransactionManager()
         );
 
@@ -144,6 +148,7 @@ class PostCloseReportAggregationUnitServiceTest {
                 writer,
                 accumulator,
                 lockRegistry,
+                mock(AutoParticipantFundingBudgetService.class),
                 new ResourcelessTransactionManager()
         );
         when(lockRegistry.newAcquisitionOwner()).thenReturn(SUMMARY_LOCK_OWNER);
@@ -173,6 +178,7 @@ class PostCloseReportAggregationUnitServiceTest {
                 writer,
                 accumulator,
                 lockRegistry,
+                mock(AutoParticipantFundingBudgetService.class),
                 new ResourcelessTransactionManager()
         );
         when(lockRegistry.newAcquisitionOwner()).thenReturn(SUMMARY_LOCK_OWNER);
@@ -188,5 +194,30 @@ class PostCloseReportAggregationUnitServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("rebuild failed");
         verify(lockRegistry).release(ExecutionAccountDaySummaryFlushJob.JOB_NAME, SUMMARY_LOCK_OWNER);
+    }
+
+    @Test
+    void expireUnusedFundingBudgetChunk_delegatesToBoundedBudgetExpiry() {
+        AutoParticipantFundingBudgetService fundingBudgetService = mock(AutoParticipantFundingBudgetService.class);
+        PostCloseReportAggregationUnitService service = new PostCloseReportAggregationUnitService(
+                mock(MarketCloseRolloverWriter.class),
+                mock(ExecutionAccountDaySummaryAccumulator.class),
+                mock(BatchJobLockRegistry.class),
+                fundingBudgetService,
+                new ResourcelessTransactionManager()
+        );
+        var expected = new AutoParticipantFundingBudgetService.FundingBudgetExpiryChunk(3, 42L, false);
+        when(fundingBudgetService.expireUnusedBudgetChunk(
+                REBUILT_AT.toLocalDate(), REBUILT_AT, 12L, 200
+        )).thenReturn(expected);
+
+        var result = service.expireUnusedFundingBudgetChunk(
+                REBUILT_AT.toLocalDate(), REBUILT_AT, 12L, 200
+        );
+
+        assertThat(result).isEqualTo(expected);
+        verify(fundingBudgetService).expireUnusedBudgetChunk(
+                REBUILT_AT.toLocalDate(), REBUILT_AT, 12L, 200
+        );
     }
 }

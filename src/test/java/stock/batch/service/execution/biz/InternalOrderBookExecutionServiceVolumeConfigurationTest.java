@@ -5,6 +5,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.common.support.StockPriceRedisPublisher;
+import stock.batch.service.automarket.biz.AutoParticipantFundingBudgetService;
 import stock.batch.service.batch.execution.reader.OrderBookExecutionReader;
 import stock.batch.service.batch.execution.writer.OrderBookExecutionWriter;
 import stock.batch.service.batch.execution.writer.OrderBookPriceWriter;
@@ -56,7 +57,8 @@ class InternalOrderBookExecutionServiceVolumeConfigurationTest {
                 mock(TransactionTemplate.class),
                 mock(OrderBookSymbolLock.class),
                 mock(OrderBookReadySymbolQueue.class),
-                mock(ExecutionAccountDaySummaryAccumulator.class)
+                mock(ExecutionAccountDaySummaryAccumulator.class),
+                mock(AutoParticipantFundingBudgetService.class)
         );
         ReflectionTestUtils.setField(service, "scanLimit", 300);
         ReflectionTestUtils.setField(service, "buyCandidateScanLimit", 20);

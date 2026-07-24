@@ -107,7 +107,16 @@ class AutoParticipantOrderScheduleService {
         if (strategies.isEmpty()) {
             return List.of();
         }
-        Map<String, AutoParticipantStrategy> strategyByUserKey = strategyByUserKey(strategies);
+        Map<String, AutoParticipantStrategy> strategyByUserKey = strategyByUserKey(
+                strategies.stream()
+                        .filter(strategy -> isDecisionEnabled(
+                                policyForExecution(strategy, policy(profilePolicies, strategy.profileType()))
+                        ))
+                        .toList()
+        );
+        if (strategyByUserKey.isEmpty()) {
+            return List.of();
+        }
         if (seedMissingSchedules) {
             ensureScheduleEntries(strategies, profilePolicies, now);
         }
@@ -267,12 +276,25 @@ class AutoParticipantOrderScheduleService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
+        int completed = deleteSchedules(strategies.stream()
+                .filter(strategy -> !isDecisionEnabled(
+                        policyForExecution(strategy, policy(profilePolicies, strategy.profileType()))
+                ))
+                .map(AutoParticipantStrategy::userKey)
+                .filter(userKey -> userKey != null && !userKey.isBlank())
+                .toList());
         Map<String, ScheduleCompletion> completionsByUserKey = new LinkedHashMap<>();
         for (AutoParticipantStrategy strategy : strategies) {
             if (strategy.userKey() == null || strategy.userKey().isBlank()) {
                 continue;
             }
-            ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
+            ProfilePolicy policy = policyForExecution(
+                    strategy,
+                    policy(profilePolicies, strategy.profileType())
+            );
+            if (!isDecisionEnabled(policy)) {
+                continue;
+            }
             int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
             LocalDateTime nextRunAt = now.plusSeconds(
                     intervalSeconds + spreadSeconds(strategy.userKey(), intervalSeconds)
@@ -289,7 +311,6 @@ class AutoParticipantOrderScheduleService {
             );
         }
         List<ScheduleCompletion> completions = List.copyOf(completionsByUserKey.values());
-        int completed = 0;
         for (int start = 0; start < completions.size(); start += COMPLETION_ROW_CHUNK_SIZE) {
             int end = Math.min(completions.size(), start + COMPLETION_ROW_CHUNK_SIZE);
             completed += completeStrategyChunk(completions.subList(start, end), now);
@@ -363,11 +384,19 @@ class AutoParticipantOrderScheduleService {
             LocalDateTime now
     ) {
         Map<String, ScheduleDefinition> definitionsByUserKey = new LinkedHashMap<>();
+        List<String> disabledUserKeys = new ArrayList<>();
         for (AutoParticipantStrategy strategy : strategies) {
             if (strategy.userKey() == null || strategy.userKey().isBlank()) {
                 continue;
             }
-            ProfilePolicy policy = policy(profilePolicies, strategy.profileType());
+            ProfilePolicy policy = policyForExecution(
+                    strategy,
+                    policy(profilePolicies, strategy.profileType())
+            );
+            if (!isDecisionEnabled(policy)) {
+                disabledUserKeys.add(strategy.userKey());
+                continue;
+            }
             int intervalSeconds = intervalSeconds(strategy.profileType(), policy);
             int priority = priority(strategy.profileType(), policy);
             definitionsByUserKey.putIfAbsent(
@@ -375,6 +404,7 @@ class AutoParticipantOrderScheduleService {
                     new ScheduleDefinition(strategy.userKey(), strategy.profileType(), intervalSeconds, priority)
             );
         }
+        deleteSchedules(disabledUserKeys);
         if (definitionsByUserKey.isEmpty()) {
             return 0;
         }
@@ -595,14 +625,41 @@ class AutoParticipantOrderScheduleService {
     }
 
     private int intervalSeconds(AutoParticipantProfileType profileType, ProfilePolicy policy) {
-        double activityMultiplier = Math.max(0.25, policy.orderMultiplier());
-        double patienceMultiplier = Math.max(0.25, policy.orderTtlMultiplier());
-        int rawInterval = (int) Math.round(Math.max(1, baseIntervalSeconds) * patienceMultiplier / activityMultiplier);
+        double frequencyMultiplier = policy.executionPolicy().decisionFrequencyMultiplier();
+        if (frequencyMultiplier <= 0) {
+            throw new IllegalArgumentException("Disabled decision policy must not be scheduled: " + profileType);
+        }
+        int rawInterval = (int) Math.round(Math.max(1, baseIntervalSeconds) / frequencyMultiplier);
         return Math.clamp(rawInterval, Math.max(1, minIntervalSeconds), Math.max(Math.max(1, minIntervalSeconds), maxIntervalSeconds));
     }
 
+    private boolean isDecisionEnabled(ProfilePolicy policy) {
+        return policy != null
+                && policy.executionPolicy().decisionFrequencyMultiplier() > 0
+                && policy.executionPolicy().ordersPerDecisionMultiplier() > 0;
+    }
+
+    private int deleteSchedules(List<String> userKeys) {
+        if (userKeys.isEmpty()) {
+            return 0;
+        }
+        List<String> distinctUserKeys = userKeys.stream().distinct().toList();
+        int deleted = 0;
+        for (int start = 0; start < distinctUserKeys.size(); start += SCHEDULE_WRITE_ROW_CHUNK_SIZE) {
+            int end = Math.min(distinctUserKeys.size(), start + SCHEDULE_WRITE_ROW_CHUNK_SIZE);
+            deleted += JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate))
+                    .sql("delete from stock_auto_participant_order_schedule where user_key in (:userKeys)")
+                    .param("userKeys", distinctUserKeys.subList(start, end))
+                    .update();
+        }
+        return deleted;
+    }
+
     private int priority(AutoParticipantProfileType profileType, ProfilePolicy policy) {
-        double activity = policy.orderMultiplier() + policy.noiseWeight() + policy.momentumWeight() + policy.herdingWeight();
+        double activity = policy.executionPolicy().ordersPerDecisionMultiplier()
+                + policy.noiseWeight()
+                + policy.momentumWeight()
+                + policy.herdingWeight();
         if (profileType == AutoParticipantProfileType.MARKET_MAKER) {
             activity += 0.8;
         }
@@ -623,6 +680,20 @@ class AutoParticipantOrderScheduleService {
     ) {
         ProfilePolicy policy = profilePolicies.get(profileType);
         return policy == null ? profilePolicies.get(AutoParticipantProfileType.defaultType()) : policy;
+    }
+
+    private ProfilePolicy policyForExecution(
+            AutoParticipantStrategy strategy,
+            ProfilePolicy configuredPolicy
+    ) {
+        if (configuredPolicy == null || strategy == null) {
+            return configuredPolicy;
+        }
+        if (strategy.behaviorModelVersion()
+                == stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.V1) {
+            return configuredPolicy.forLegacyExecution();
+        }
+        return configuredPolicy;
     }
 
     private void validateRange(String propertyName, int value, int minimum, int maximum) {

@@ -1227,6 +1227,12 @@ public class CorporateActionService {
                         actionId, entitlements, today, now
                 )
         );
+        corporateActionAccountWriter.grantDividendReinvestmentBudgetChunk(
+                actionId,
+                entitlements,
+                today,
+                now
+        );
         requireChunkCount(
                 "dividend entitlement completion",
                 entitlements.size(),

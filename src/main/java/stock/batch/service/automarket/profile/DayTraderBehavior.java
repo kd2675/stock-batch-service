@@ -1,13 +1,12 @@
 package stock.batch.service.automarket.profile;
 
-import java.math.BigDecimal;
-
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.automarket.support.AutoMarketDeterministicRandom;
 
 public class DayTraderBehavior extends AbstractAutoProfileBehavior {
 
     public DayTraderBehavior() {
-        super(AutoParticipantProfileType.DAY_TRADER, new ProfilePolicy(0.25, 0.62, 0.00, 0.08, 0.30, 0.00, 0.20, 0.80, 1.20, 1.15, 0.80, 0.18, 0.85, 0.12, 0.00, 0.00, 0.00, BigDecimal.ZERO, 30).withPricePressureSensitivity(1.10));
+        super(AutoParticipantProfileType.DAY_TRADER, new ProfilePolicy(0.25, 0.62, 0.00, 0.08, 0.30, 0.00, 0.20, 0.80, 1.20, 1.15, 0.80, 0.18, 0.85, 0.12, 0.00, 0.00, 0.00).withPricePressureSensitivity(1.10));
     }
 
     @Override
@@ -31,5 +30,34 @@ public class DayTraderBehavior extends AbstractAutoProfileBehavior {
             return SELL;
         }
         return chooseByBuyBias(context);
+    }
+
+    @Override
+    public ProfileDecision decide(ProfileSignalContext context) {
+        long secondsToClose = context.marketSignals().secondsToClose();
+        long liquidationWindowSeconds = AutoMarketDeterministicRandom.stableLongRange(
+                context.strategy(), "V2:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS", 2_700L, 4_500L
+        );
+        long entryStopWindowSeconds = Math.max(
+                liquidationWindowSeconds,
+                AutoMarketDeterministicRandom.stableLongRange(
+                        context.strategy(), "V2:DAY_TRADER:ENTRY_STOP_WINDOW_SECONDS", 5_400L, 9_000L
+                )
+        );
+        if (secondsToClose <= liquidationWindowSeconds) {
+            return context.hasHolding()
+                    ? signalDecision(SELL, ProfileDecisionReason.SESSION_CLOSE, liquidationOrderCount(context), 1.0)
+                    : ProfileDecision.hold(ProfileDecisionReason.SESSION_CLOSE, 1.0);
+        }
+        if (secondsToClose <= entryStopWindowSeconds) {
+            return ProfileDecision.hold(ProfileDecisionReason.SESSION_CLOSE, 0.75);
+        }
+        String side = chooseSide(context);
+        return signalDecision(
+                side,
+                ProfileDecisionReason.SIGNAL,
+                orderCount(context),
+                Math.max(Math.abs(context.momentumPressure()), Math.abs(context.unrealizedReturn()))
+        );
     }
 }

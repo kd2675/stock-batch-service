@@ -55,7 +55,8 @@ class MarketCloseRolloverWriterCashFlowTest {
                 """);
         jdbcTemplate.execute("""
                 create table stock_auto_participant(
-                    user_key varchar(64) primary key
+                    user_key varchar(64) primary key,
+                    profile_type varchar(40) not null
                 )
                 """);
         jdbcTemplate.execute("""
@@ -67,6 +68,7 @@ class MarketCloseRolloverWriterCashFlowTest {
                     user_key varchar(64),
                     account_status varchar(20) not null,
                     participant_category varchar(30) not null default 'MANUAL_PARTICIPANT',
+                    participant_profile_type varchar(40),
                     settlement_target boolean not null,
                     pre_cancel_cash decimal(19,2) not null,
                     pre_cancel_order_reserved_cash decimal(19,2) not null,
@@ -207,6 +209,31 @@ class MarketCloseRolloverWriterCashFlowTest {
                 org.assertj.core.groups.Tuple.tuple("MANUAL_PARTICIPANT", true),
                 org.assertj.core.groups.Tuple.tuple("LISTING_UNDERWRITER", false)
         );
+    }
+
+    @Test
+    void snapshotAccounts_autoParticipant_freezesProfileAtClose() {
+        jdbcTemplate.update(
+                "update stock_account set participant_category = 'AUTO_PARTICIPANT' where id = 1"
+        );
+        jdbcTemplate.update(
+                "insert into stock_auto_participant(user_key, profile_type) values ('user-a', 'DAY_TRADER')"
+        );
+
+        writer.snapshotAccountsForAccounts(
+                10L,
+                100L,
+                LocalDateTime.parse("2026-07-15T18:00:00"),
+                null,
+                0L,
+                0L,
+                List.of(1L)
+        );
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select participant_profile_type from stock_close_account_snapshot where account_id = 1",
+                String.class
+        )).isEqualTo("DAY_TRADER");
     }
 
     @Test

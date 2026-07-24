@@ -46,6 +46,8 @@ class CorporateActionServiceTest {
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("delete from stock_auto_participant_order_budget");
+        jdbcTemplate.update("delete from stock_auto_participant_funding_budget");
         jdbcTemplate.update("delete from stock_execution where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_order where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_holding where symbol like 'ZQ%'");
@@ -54,7 +56,8 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_post_close_cycle");
         jdbcTemplate.update("delete from stock_market_close_run");
         jdbcTemplate.update("delete from stock_account_cash_flow where account_id in (select id from stock_account where user_key like 'split-%' or user_key like 'dividend-%' or user_key like 'bonus-%' or user_key like 'rights-%' or user_key like 'capital-%')");
-        jdbcTemplate.update("delete from stock_auto_participant where user_key like 'capital-%'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key like 'capital-%' or user_key like 'dividend-%'");
+        jdbcTemplate.update("delete from stock_auto_participant_profile_config where profile_type in ('DIVIDEND_REINVESTOR', 'NOISE_TRADER')");
         jdbcTemplate.update("delete from stock_corporate_action_processing");
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
@@ -368,6 +371,64 @@ class CorporateActionServiceTest {
                 + ":" + queryLong("select count(*) from stock_account_cash_flow where reason = 'DIVIDEND_PAYMENT' "
                 + "and account_id in (select id from stock_account where user_key like 'dividend-chunk-%')");
         assertThat(outcome).isEqualTo("1:3:4:3");
+    }
+
+    @Test
+    void processCashDividendPaymentStep_grantsPurposeBudgetToEveryExecutableV2ReinvestorProfileAccount() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ041", 100000L, 100000L);
+        long actionId = insertAppliedCashDividend("ZQ041", LocalDate.now());
+        insertProfileBehaviorModel("DIVIDEND_REINVESTOR", "V2");
+        insertProfileBehaviorModel("NOISE_TRADER", "V2");
+        for (String userKey : new String[]{
+                "dividend-v1",
+                "dividend-v2-other",
+                "dividend-v2",
+                "dividend-v2-inactive"
+        }) {
+            insertAccount(userKey);
+            insertAutoParticipant(
+                    userKey,
+                    "dividend-v2-other".equals(userKey) ? "NOISE_TRADER" : "DIVIDEND_REINVESTOR"
+            );
+            insertAnnouncedDividendEntitlement(
+                    actionId,
+                    accountIdFor(userKey),
+                    "ZQ041",
+                    "1000.00"
+            );
+        }
+        jdbcTemplate.update("""
+                update stock_account
+                   set status = 'CLOSED'
+                 where user_key = 'dividend-v2-inactive'
+                """);
+
+        int processedCount = corporateActionService.processCashDividendPaymentStep(LocalDate.now());
+
+        assertThat(processedCount).isEqualTo(1);
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_account_cash_flow
+                 where reason = 'DIVIDEND_PAYMENT'
+                   and account_id in (
+                       select id
+                         from stock_account
+                        where user_key in (
+                            'dividend-v1',
+                            'dividend-v2-other',
+                            'dividend-v2',
+                            'dividend-v2-inactive'
+                        )
+                   )
+                """)).isEqualTo(4L);
+        assertThat(jdbcTemplate.queryForList("""
+                select a.user_key
+                  from stock_auto_participant_funding_budget b
+                  join stock_account a on a.id = b.account_id
+                 where b.budget_type = 'DIVIDEND'
+                 order by a.user_key
+                """, String.class)).containsExactly("dividend-v1", "dividend-v2");
     }
 
     @Test
@@ -1769,6 +1830,21 @@ class CorporateActionServiceTest {
                 profileType,
                 LocalDateTime.now(),
                 LocalDateTime.now()
+        );
+    }
+
+    private void insertProfileBehaviorModel(String profileType, String modelVersion) {
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, quantity_multiplier,
+                    holding_patience_weight, deep_loss_hold_weight,
+                    recurring_deposit_amount, recurring_deposit_interval_days, updated_at
+                ) values (?, ?, 1.00, 1.00, 1.00, 0.50, 0.50, 0.00, 30, current_timestamp)
+                """,
+                profileType,
+                modelVersion
         );
     }
 

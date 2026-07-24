@@ -478,6 +478,10 @@ CREATE TABLE IF NOT EXISTS stock_order (
   filled_quantity BIGINT NOT NULL,
   average_fill_price DECIMAL(19,2),
   reserved_cash DECIMAL(19,2) NOT NULL,
+  funding_budget_type VARCHAR(20) NULL,
+  expires_at TIMESTAMP,
+  auto_profile_type VARCHAR(40),
+  auto_behavior_model_version VARCHAR(20),
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
@@ -489,6 +493,20 @@ CREATE TABLE IF NOT EXISTS stock_order (
   CONSTRAINT chk_stock_order_filled_quantity_valid CHECK (filled_quantity >= 0 AND filled_quantity <= quantity),
   CONSTRAINT chk_stock_order_average_fill_price_positive CHECK (average_fill_price IS NULL OR average_fill_price > 0),
   CONSTRAINT chk_stock_order_reserved_cash_non_negative CHECK (reserved_cash >= 0),
+  CONSTRAINT chk_stock_order_funding_budget_type CHECK (funding_budget_type IS NULL OR funding_budget_type IN ('PAYDAY', 'DIVIDEND')),
+  CONSTRAINT chk_stock_order_auto_behavior_model CHECK (
+    auto_behavior_model_version IS NULL OR auto_behavior_model_version IN ('V1', 'V2')
+  ),
+  CONSTRAINT chk_stock_order_auto_profile_type CHECK (
+    auto_profile_type IS NULL OR auto_profile_type IN (
+      'NEWS_REACTIVE', 'MOMENTUM_FOLLOWER', 'CONTRARIAN', 'LOSS_AVERSE', 'OVERCONFIDENT',
+      'HERD_FOLLOWER', 'MARKET_MAKER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
+      'DAY_TRADER', 'SWING_TRADER', 'LONG_TERM_HOLDER', 'PAYDAY_ACCUMULATOR',
+      'DIVIDEND_REINVESTOR', 'LIMIT_DOWN_TRAPPED', 'AVERAGE_DOWN_BUYER', 'STOP_LOSS_TRADER',
+      'FOMO_BUYER', 'PANIC_SELLER', 'DIP_BUYER', 'PROFIT_LOCKER', 'LIQUIDITY_AVOIDANT',
+      'CASH_DEFENSIVE', 'WHALE', 'SMALL_DIVERSIFIER', 'OBSERVER'
+    )
+  ),
   CONSTRAINT chk_stock_order_terminal_reserved_cash_zero CHECK ((status <> 'FILLED' AND status <> 'CANCELLED' AND status <> 'REJECTED') OR reserved_cash = 0)
 );
 
@@ -584,6 +602,7 @@ CREATE TABLE IF NOT EXISTS stock_post_close_cycle (
   last_error_message VARCHAR(1000),
   build_version VARCHAR(100),
   schema_version VARCHAR(100),
+  eod_contract_version VARCHAR(100) NOT NULL DEFAULT 'UNDECLARED',
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT uk_stock_post_close_cycle_scope UNIQUE (business_date, scope_type, scope_key),
@@ -612,7 +631,8 @@ CREATE TABLE IF NOT EXISTS stock_post_close_cycle (
   ),
   CONSTRAINT chk_stock_post_close_cycle_revision CHECK (phase_revision > 0),
   CONSTRAINT chk_stock_post_close_cycle_version CHECK (version >= 0),
-  CONSTRAINT chk_stock_post_close_cycle_attempt_count CHECK (attempt_count >= 0)
+  CONSTRAINT chk_stock_post_close_cycle_attempt_count CHECK (attempt_count >= 0),
+  CONSTRAINT chk_stock_post_close_cycle_eod_contract CHECK (eod_contract_version <> '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_post_close_cycle_phase_status
@@ -640,6 +660,7 @@ CREATE TABLE IF NOT EXISTS stock_post_close_phase_attempt (
   error_message VARCHAR(1000),
   build_version VARCHAR(100),
   schema_version VARCHAR(100),
+  eod_contract_version VARCHAR(100) NOT NULL DEFAULT 'UNDECLARED',
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT uk_stock_post_close_phase_attempt UNIQUE (cycle_id, phase, attempt_no),
@@ -647,7 +668,8 @@ CREATE TABLE IF NOT EXISTS stock_post_close_phase_attempt (
   CONSTRAINT chk_stock_post_close_phase_attempt_owner CHECK (owner_id <> ''),
   CONSTRAINT chk_stock_post_close_phase_attempt_status CHECK (
     CASE `status` WHEN 'RUNNING' THEN 1 WHEN 'COMPLETED' THEN 1 WHEN 'FAILED' THEN 1 WHEN 'ABANDONED' THEN 1 ELSE 0 END = 1
-  )
+  ),
+  CONSTRAINT chk_stock_post_close_phase_attempt_eod_contract CHECK (eod_contract_version <> '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_post_close_phase_attempt_status
@@ -760,6 +782,7 @@ CREATE TABLE IF NOT EXISTS stock_close_account_snapshot (
   user_key VARCHAR(64) NULL,
   account_status VARCHAR(20) NOT NULL,
   participant_category VARCHAR(30) NOT NULL DEFAULT 'MANUAL_PARTICIPANT',
+  participant_profile_type VARCHAR(40),
   settlement_target BOOLEAN NOT NULL,
   pre_cancel_cash DECIMAL(19,2) NOT NULL,
   pre_cancel_order_reserved_cash DECIMAL(19,2) NOT NULL DEFAULT 0.00,
@@ -794,6 +817,16 @@ CREATE TABLE IF NOT EXISTS stock_close_account_snapshot (
   ),
   CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (
     participant_category IN ('MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT', 'LISTING_UNDERWRITER')
+  ),
+  CONSTRAINT chk_stock_close_account_snapshot_profile_type CHECK (
+    participant_profile_type IS NULL OR participant_profile_type IN (
+      'NEWS_REACTIVE', 'MOMENTUM_FOLLOWER', 'CONTRARIAN', 'LOSS_AVERSE', 'OVERCONFIDENT',
+      'HERD_FOLLOWER', 'MARKET_MAKER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
+      'DAY_TRADER', 'SWING_TRADER', 'LONG_TERM_HOLDER', 'PAYDAY_ACCUMULATOR',
+      'DIVIDEND_REINVESTOR', 'LIMIT_DOWN_TRAPPED', 'AVERAGE_DOWN_BUYER', 'STOP_LOSS_TRADER',
+      'FOMO_BUYER', 'PANIC_SELLER', 'DIP_BUYER', 'PROFIT_LOCKER', 'LIQUIDITY_AVOIDANT',
+      'CASH_DEFENSIVE', 'WHALE', 'SMALL_DIVERSIFIER', 'OBSERVER'
+    )
   )
 );
 CREATE INDEX IF NOT EXISTS idx_stock_close_account_snapshot_run_target
@@ -1008,6 +1041,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
   display_name VARCHAR(80) NOT NULL,
   enabled BOOLEAN NOT NULL,
   profile_type VARCHAR(40) NOT NULL DEFAULT 'NOISE_TRADER',
+  behavior_seed BIGINT DEFAULT NULL,
   recurring_cash_amount DECIMAL(19,2) NULL,
   recurring_cash_interval_value DECIMAL(12,4) NULL,
   recurring_cash_interval_unit VARCHAR(20) NULL,
@@ -1070,8 +1104,101 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
 CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_active ON stock_auto_participant(withdrawn_at, enabled, user_key);
 CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_profile_active ON stock_auto_participant(withdrawn_at, profile_type, enabled, user_key);
 
+CREATE TABLE IF NOT EXISTS stock_auto_participant_position_state (
+  account_id BIGINT NOT NULL,
+  symbol VARCHAR(20) NOT NULL,
+  position_opened_business_date DATE NOT NULL,
+  holding_trading_days INT NOT NULL,
+  average_down_rounds INT NOT NULL DEFAULT 0,
+  last_average_down_business_date DATE NULL,
+  peak_close_price DECIMAL(19,2) NOT NULL,
+  last_seen_business_date DATE NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (account_id, symbol),
+  CONSTRAINT chk_stock_auto_position_holding_days CHECK (holding_trading_days > 0),
+  CONSTRAINT chk_stock_auto_position_average_down_rounds CHECK (average_down_rounds >= 0),
+  CONSTRAINT chk_stock_auto_position_peak_price CHECK (peak_close_price >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_performance_state (
+  account_id BIGINT NOT NULL PRIMARY KEY,
+  recent_profitable_trading_days INT NOT NULL DEFAULT 0,
+  recent_closed_trading_days INT NOT NULL DEFAULT 0,
+  last_seen_business_date DATE NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  CONSTRAINT chk_stock_auto_performance_recent_days CHECK (
+    recent_profitable_trading_days >= 0
+    AND recent_closed_trading_days >= 0
+    AND recent_closed_trading_days <= 20
+    AND recent_profitable_trading_days <= recent_closed_trading_days
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_performance_last_seen ON stock_auto_participant_performance_state(last_seen_business_date, account_id);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_position_symbol_account ON stock_auto_participant_position_state(symbol, account_id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_position_last_seen ON stock_auto_participant_position_state(last_seen_business_date, account_id, symbol);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_funding_budget (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  budget_type VARCHAR(20) NOT NULL,
+  source_key VARCHAR(160) NOT NULL,
+  source_symbol VARCHAR(20) NULL,
+  corporate_action_id BIGINT NULL,
+  corporate_action_entitlement_id BIGINT NULL,
+  granted_amount DECIMAL(19,2) NOT NULL,
+  available_amount DECIMAL(19,2) NOT NULL,
+  reserved_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
+  spent_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
+  expires_business_date DATE NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  CONSTRAINT chk_stock_auto_funding_budget_type CHECK (budget_type IN ('PAYDAY', 'DIVIDEND')),
+  CONSTRAINT chk_stock_auto_funding_budget_status CHECK (status IN ('ACTIVE', 'EXHAUSTED', 'EXPIRED')),
+  CONSTRAINT chk_stock_auto_funding_budget_amounts CHECK (
+    granted_amount > 0
+    AND available_amount >= 0
+    AND reserved_amount >= 0
+    AND spent_amount >= 0
+    AND granted_amount = available_amount + reserved_amount + spent_amount
+  ),
+  CONSTRAINT chk_stock_auto_funding_budget_source CHECK (
+    (budget_type = 'PAYDAY' AND corporate_action_id IS NULL AND corporate_action_entitlement_id IS NULL)
+    OR (budget_type = 'DIVIDEND' AND source_symbol IS NOT NULL AND corporate_action_id IS NOT NULL AND corporate_action_entitlement_id IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_stock_auto_funding_budget_source ON stock_auto_participant_funding_budget(account_id, budget_type, source_key);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_funding_budget_eligible ON stock_auto_participant_funding_budget(account_id, budget_type, status, expires_business_date, id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_funding_budget_symbol ON stock_auto_participant_funding_budget(account_id, budget_type, source_symbol, status, id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_funding_budget_action ON stock_auto_participant_funding_budget(corporate_action_id, corporate_action_entitlement_id);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_order_budget (
+  order_id BIGINT NOT NULL,
+  budget_id BIGINT NOT NULL,
+  allocated_amount DECIMAL(19,2) NOT NULL,
+  remaining_reserved_amount DECIMAL(19,2) NOT NULL,
+  spent_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
+  released_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (order_id, budget_id),
+  CONSTRAINT chk_stock_auto_order_budget_amounts CHECK (
+    allocated_amount > 0
+    AND remaining_reserved_amount >= 0
+    AND spent_amount >= 0
+    AND released_amount >= 0
+    AND allocated_amount = remaining_reserved_amount + spent_amount + released_amount
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_order_budget_budget ON stock_auto_participant_order_budget(budget_id, order_id);
+
 CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   profile_type VARCHAR(40) NOT NULL PRIMARY KEY,
+  behavior_model_version VARCHAR(20) NOT NULL DEFAULT 'V2',
   news_weight DECIMAL(8,4) DEFAULT NULL,
   momentum_weight DECIMAL(8,4) DEFAULT NULL,
   contrarian_weight DECIMAL(8,4) DEFAULT NULL,
@@ -1083,6 +1210,8 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   panic_sell_weight DECIMAL(8,4) DEFAULT NULL,
   dip_buy_weight DECIMAL(8,4) DEFAULT NULL,
   order_multiplier DECIMAL(8,4) NOT NULL,
+  decision_frequency_multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+  orders_per_decision_multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
   aggression_multiplier DECIMAL(8,4) NOT NULL,
   price_pressure_sensitivity DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
   order_ttl_multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
@@ -1090,6 +1219,9 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   holding_patience_weight DECIMAL(8,4) NOT NULL,
   deep_loss_hold_weight DECIMAL(8,4) NOT NULL,
   profit_taking_weight DECIMAL(8,4) NOT NULL DEFAULT 0.0000,
+  pricing_mode VARCHAR(30) NOT NULL DEFAULT 'DIRECTIONAL',
+  exit_mode VARCHAR(30) NOT NULL DEFAULT 'SIGNAL_DRIVEN',
+  inventory_mode VARCHAR(30) NOT NULL DEFAULT 'SIGNAL_DRIVEN',
   recurring_deposit_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
   recurring_deposit_interval_days INT NOT NULL DEFAULT 30,
   recurring_deposit_interval_value DECIMAL(12,4) NOT NULL DEFAULT 30.0000,
@@ -1127,6 +1259,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
       ELSE 0
     END = 1
   ),
+  CONSTRAINT chk_stock_auto_profile_behavior_model CHECK (behavior_model_version IN ('V1', 'V2')),
   CONSTRAINT chk_stock_auto_profile_news_weight CHECK (news_weight IS NULL OR (news_weight >= 0 AND news_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_momentum_weight CHECK (momentum_weight IS NULL OR (momentum_weight >= 0 AND momentum_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_contrarian_weight CHECK (contrarian_weight IS NULL OR (contrarian_weight >= 0 AND contrarian_weight <= 1)),
@@ -1138,6 +1271,8 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   CONSTRAINT chk_stock_auto_profile_panic_sell_weight CHECK (panic_sell_weight IS NULL OR (panic_sell_weight >= 0 AND panic_sell_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_dip_buy_weight CHECK (dip_buy_weight IS NULL OR (dip_buy_weight >= 0 AND dip_buy_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_order_multiplier CHECK (order_multiplier >= 0 AND order_multiplier <= 5),
+  CONSTRAINT chk_stock_auto_profile_decision_frequency CHECK (decision_frequency_multiplier IS NULL OR (decision_frequency_multiplier >= 0 AND decision_frequency_multiplier <= 20)),
+  CONSTRAINT chk_stock_auto_profile_orders_per_decision CHECK (orders_per_decision_multiplier IS NULL OR (orders_per_decision_multiplier >= 0 AND orders_per_decision_multiplier <= 5)),
   CONSTRAINT chk_stock_auto_profile_aggression_multiplier CHECK (aggression_multiplier >= 0 AND aggression_multiplier <= 5),
   CONSTRAINT chk_stock_auto_profile_price_pressure_sensitivity CHECK (price_pressure_sensitivity >= 0 AND price_pressure_sensitivity <= 2),
   CONSTRAINT chk_stock_auto_profile_order_ttl_multiplier CHECK (order_ttl_multiplier >= 0.1 AND order_ttl_multiplier <= 10),
@@ -1145,6 +1280,9 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   CONSTRAINT chk_stock_auto_profile_holding_patience CHECK (holding_patience_weight >= 0 AND holding_patience_weight <= 1),
   CONSTRAINT chk_stock_auto_profile_deep_loss_hold CHECK (deep_loss_hold_weight >= 0 AND deep_loss_hold_weight <= 1),
   CONSTRAINT chk_stock_auto_profile_profit_taking CHECK (profit_taking_weight >= 0 AND profit_taking_weight <= 1),
+  CONSTRAINT chk_stock_auto_profile_pricing_mode CHECK (pricing_mode IS NULL OR pricing_mode IN ('DIRECTIONAL', 'MARKET_MAKING')),
+  CONSTRAINT chk_stock_auto_profile_exit_mode CHECK (exit_mode IS NULL OR exit_mode IN ('SIGNAL_DRIVEN', 'TAKE_PROFIT_FIRST', 'HOLD_LOSSES')),
+  CONSTRAINT chk_stock_auto_profile_inventory_mode CHECK (inventory_mode IS NULL OR inventory_mode IN ('SIGNAL_DRIVEN', 'TARGET_ALLOCATION')),
   CONSTRAINT chk_stock_auto_profile_recurring_deposit CHECK (recurring_deposit_amount >= 0),
   CONSTRAINT chk_stock_auto_profile_recurring_interval CHECK (recurring_deposit_interval_days >= 1),
   CONSTRAINT chk_stock_auto_profile_recurring_interval_value CHECK (recurring_deposit_interval_value >= 0 AND recurring_deposit_interval_value <= 1000),

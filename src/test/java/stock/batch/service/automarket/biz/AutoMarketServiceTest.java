@@ -11,6 +11,7 @@ import stock.batch.service.automarket.profile.DividendReinvestorBehavior;
 import stock.batch.service.automarket.profile.LongTermHolderBehavior;
 import stock.batch.service.automarket.profile.PaydayAccumulatorBehavior;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
+import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.automarket.profile.SmallDiversifierBehavior;
 import stock.batch.service.automarket.profile.WhaleBehavior;
 import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
@@ -25,6 +26,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -421,6 +423,48 @@ class AutoMarketServiceTest {
                  where a.user_key = 'stock-auto-001'
                    and o.symbol in ('005930', '999999')
                 """)).isEqualTo(1L);
+    }
+
+    @Test
+    void runAutoMarketStep_smallDiversifierPrefersUnderweightEligibleSymbol() {
+        insertSimulationClock(7200);
+        insertSecondOrderBookSymbol();
+        jdbcTemplate.update("delete from stock_auto_participant_symbol_config where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("delete from stock_auto_participant where user_key <> 'stock-auto-001'");
+        jdbcTemplate.update("""
+                update stock_auto_participant
+                   set profile_type = 'SMALL_DIVERSIFIER'
+                 where user_key = 'stock-auto-001'
+                """);
+        insertProfileConfigIfMissing(AutoParticipantProfileType.SMALL_DIVERSIFIER, "V2");
+        jdbcTemplate.update("update stock_auto_market_config set max_order_quantity = 1 where symbol in ('005930', '000660')");
+        insertFundedAutoAccount("stock-auto-001", "50000000.00");
+        long accountId = queryLong("select id from stock_account where user_key = 'stock-auto-001'");
+        jdbcTemplate.update(
+                """
+                insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
+                values (?, '005930', 50, 0, 70000.00, current_timestamp)
+                """,
+                accountId
+        );
+        insertDueSchedule("stock-auto-001", LocalDateTime.of(2025, 12, 31, 23, 59));
+
+        runAutoMarketStep();
+
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key = 'stock-auto-001'
+                   and o.symbol = '000660'
+                """)).isPositive();
+        assertThat(queryLong("""
+                select count(*)
+                  from stock_order o
+                  join stock_account a on a.id = o.account_id
+                 where a.user_key = 'stock-auto-001'
+                   and o.symbol = '005930'
+                """)).isZero();
     }
 
     @Test
@@ -1144,13 +1188,6 @@ class AutoMarketServiceTest {
     }
 
     @Test
-    void buyBias_dividendReinvestorHasNoRecurringCashByDefault() {
-        DividendReinvestorBehavior behavior = new DividendReinvestorBehavior();
-
-        assertThat(behavior.defaultPolicy().recurringDepositAmount()).isEqualByComparingTo(BigDecimal.ZERO);
-    }
-
-    @Test
     void dividendReinvestorBehavior_recentDividendPaymentRaisesBuyBiasAndOrderCount() {
         DividendReinvestorBehavior behavior = new DividendReinvestorBehavior();
         AutoMarketConfig config = new AutoMarketConfig(
@@ -1592,11 +1629,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('NOISE_TRADER', 2.00, 1.00, 1.00, 0.20, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
+                values ('NOISE_TRADER', 'V1', 2.00, 1.00, 1.00, 0.20, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
                 """
         );
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
@@ -1637,11 +1675,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('NOISE_TRADER', 1.00, 1.00, 1.00, 1.00, 0.10, 0.05, 0.95, 0.00, 30, current_timestamp)
+                values ('NOISE_TRADER', 'V1', 1.00, 1.00, 1.00, 1.00, 0.10, 0.05, 0.95, 0.00, 30, current_timestamp)
                 """
         );
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
@@ -1671,11 +1710,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('MOMENTUM_FOLLOWER', 1.00, 1.00, 1.00, 1.00, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
+                values ('MOMENTUM_FOLLOWER', 'V1', 1.00, 1.00, 1.00, 1.00, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
                 """
         );
         insertFundedAutoAccount("stock-auto-001", "50000000.00");
@@ -1705,7 +1745,7 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type,
+                    profile_type, behavior_model_version,
                     news_weight, momentum_weight, contrarian_weight, loss_aversion_weight, herding_weight,
                     market_making_weight, overconfidence_weight, noise_weight, panic_sell_weight, dip_buy_weight,
                     order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
@@ -1713,7 +1753,7 @@ class AutoMarketServiceTest {
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
                 values (
-                    'NOISE_TRADER',
+                    'NOISE_TRADER', 'V1',
                     0.00, 1.00, 0.00, 0.20, 0.00,
                     0.00, 0.00, 0.00, 0.00, 0.00,
                     1.00, 1.00, 1.00, 1.00,
@@ -2805,11 +2845,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('PAYDAY_ACCUMULATOR', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 30, current_timestamp)
+                values ('PAYDAY_ACCUMULATOR', 'V1', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 30, current_timestamp)
                 """
         );
 
@@ -2836,11 +2877,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('PAYDAY_ACCUMULATOR', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 30, current_timestamp)
+                values ('PAYDAY_ACCUMULATOR', 'V1', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 30, current_timestamp)
                 """
         );
         insertAutoAccount("stock-auto-001", "0.00");
@@ -2894,12 +2936,13 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days,
                     recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
                 )
-                values ('PAYDAY_ACCUMULATOR', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 1, 1.0000, 'SECOND', current_timestamp)
+                values ('PAYDAY_ACCUMULATOR', 'V1', 0.90, 0.80, 2.00, 0.70, 0.90, 0.55, 0.05, 120000.00, 1, 1.0000, 'SECOND', current_timestamp)
                 """
         );
         jdbcTemplate.update(
@@ -3248,11 +3291,12 @@ class AutoMarketServiceTest {
         jdbcTemplate.update(
                 """
                 insert into stock_auto_participant_profile_config(
-                    profile_type, order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
+                    profile_type, behavior_model_version,
+                    order_multiplier, aggression_multiplier, order_ttl_multiplier, quantity_multiplier,
                     holding_patience_weight, deep_loss_hold_weight, profit_taking_weight,
                     recurring_deposit_amount, recurring_deposit_interval_days, updated_at
                 )
-                values ('NOISE_TRADER', ?, 1.00, 1.00, ?, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
+                values ('NOISE_TRADER', 'V1', ?, 1.00, 1.00, ?, 0.10, 0.05, 0.20, 0.00, 30, current_timestamp)
                 """,
                 new BigDecimal(orderMultiplier),
                 new BigDecimal(quantityMultiplier)
@@ -3275,13 +3319,96 @@ class AutoMarketServiceTest {
     }
 
     private int runAutoMarketStep() {
+        insertMissingLegacyProfileConfigs();
         autoMarketProfileQueueReconcileService.reconcileReadyProfiles();
         return autoMarketService.runAutoMarketStep();
     }
 
     private int runAutoMarketStepWithDueProfile() {
+        insertMissingLegacyProfileConfigs();
         autoMarketProfileQueueReconcileService.reconcileReadyProfiles();
         autoMarketReadyProfileQueue.enqueue(AutoParticipantProfileType.NOISE_TRADER, LocalDateTime.MIN);
         return autoMarketService.runAutoMarketStep();
+    }
+
+    private void insertMissingLegacyProfileConfigs() {
+        Map<AutoParticipantProfileType, ProfilePolicy> defaults =
+                AutoProfileBehaviorRegistry.createDefault().defaultPolicies();
+        List<String> activeProfiles = jdbcTemplate.queryForList(
+                "select distinct profile_type from stock_auto_participant where enabled = true and withdrawn_at is null",
+                String.class
+        );
+        for (String activeProfile : activeProfiles) {
+            insertProfileConfigIfMissing(AutoParticipantProfileType.parseOrDefault(activeProfile), "V1", defaults);
+        }
+    }
+
+    private void insertProfileConfigIfMissing(
+            AutoParticipantProfileType profileType,
+            String modelVersion
+    ) {
+        insertProfileConfigIfMissing(
+                profileType,
+                modelVersion,
+                AutoProfileBehaviorRegistry.createDefault().defaultPolicies()
+        );
+    }
+
+    private void insertProfileConfigIfMissing(
+            AutoParticipantProfileType profileType,
+            String modelVersion,
+            Map<AutoParticipantProfileType, ProfilePolicy> defaults
+    ) {
+        if (queryLong(
+                "select count(*) from stock_auto_participant_profile_config where profile_type = ?",
+                profileType.name()
+        ) > 0) {
+            return;
+        }
+        ProfilePolicy policy = defaults.get(profileType);
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_profile_config(
+                    profile_type, behavior_model_version,
+                    news_weight, momentum_weight, contrarian_weight, loss_aversion_weight,
+                    herding_weight, market_making_weight, overconfidence_weight, noise_weight,
+                    panic_sell_weight, dip_buy_weight, order_multiplier,
+                    decision_frequency_multiplier, orders_per_decision_multiplier,
+                    aggression_multiplier, price_pressure_sensitivity, order_ttl_multiplier,
+                    quantity_multiplier, holding_patience_weight, deep_loss_hold_weight,
+                    profit_taking_weight, pricing_mode, exit_mode, inventory_mode,
+                    recurring_deposit_amount, recurring_deposit_interval_days,
+                    recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
+                ) values (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    0.00, 30, 30.0000, 'DAY', current_timestamp
+                )
+                """,
+                profileType.name(),
+                modelVersion,
+                BigDecimal.valueOf(policy.newsWeight()),
+                BigDecimal.valueOf(policy.momentumWeight()),
+                BigDecimal.valueOf(policy.contrarianWeight()),
+                BigDecimal.valueOf(policy.lossAversionWeight()),
+                BigDecimal.valueOf(policy.herdingWeight()),
+                BigDecimal.valueOf(policy.marketMakingWeight()),
+                BigDecimal.valueOf(policy.overconfidenceWeight()),
+                BigDecimal.valueOf(policy.noiseWeight()),
+                BigDecimal.valueOf(policy.panicSellWeight()),
+                BigDecimal.valueOf(policy.dipBuyWeight()),
+                BigDecimal.valueOf(policy.orderMultiplier()),
+                BigDecimal.valueOf(policy.executionPolicy().decisionFrequencyMultiplier()),
+                BigDecimal.valueOf(policy.executionPolicy().ordersPerDecisionMultiplier()),
+                BigDecimal.valueOf(policy.aggressionMultiplier()),
+                BigDecimal.valueOf(policy.pricePressureSensitivity()),
+                BigDecimal.valueOf(policy.orderTtlMultiplier()),
+                BigDecimal.valueOf(policy.quantityMultiplier()),
+                BigDecimal.valueOf(policy.holdingPatienceWeight()),
+                BigDecimal.valueOf(policy.deepLossHoldWeight()),
+                BigDecimal.valueOf(policy.profitTakingWeight()),
+                policy.executionPolicy().pricingMode().name(),
+                policy.executionPolicy().exitMode().name(),
+                policy.executionPolicy().inventoryMode().name()
+        );
     }
 }

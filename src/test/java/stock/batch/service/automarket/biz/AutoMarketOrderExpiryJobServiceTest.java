@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -23,6 +24,7 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
+import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 import stock.batch.service.execution.lock.OrderBookSymbolLock;
 import stock.batch.service.marketclose.biz.MarketSessionFenceService;
@@ -86,6 +88,14 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
+        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
+        AutoMarketOrderExpiryService.ExpiryCandidatePlan plan = expiryPlan();
+        when(autoMarketOrderExpiryService.planExpiryCandidates(
+                org.mockito.ArgumentMatchers.eq(config),
+                org.mockito.ArgumentMatchers.eq(Map.of()),
+                any(LocalDateTime.class),
+                org.mockito.ArgumentMatchers.eq(List.of(1L))
+        )).thenReturn(plan);
         when(marketSessionFenceService.lockOpenOrderBookFences(List.of("STOCK001")))
                 .thenReturn(Optional.of(openApproval("STOCK001")));
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
@@ -93,9 +103,9 @@ class AutoMarketOrderExpiryJobServiceTest {
             TransactionCallback<Integer> callback = invocation.getArgument(0);
             return callback.doInTransaction(transactionStatus);
         });
-        when(autoMarketOrderExpiryService.expireOldAutoOrders(
+        when(autoMarketOrderExpiryService.expirePlannedOrders(
                 org.mockito.ArgumentMatchers.eq(config),
-                org.mockito.ArgumentMatchers.eq(Map.of()),
+                org.mockito.ArgumentMatchers.eq(plan),
                 any(LocalDateTime.class)
         ))
                 .thenThrow(new CannotAcquireLockException("deadlock"))
@@ -104,9 +114,9 @@ class AutoMarketOrderExpiryJobServiceTest {
         int expiredCount = service.expireAutoMarketOrders();
 
         assertThat(expiredCount).isEqualTo(3);
-        verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expireOldAutoOrders(
+        verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expirePlannedOrders(
                 org.mockito.ArgumentMatchers.eq(config),
-                org.mockito.ArgumentMatchers.eq(Map.of()),
+                org.mockito.ArgumentMatchers.eq(plan),
                 any(LocalDateTime.class)
         );
     }
@@ -164,6 +174,14 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
+        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
+        AutoMarketOrderExpiryService.ExpiryCandidatePlan plan = expiryPlan();
+        when(autoMarketOrderExpiryService.planExpiryCandidates(
+                org.mockito.ArgumentMatchers.eq(config),
+                org.mockito.ArgumentMatchers.eq(Map.of()),
+                any(LocalDateTime.class),
+                org.mockito.ArgumentMatchers.eq(List.of(1L))
+        )).thenReturn(plan);
         when(marketSessionFenceService.lockOpenOrderBookFences(List.of("STOCK001")))
                 .thenReturn(Optional.of(openApproval("STOCK001")));
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
@@ -171,9 +189,9 @@ class AutoMarketOrderExpiryJobServiceTest {
             TransactionCallback<Integer> callback = invocation.getArgument(0);
             return callback.doInTransaction(transactionStatus);
         });
-        when(autoMarketOrderExpiryService.expireOldAutoOrders(
+        when(autoMarketOrderExpiryService.expirePlannedOrders(
                 org.mockito.ArgumentMatchers.eq(config),
-                org.mockito.ArgumentMatchers.eq(Map.of()),
+                org.mockito.ArgumentMatchers.eq(plan),
                 any(LocalDateTime.class)
         ))
                 .thenThrow(new CannotAcquireLockException("deadlock"));
@@ -181,15 +199,15 @@ class AutoMarketOrderExpiryJobServiceTest {
         int expiredCount = service.expireAutoMarketOrders();
 
         assertThat(expiredCount).isZero();
-        verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expireOldAutoOrders(
+        verify(autoMarketOrderExpiryService, org.mockito.Mockito.times(2)).expirePlannedOrders(
                 org.mockito.ArgumentMatchers.eq(config),
-                org.mockito.ArgumentMatchers.eq(Map.of()),
+                org.mockito.ArgumentMatchers.eq(plan),
                 any(LocalDateTime.class)
         );
     }
 
     @Test
-    void expireAutoMarketOrders_symbolLockBusy_skipsSymbol() {
+    void expireAutoMarketOrders_candidatePlanningRunsBeforeBusySymbolLockAndSkipsMutation() {
         AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
         AutoMarketOrderExpiryService autoMarketOrderExpiryService = mock(AutoMarketOrderExpiryService.class);
         AutoProfileBehaviorSupport autoProfileBehaviorSupport = mock(AutoProfileBehaviorSupport.class);
@@ -197,7 +215,11 @@ class AutoMarketOrderExpiryJobServiceTest {
         SimulationMarketSessionService simulationMarketSessionService = mock(SimulationMarketSessionService.class);
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
         MarketSessionFenceService marketSessionFenceService = mock(MarketSessionFenceService.class);
-        OrderBookSymbolLock orderBookSymbolLock = symbol -> Optional.empty();
+        AtomicBoolean candidatePlanningCompleted = new AtomicBoolean();
+        OrderBookSymbolLock orderBookSymbolLock = symbol -> {
+            assertThat(candidatePlanningCompleted).isTrue();
+            return Optional.empty();
+        };
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
                 100,
@@ -238,12 +260,28 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
+        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
+        when(autoMarketOrderExpiryService.planExpiryCandidates(
+                org.mockito.ArgumentMatchers.eq(config),
+                org.mockito.ArgumentMatchers.eq(Map.of()),
+                any(LocalDateTime.class),
+                org.mockito.ArgumentMatchers.eq(List.of(1L))
+        )).thenAnswer(invocation -> {
+            candidatePlanningCompleted.set(true);
+            return expiryPlan();
+        });
 
         int expiredCount = service.expireAutoMarketOrders();
 
         assertThat(expiredCount).isZero();
         assertThat(meterRegistry.counter("stock.auto.market.order.expiry.symbol.lock.skips").count()).isEqualTo(1.0);
-        verify(autoMarketOrderExpiryService, never()).expireOldAutoOrders(any(), any(), any());
+        verify(autoMarketOrderExpiryService).planExpiryCandidates(
+                org.mockito.ArgumentMatchers.eq(config),
+                org.mockito.ArgumentMatchers.eq(Map.of()),
+                any(LocalDateTime.class),
+                org.mockito.ArgumentMatchers.eq(List.of(1L))
+        );
+        verify(autoMarketOrderExpiryService, never()).expirePlannedOrders(any(), any(), any());
     }
 
     @Test
@@ -288,7 +326,19 @@ class AutoMarketOrderExpiryJobServiceTest {
 
         assertThat(expiredCount).isZero();
         verify(autoMarketReader, never()).findEnabledMaintenanceConfigs();
-        verify(autoMarketOrderExpiryService, never()).expireOldAutoOrders(any(), any(), any());
+        verify(autoMarketOrderExpiryService, never()).loadActiveV2MarketMakerAccountIds();
+        verify(autoMarketOrderExpiryService, never()).planExpiryCandidates(any(), any(), any(), any());
+        verify(autoMarketOrderExpiryService, never()).expirePlannedOrders(any(), any(), any());
+    }
+
+    private AutoMarketOrderExpiryService.ExpiryCandidatePlan expiryPlan() {
+        return new AutoMarketOrderExpiryService.ExpiryCandidatePlan(
+                Map.of(),
+                LocalDateTime.of(2026, 7, 3, 8, 59),
+                100,
+                List.of(),
+                List.of(mock(AutoOrder.class))
+        );
     }
 
     private MarketSessionFenceService.MarketSessionApproval openApproval(String symbol) {

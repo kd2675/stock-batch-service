@@ -17,6 +17,10 @@ class MarketCloseRolloverWriterSqlContractTest {
     @Test
     void marketCloseSql_symbolScopedPathsAvoidNullablePredicatesOnVolumeTables() throws Exception {
         String source = Files.readString(WRITER_SOURCE, StandardCharsets.UTF_8);
+        String symbolReportPath = source.substring(
+                source.indexOf("public int snapshotOrderBookDailySymbols("),
+                source.indexOf("public int deleteOrderBookDailySnapshot(")
+        );
 
         assertThat(source)
                 .doesNotContain("? is null or")
@@ -30,7 +34,8 @@ class MarketCloseRolloverWriterSqlContractTest {
                 .contains("where i.symbol = :symbol")
                 .contains("idx_stock_execution_source_symbol_time")
                 .contains("idx_stock_execution_candle")
-                .contains("idx_stock_execution_market_report_flow")
+                .contains("idx_stock_execution_market_report_flow");
+        assertThat(symbolReportPath)
                 .doesNotContain("row_number() over");
     }
 

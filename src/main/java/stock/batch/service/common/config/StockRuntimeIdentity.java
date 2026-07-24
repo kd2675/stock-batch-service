@@ -10,11 +10,13 @@ public class StockRuntimeIdentity {
 
     private final String buildVersion;
     private final String schemaVersion;
+    private final String eodContractVersion;
 
     public StockRuntimeIdentity(
             ObjectProvider<BuildProperties> buildPropertiesProvider,
             @Value("${BUILD_SHA:}") String environmentBuildSha,
-            @Value("${STOCK_SCHEMA_VERSION:2026-07-22-portfolio-return-v5}") String configuredSchemaVersion
+            @Value("${STOCK_SCHEMA_VERSION:2026-07-23-auto-profile-v2-direct}") String configuredSchemaVersion,
+            @Value("${STOCK_EOD_CONTRACT_VERSION:EOD_V1}") String configuredEodContractVersion
     ) {
         BuildProperties buildProperties = buildPropertiesProvider.getIfAvailable();
         this.buildVersion = firstNonBlank(
@@ -24,6 +26,7 @@ public class StockRuntimeIdentity {
                 "unknown"
         );
         this.schemaVersion = firstNonBlank(configuredSchemaVersion, "unapplied");
+        this.eodContractVersion = firstNonBlank(configuredEodContractVersion, "unapplied");
     }
 
     public String buildVersion() {
@@ -32,6 +35,10 @@ public class StockRuntimeIdentity {
 
     public String schemaVersion() {
         return schemaVersion;
+    }
+
+    public String eodContractVersion() {
+        return eodContractVersion;
     }
 
     private String firstNonBlank(String... candidates) {
