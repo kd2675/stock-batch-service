@@ -16,7 +16,10 @@ import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
+import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
@@ -70,6 +73,9 @@ public class StockBatchJobLauncher {
     private final AutoMarketJob autoMarketTask;
     private final AutoMarketOrderExpiryJob autoMarketOrderExpiryTask;
     private final ListingAutoMarketJob listingAutoMarketTask;
+    private final LiquidityProviderMarketJob liquidityProviderMarketTask;
+    private final IssueUnderwriterMarketJob issueUnderwriterMarketTask;
+    private final InstitutionShadowDecisionJob institutionShadowDecisionTask;
     private final HoldingCleanupJob holdingCleanupTask;
     private final BatchMetadataRetentionJob batchMetadataRetentionTask;
     private final Job autoParticipantCashFlowJob;
@@ -95,6 +101,9 @@ public class StockBatchJobLauncher {
             AutoMarketJob autoMarketTask,
             AutoMarketOrderExpiryJob autoMarketOrderExpiryTask,
             ListingAutoMarketJob listingAutoMarketTask,
+            LiquidityProviderMarketJob liquidityProviderMarketTask,
+            IssueUnderwriterMarketJob issueUnderwriterMarketTask,
+            InstitutionShadowDecisionJob institutionShadowDecisionTask,
             HoldingCleanupJob holdingCleanupTask,
             BatchMetadataRetentionJob batchMetadataRetentionTask,
             @Qualifier(AutoParticipantCashFlowJob.JOB_NAME) Job autoParticipantCashFlowJob,
@@ -119,6 +128,9 @@ public class StockBatchJobLauncher {
         this.autoMarketTask = autoMarketTask;
         this.autoMarketOrderExpiryTask = autoMarketOrderExpiryTask;
         this.listingAutoMarketTask = listingAutoMarketTask;
+        this.liquidityProviderMarketTask = liquidityProviderMarketTask;
+        this.issueUnderwriterMarketTask = issueUnderwriterMarketTask;
+        this.institutionShadowDecisionTask = institutionShadowDecisionTask;
         this.holdingCleanupTask = holdingCleanupTask;
         this.batchMetadataRetentionTask = batchMetadataRetentionTask;
         this.autoParticipantCashFlowJob = autoParticipantCashFlowJob;
@@ -377,6 +389,18 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse runListingAutoMarket() {
         return stockBatchJobRunner.run(listingAutoMarketTask);
+    }
+
+    public StockBatchJobRunResponse runLiquidityProviderMarket() {
+        return stockBatchJobRunner.run(liquidityProviderMarketTask);
+    }
+
+    public StockBatchJobRunResponse runIssueUnderwriterMarket() {
+        return stockBatchJobRunner.run(issueUnderwriterMarketTask);
+    }
+
+    public StockBatchJobRunResponse runInstitutionShadowDecisions() {
+        return stockBatchJobRunner.run(institutionShadowDecisionTask);
     }
 
     public StockBatchJobRunResponse settlePortfolios() {

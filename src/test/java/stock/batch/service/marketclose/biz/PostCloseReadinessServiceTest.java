@@ -34,9 +34,9 @@ class PostCloseReadinessServiceTest {
     private static final Path SOURCE = Path.of(
             "src/main/java/stock/batch/service/marketclose/biz/PostCloseReadinessService.java"
     );
-    private static final String HOT_LEDGER_SQL_PATTERN =
+    private static final String ORDER_EXECUTION_LEDGER_SQL_PATTERN =
             "(?i)\\b(?:from|join|update|insert\\s+into|delete\\s+from)\\s+"
-                    + "stock_(?:order|execution|holding)\\b";
+                    + "stock_(?:order|execution)\\b";
 
     private JdbcTemplate jdbcTemplate;
     private PostCloseCycleService postCloseCycleService;
@@ -69,11 +69,11 @@ class PostCloseReadinessServiceTest {
 
         int checked = service.validateReadyToOpen(41L, LocalDate.of(2026, 7, 2));
 
-        assertThat(checked).isEqualTo(10);
+        assertThat(checked).isEqualTo(11);
         assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from stock_post_close_readiness_check where close_cycle_id = 41",
                 Long.class
-        )).isEqualTo(10L);
+        )).isEqualTo(11L);
     }
 
     @Test
@@ -93,6 +93,47 @@ class PostCloseReadinessServiceTest {
                 """,
                 Long.class
         )).isEqualTo(1L);
+    }
+
+    @Test
+    void validateReadyToOpen_currentHoldingSupplyMismatch_failsClosed() {
+        when(postCloseCycleService.findById(41L)).thenReturn(Optional.of(cycle(PostClosePhase.AUTO_MARKET_PREPARED)));
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = 999
+                 where symbol = 'DEMO001'
+                """
+        );
+
+        assertThatThrownBy(() -> service.validateReadyToOpen(41L, LocalDate.of(2026, 7, 2)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("SHARE_SUPPLY=1");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select failure_count
+                  from stock_post_close_readiness_check
+                 where close_cycle_id = 41
+                   and check_code = 'SHARE_SUPPLY'
+                """,
+                Long.class
+        )).isEqualTo(1L);
+    }
+
+    @Test
+    void validateReadyToOpen_holdingReservationExceedsQuantity_failsClosed() {
+        when(postCloseCycleService.findById(41L)).thenReturn(Optional.of(cycle(PostClosePhase.AUTO_MARKET_PREPARED)));
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set reserved_quantity = quantity + 1
+                 where symbol = 'DEMO001'
+                """
+        );
+
+        assertThatThrownBy(() -> service.validateReadyToOpen(41L, LocalDate.of(2026, 7, 2)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("SHARE_SUPPLY=1");
     }
 
     @Test
@@ -156,10 +197,10 @@ class PostCloseReadinessServiceTest {
     }
 
     @Test
-    void readinessQuery_doesNotReadOrWriteHotTradingLedgers() throws IOException {
+    void readinessQuery_doesNotReadOrWriteOrderOrExecutionLedgers() throws IOException {
         String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
 
-        assertThat(source).doesNotContainPattern(HOT_LEDGER_SQL_PATTERN);
+        assertThat(source).doesNotContainPattern(ORDER_EXECUTION_LEDGER_SQL_PATTERN);
     }
 
     private DataSource dataSource() {
@@ -215,6 +256,8 @@ class PostCloseReadinessServiceTest {
                 create table stock_order_book_daily_snapshot (
                     close_run_id bigint not null,
                     symbol varchar(20) not null,
+                    enabled boolean not null,
+                    issued_shares bigint not null,
                     primary key (close_run_id, symbol)
                 )
                 """);
@@ -227,7 +270,17 @@ class PostCloseReadinessServiceTest {
         jdbcTemplate.execute("""
                 create table stock_order_book_instrument (
                     symbol varchar(20) primary key,
-                    enabled boolean not null
+                    enabled boolean not null,
+                    issued_shares bigint not null
+                )
+                """);
+        jdbcTemplate.execute("""
+                create table stock_holding (
+                    account_id bigint not null,
+                    symbol varchar(20) not null,
+                    quantity bigint not null,
+                    reserved_quantity bigint not null,
+                    primary key (account_id, symbol)
                 )
                 """);
         jdbcTemplate.execute("""
@@ -281,16 +334,22 @@ class PostCloseReadinessServiceTest {
                 values (41, 91, 'DEMO001', true)
                 """);
         jdbcTemplate.update("""
-                insert into stock_order_book_daily_snapshot(close_run_id, symbol)
-                values (91, 'DEMO001')
+                insert into stock_order_book_daily_snapshot(
+                    close_run_id, symbol, enabled, issued_shares
+                ) values (91, 'DEMO001', true, 1000)
                 """);
         jdbcTemplate.update("""
                 insert into stock_auto_market_config(symbol, enabled)
                 values ('DEMO001', true)
                 """);
         jdbcTemplate.update("""
-                insert into stock_order_book_instrument(symbol, enabled)
-                values ('DEMO001', true)
+                insert into stock_order_book_instrument(symbol, enabled, issued_shares)
+                values ('DEMO001', true, 1000)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity
+                ) values (501, 'DEMO001', 1000, 0)
                 """);
         jdbcTemplate.update("""
                 insert into stock_order_book_daily_regime(symbol, simulation_trade_date, regime_phase)

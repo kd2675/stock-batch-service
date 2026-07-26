@@ -648,7 +648,9 @@ public class InternalOrderBookExecutionService {
         if (!symbol.equals(buyOrder.symbol()) || !symbol.equals(sellOrder.symbol())) {
             return false;
         }
-        if (buyOrder.accountId() == sellOrder.accountId()) {
+        if (buyOrder.accountId() == sellOrder.accountId()
+                || buyOrder.resolvedSelfTradeGroupId()
+                .equals(sellOrder.resolvedSelfTradeGroupId())) {
             return false;
         }
         if ("MARKET".equals(buyOrder.orderType())) {

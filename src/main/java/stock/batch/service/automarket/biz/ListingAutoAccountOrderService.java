@@ -14,6 +14,7 @@ import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.automarket.reader.ListingAutoAccountReader;
+import stock.batch.service.batch.automarket.model.StockOrderOriginType;
 import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.normalizePriceWithinDailyLimit;
@@ -184,7 +185,8 @@ class ListingAutoAccountOrderService {
                         config.symbol(),
                         side,
                         price,
-                        quantity
+                        quantity,
+                        StockOrderOriginType.LISTING_AUTO_LEGACY
                 );
                 orders.add(order);
                 remainingDeficit -= quantity;

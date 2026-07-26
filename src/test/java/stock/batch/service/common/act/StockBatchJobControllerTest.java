@@ -127,7 +127,7 @@ class StockBatchJobControllerTest {
     void getRuntimeControls_getRequest_returnsAllBatchJobRuntimeStatuses() throws Exception {
         mockMvc.perform(get("/internal/stock-batch/v1/jobs/runtime-controls"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(17))
+                .andExpect(jsonPath("$.data.length()").value(20))
                 .andExpect(jsonPath("$.data[0].jobName").value("market-data-refresh"))
                 .andExpect(jsonPath("$.data[2].jobName").value("execution-account-day-summary-flush"))
                 .andExpect(jsonPath("$.data[5].jobName").value("auto-market-daily-regime-pre-create"))
@@ -135,11 +135,14 @@ class StockBatchJobControllerTest {
                 .andExpect(jsonPath("$.data[7].jobName").value("auto-market-preopen-profile-queue-reconcile"))
                 .andExpect(jsonPath("$.data[8].jobName").value("auto-market-order-expiry"))
                 .andExpect(jsonPath("$.data[9].jobName").value("listing-auto-market"))
-                .andExpect(jsonPath("$.data[12].jobName").value("portfolio-settlement"))
-                .andExpect(jsonPath("$.data[13].jobName").value("post-close-report-aggregation"))
-                .andExpect(jsonPath("$.data[14].jobName").value("market-open-readiness"))
-                .andExpect(jsonPath("$.data[15].jobName").value("holding-cleanup"))
-                .andExpect(jsonPath("$.data[16].jobName").value("batch-metadata-retention"));
+                .andExpect(jsonPath("$.data[10].jobName").value("liquidity-provider-market"))
+                .andExpect(jsonPath("$.data[11].jobName").value("issue-underwriter-market"))
+                .andExpect(jsonPath("$.data[12].jobName").value("institution-shadow-decision"))
+                .andExpect(jsonPath("$.data[15].jobName").value("portfolio-settlement"))
+                .andExpect(jsonPath("$.data[16].jobName").value("post-close-report-aggregation"))
+                .andExpect(jsonPath("$.data[17].jobName").value("market-open-readiness"))
+                .andExpect(jsonPath("$.data[18].jobName").value("holding-cleanup"))
+                .andExpect(jsonPath("$.data[19].jobName").value("batch-metadata-retention"));
     }
 
     @Test
@@ -266,6 +269,20 @@ class StockBatchJobControllerTest {
     }
 
     @Test
+    void runLiquidityProviderMarket_postRequest_returnsJobRunResponse() throws Exception {
+        when(stockBatchJobLauncher.runLiquidityProviderMarket())
+                .thenReturn(response("liquidity-provider-market", "order-book"));
+
+        mockMvc.perform(post("/internal/stock-batch/v1/jobs/liquidity-provider-market/run"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.job").value("liquidity-provider-market"))
+                .andExpect(jsonPath("$.data.executionMode").value("order-book"))
+                .andExpect(jsonPath("$.data.processedCount").value(7));
+
+        verify(stockBatchJobLauncher).runLiquidityProviderMarket();
+    }
+
+    @Test
     void settlePortfolios_postRequest_returnsJobRunResponse() throws Exception {
         when(stockBatchJobLauncher.settlePortfolios()).thenReturn(response("portfolio-settlement", "n/a"));
 
@@ -334,6 +351,9 @@ class StockBatchJobControllerTest {
     private BatchJobRuntimeCatalog createRuntimeCatalog() {
         return new BatchJobRuntimeCatalog(
                 batchJobRuntimeControl,
+                true,
+                true,
+                true,
                 true,
                 true,
                 true,

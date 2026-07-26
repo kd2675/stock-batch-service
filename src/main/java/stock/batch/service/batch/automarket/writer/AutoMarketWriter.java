@@ -87,7 +87,7 @@ public class AutoMarketWriter {
         Map<Long, AccountReservationState> states = new LinkedHashMap<>();
         jdbcTemplate.query(
                 """
-                select id, status, cash_balance
+                select id, status, cash_balance, self_trade_group_id
                   from stock_account
                  where id in (%s)
                  order by id asc
@@ -98,7 +98,8 @@ public class AutoMarketWriter {
                     states.put(accountId, new AccountReservationState(
                             accountId,
                             resultSet.getString("status"),
-                            resultSet.getBigDecimal("cash_balance")
+                            resultSet.getBigDecimal("cash_balance"),
+                            resultSet.getString("self_trade_group_id")
                     ));
                 },
                 orderedAccountIds.toArray()
@@ -561,12 +562,14 @@ public class AutoMarketWriter {
         }
         String values = String.join(",", Collections.nCopies(
                 orders.size(),
-                "(?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?, ?, ?, ?, ?)"
+                "(?, ?, ?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?, ?, ?, ?, ?)"
         ));
-        List<Object> parameters = new ArrayList<>(orders.size() * 13);
+        List<Object> parameters = new ArrayList<>(orders.size() * 15);
         for (LimitOrderInsert order : orders) {
             parameters.add(order.clientOrderId());
             parameters.add(order.accountId());
+            parameters.add(order.originType());
+            parameters.add(order.selfTradeGroupId());
             parameters.add(order.symbol());
             parameters.add(order.side());
             parameters.add(order.price());
@@ -584,7 +587,8 @@ public class AutoMarketWriter {
             insertedCount = jdbcTemplate.update(
                     """
                     insert into stock_order(
-                        client_order_id, account_id, symbol, market_type, side, order_type, status,
+                        client_order_id, account_id, origin_type, self_trade_group_id,
+                        symbol, market_type, side, order_type, status,
                         limit_price, quantity, filled_quantity, average_fill_price,
                         reserved_cash, funding_budget_type, expires_at, auto_profile_type,
                         auto_behavior_model_version, created_at, updated_at
@@ -601,6 +605,58 @@ public class AutoMarketWriter {
             enqueueInsertedSymbolsAfterCommit(orders);
         }
         return insertedCount;
+    }
+
+    public int insertOrderStrategyOrigins(
+            List<StrategyOriginInsert> origins,
+            LocalDateTime createdAt
+    ) {
+        if (origins == null || origins.isEmpty()) {
+            return 0;
+        }
+        if (origins.size() > MAX_LIMIT_ORDER_INSERT_ROWS) {
+            throw new IllegalArgumentException(
+                    "Order strategy-origin insert exceeds the maximum row count: %d > %d"
+                            .formatted(origins.size(), MAX_LIMIT_ORDER_INSERT_ROWS)
+            );
+        }
+        List<Object[]> parameters = new ArrayList<>(origins.size());
+        for (StrategyOriginInsert origin : origins) {
+            parameters.add(new Object[] {
+                    origin.originType(),
+                    origin.participantId(),
+                    origin.portfolioId(),
+                    origin.decisionRunId(),
+                    origin.liquidityMandateId(),
+                    origin.underwritingContractId(),
+                    origin.policyVersion(),
+                    createdAt,
+                    origin.clientOrderId()
+            });
+        }
+        int[] updates = jdbcTemplate.batchUpdate(
+                """
+                insert into stock_order_strategy_origin(
+                    order_id, origin_type, participant_id, portfolio_id,
+                    decision_run_id, liquidity_mandate_id, underwriting_contract_id,
+                    policy_version, created_at
+                )
+                select order_row.id, ?, ?, ?, ?, ?, ?, ?, ?
+                  from stock_order order_row
+                 where order_row.client_order_id = ?
+                """,
+                parameters
+        );
+        int inserted = 0;
+        for (int update : updates) {
+            if (update != 1) {
+                throw new IllegalStateException(
+                        "Order strategy-origin insert could not resolve exactly one order"
+                );
+            }
+            inserted++;
+        }
+        return inserted;
     }
 
     public int markAverageDownDecisions(
@@ -694,7 +750,23 @@ public class AutoMarketWriter {
         });
     }
 
-    public record AccountReservationState(long accountId, String status, BigDecimal cashBalance) {
+    public record AccountReservationState(
+            long accountId,
+            String status,
+            BigDecimal cashBalance,
+            String selfTradeGroupId
+    ) {
+
+        public AccountReservationState(long accountId, String status, BigDecimal cashBalance) {
+            this(accountId, status, cashBalance, null);
+        }
+
+        public String resolvedSelfTradeGroupId() {
+            if (selfTradeGroupId != null && !selfTradeGroupId.isBlank()) {
+                return selfTradeGroupId;
+            }
+            return "ACCOUNT:" + accountId;
+        }
     }
 
     public record HoldingReservationKey(long accountId, String symbol) {
@@ -725,7 +797,9 @@ public class AutoMarketWriter {
             String fundingBudgetType,
             LocalDateTime expiresAt,
             String autoProfileType,
-            String autoBehaviorModelVersion
+            String autoBehaviorModelVersion,
+            String originType,
+            String selfTradeGroupId
     ) {
         public LimitOrderInsert(
                 String clientOrderId,
@@ -736,7 +810,21 @@ public class AutoMarketWriter {
                 long quantity,
                 BigDecimal reservedCash
         ) {
-            this(clientOrderId, accountId, symbol, side, price, quantity, reservedCash, null, null, null, null);
+            this(
+                    clientOrderId,
+                    accountId,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    reservedCash,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "AUTO_PARTICIPANT",
+                    "ACCOUNT:" + accountId
+            );
         }
 
         public LimitOrderInsert(
@@ -760,8 +848,44 @@ public class AutoMarketWriter {
                     fundingBudgetType,
                     null,
                     null,
-                    null
+                    null,
+                    "AUTO_PARTICIPANT",
+                    "ACCOUNT:" + accountId
             );
+        }
+
+        public LimitOrderInsert {
+            if (originType == null || originType.isBlank()) {
+                throw new IllegalArgumentException("Order origin type is required");
+            }
+            if (selfTradeGroupId == null || selfTradeGroupId.isBlank()) {
+                throw new IllegalArgumentException("Self-trade group id is required");
+            }
+        }
+    }
+
+    public record StrategyOriginInsert(
+            String clientOrderId,
+            String originType,
+            Long participantId,
+            Long portfolioId,
+            Long decisionRunId,
+            Long liquidityMandateId,
+            Long underwritingContractId,
+            long policyVersion
+    ) {
+        public StrategyOriginInsert {
+            if (clientOrderId == null || clientOrderId.isBlank()) {
+                throw new IllegalArgumentException("Strategy-origin client order id is required");
+            }
+            if (originType == null || originType.isBlank()) {
+                throw new IllegalArgumentException("Strategy-origin type is required");
+            }
+            if (participantId == null || participantId <= 0L || policyVersion <= 0L) {
+                throw new IllegalArgumentException(
+                        "Strategy-origin participant and policy version must be positive"
+                );
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 package stock.batch.service.batch.corporateaction.writer;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -247,6 +248,27 @@ public class CorporateActionWriter {
     }
 
     public int addIssuedAndTradableShares(String symbol, long shareQuantity, LocalDateTime updatedAt) {
+        return addIssuedAndTradableShares(
+                symbol,
+                shareQuantity,
+                shareQuantity,
+                updatedAt
+        );
+    }
+
+    public int addIssuedAndTradableShares(
+            String symbol,
+            long issuedShareQuantity,
+            long tradableShareQuantity,
+            LocalDateTime updatedAt
+    ) {
+        if (issuedShareQuantity < 0L
+                || tradableShareQuantity < 0L
+                || tradableShareQuantity > issuedShareQuantity) {
+            throw new IllegalArgumentException(
+                    "Issued-share increase must contain a valid tradable-share subset"
+            );
+        }
         return jdbcTemplate.update(
                 """
                 update stock_order_book_instrument
@@ -255,8 +277,8 @@ public class CorporateActionWriter {
                        updated_at = ?
                  where symbol = ?
                 """,
-                shareQuantity,
-                shareQuantity,
+                issuedShareQuantity,
+                tradableShareQuantity,
                 updatedAt,
                 symbol
         );
@@ -276,6 +298,263 @@ public class CorporateActionWriter {
                 updatedAt,
                 symbol
         );
+    }
+
+    /**
+     * Keeps quantity-denominated market-role policies economically neutral across a split.
+     * Historical allocation and decision ledgers deliberately remain in their original units.
+     */
+    public void multiplyAutomaticMarketQuantitiesForSplit(
+            String symbol,
+            int multiplier,
+            LocalDateTime updatedAt
+    ) {
+        if (symbol == null || symbol.isBlank()) {
+            throw new IllegalArgumentException("Stock split symbol is required");
+        }
+        if (multiplier <= 1) {
+            throw new IllegalArgumentException("Stock split multiplier must be greater than one");
+        }
+        jdbcTemplate.update(
+                """
+                update stock_institution_symbol_mandate
+                   set reference_daily_volume = reference_daily_volume * ?,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_liquidity_mandate
+                   set max_order_quantity = max_order_quantity * ?,
+                       reference_daily_volume = reference_daily_volume * ?,
+                       target_inventory_quantity = target_inventory_quantity * ?,
+                       inventory_band_quantity = inventory_band_quantity * ?,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                multiplier,
+                multiplier,
+                multiplier,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_liquidity_transition
+                   set reference_daily_volume = reference_daily_volume * ?,
+                       seed_inventory_quantity = seed_inventory_quantity * ?,
+                       updated_at = ?
+                 where symbol = ?
+                   and stage = 'SHADOW_READY'
+                """,
+                multiplier,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_listing_auto_account_config
+                   set initial_inventory_quantity = initial_inventory_quantity * ?,
+                       initial_issue_price = initial_issue_price / ?,
+                       max_order_quantity = max_order_quantity * ?,
+                       target_buy_quantity = target_buy_quantity * ?,
+                       target_sell_quantity = target_sell_quantity * ?,
+                       target_holding_quantity = target_holding_quantity * ?,
+                       inventory_band_quantity = inventory_band_quantity * ?,
+                       updated_at = ?
+                 where symbol = ?
+                """,
+                multiplier,
+                multiplier,
+                multiplier,
+                multiplier,
+                multiplier,
+                multiplier,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_underwriting_contract
+                   set issue_price = issue_price / ?,
+                       stabilization_quantity_limit = stabilization_quantity_limit * ?,
+                       updated_at = ?
+                 where symbol = ?
+                   and status in ('ALLOCATED', 'STABILIZING')
+                """,
+                multiplier,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+        jdbcTemplate.update(
+                """
+                update stock_underwriting_daily_supply_state
+                   set reference_daily_volume = reference_daily_volume * ?,
+                       submission_quantity_limit = submission_quantity_limit * ?,
+                       submitted_quantity = submitted_quantity * ?,
+                       updated_at = ?
+                 where underwriting_contract_id in (
+                     select id
+                       from stock_underwriting_contract
+                      where symbol = ?
+                        and status in ('ALLOCATED', 'STABILIZING')
+                 )
+                """,
+                multiplier,
+                multiplier,
+                multiplier,
+                updatedAt,
+                symbol
+        );
+    }
+
+    public long creditFreeShareRoundingResidualToCustody(
+            long actionId,
+            String symbol,
+            long residualQuantity,
+            LocalDate effectiveBusinessDate,
+            LocalDateTime updatedAt
+    ) {
+        if (residualQuantity <= 0L) {
+            return 0L;
+        }
+        List<Long> custodyAccountIds = jdbcTemplate.queryForList(
+                """
+                select account.id
+                  from stock_account account
+                  join stock_market_participant_account participant_account
+                    on participant_account.account_id = account.id
+                  join stock_market_participant participant
+                    on participant.id = participant_account.participant_id
+                 where account.user_key = 'stock-system-custody'
+                   and account.participant_category = 'SYSTEM_CUSTODY'
+                   and account.status = 'ACTIVE'
+                   and account.self_trade_group_id = 'SYSTEM_CUSTODY:DEFAULT'
+                   and participant.participant_code = 'SYSTEM_CUSTODY'
+                   and participant.participant_type = 'SYSTEM_CUSTODY'
+                   and participant.status = 'ACTIVE'
+                   and participant.self_trade_group_id = 'SYSTEM_CUSTODY:DEFAULT'
+                   and participant_account.account_role = 'SYSTEM_CUSTODY'
+                   and participant_account.desk_code = 'DEFAULT'
+                   and participant_account.status = 'ACTIVE'
+                   and participant_account.effective_from <= ?
+                   and (
+                       participant_account.effective_to is null
+                       or participant_account.effective_to >= ?
+                   )
+                 order by account.id
+                 for update
+                """,
+                Long.class,
+                effectiveBusinessDate,
+                effectiveBusinessDate
+        );
+        if (custodyAccountIds.size() != 1) {
+            throw new IllegalStateException(
+                    "Exactly one active default SYSTEM_CUSTODY account is required "
+                            + "for free-share residuals"
+            );
+        }
+        long custodyAccountId = custodyAccountIds.getFirst();
+        BigDecimal referencePrice = jdbcTemplate.queryForObject(
+                """
+                select current_price
+                  from stock_price
+                 where symbol = ?
+                """,
+                BigDecimal.class,
+                symbol
+        );
+        if (referencePrice == null || referencePrice.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalStateException(
+                    "A positive reference price is required for free-share residual custody: "
+                            + symbol
+            );
+        }
+        List<Map<String, Object>> holdings = jdbcTemplate.queryForList(
+                """
+                select id, quantity, average_price
+                  from stock_holding
+                 where account_id = ?
+                   and symbol = ?
+                 for update
+                """,
+                custodyAccountId,
+                symbol
+        );
+        if (holdings.isEmpty()) {
+            jdbcTemplate.update(
+                    """
+                    insert into stock_holding(
+                        account_id, symbol, quantity, reserved_quantity,
+                        average_price, updated_at
+                    ) values (?, ?, ?, 0, ?, ?)
+                    """,
+                    custodyAccountId,
+                    symbol,
+                    residualQuantity,
+                    referencePrice,
+                    updatedAt
+            );
+        } else if (holdings.size() == 1) {
+            jdbcTemplate.update(
+                    """
+                    update stock_holding
+                       set average_price = case
+                               when quantity > 0
+                               then (average_price * quantity) / (quantity + ?)
+                               else ?
+                           end,
+                           quantity = quantity + ?,
+                           updated_at = ?
+                     where account_id = ?
+                       and symbol = ?
+                    """,
+                    residualQuantity,
+                    referencePrice,
+                    residualQuantity,
+                    updatedAt,
+                    custodyAccountId,
+                    symbol
+            );
+        } else {
+            throw new IllegalStateException(
+                    "SYSTEM_CUSTODY contains duplicate holdings for " + symbol
+            );
+        }
+        int insertedAudit = jdbcTemplate.update(
+                """
+                insert into stock_security_allocation_ledger(
+                    idempotency_key, event_type, corporate_action_id,
+                    underwriting_contract_id, source_account_id,
+                    destination_account_id, symbol, quantity, unit_price,
+                    allocation_reason, tradability_status,
+                    effective_business_date, unlock_business_date, created_at
+                ) values (?, 'CAPITAL_INCREASE', ?, null, null, ?, ?, ?, 0.00,
+                          'CORPORATE_ACTION_ALLOCATION', 'LOCKED', ?, null, ?)
+                """,
+                "CORPORATE_ACTION:" + actionId + ":ROUNDING_CUSTODY",
+                actionId,
+                custodyAccountId,
+                symbol,
+                residualQuantity,
+                effectiveBusinessDate,
+                updatedAt
+        );
+        if (insertedAudit != 1) {
+            throw new IllegalStateException(
+                    "Free-share residual allocation audit count mismatch: " + insertedAudit
+            );
+        }
+        return residualQuantity;
     }
 
     public int lockHoldingChunkForSplit(String symbol, List<Long> accountIds) {

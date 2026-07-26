@@ -901,6 +901,170 @@ class StockDdlContractTest {
     }
 
     @Test
+    void marketRoleFoundationAlterDdl_avoidsHotOrderRebuildAndStaysSynced()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_market_role_foundation_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_market_role_foundation_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(batchDdl).contains(
+                "ADD COLUMN origin_type VARCHAR(40) NULL",
+                "ADD COLUMN self_trade_group_id VARCHAR(80) NULL",
+                "ALGORITHM=INSTANT"
+        );
+        assertThat(batchDdl).doesNotContain(
+                "ADD CONSTRAINT chk_stock_order_origin_type",
+                "ADD CONSTRAINT chk_stock_order_self_trade_group"
+        );
+    }
+
+    @Test
+    void liquidityProviderEngineAlterDdl_isCreateOnlyAndSyncedWithCanonicalSchema() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_liquidity_provider_engine_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_liquidity_provider_engine_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String canonicalDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        for (String tableName : List.of(
+                "stock_liquidity_mandate",
+                "stock_liquidity_daily_state"
+        )) {
+            assertThat(normalizeSqlBlock(extractCreateTableBlock(batchDdl, tableName)))
+                    .as(tableName)
+                    .isEqualTo(normalizeSqlBlock(extractCreateTableBlock(canonicalDdl, tableName)));
+        }
+        assertThat(batchDdl).contains(
+                "passive_only BOOLEAN NOT NULL DEFAULT TRUE",
+                "daily_execution_participation_rate",
+                "minimum_quote_lifetime_seconds",
+                "submitted_buy_amount",
+                "executed_sell_amount"
+        ).doesNotContain(
+                "ALTER TABLE",
+                "UPDATE stock_order",
+                "DELETE FROM stock_order"
+        );
+    }
+
+    @Test
+    void liquidityTransitionAlterDdl_isAdditiveAndSyncedWithCanonicalSchema()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_liquidity_transition_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_liquidity_transition_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String canonicalDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(normalizeSqlBlock(
+                extractCreateTableBlock(batchDdl, "stock_liquidity_transition")
+        )).isEqualTo(normalizeSqlBlock(
+                extractCreateTableBlock(canonicalDdl, "stock_liquidity_transition")
+        ));
+        assertThat(batchDdl).contains(
+                "DEFAULT_LIQUIDITY_PROVIDER",
+                "LIQUIDITY_PROVIDER:DEFAULT",
+                "LIQUIDITY_SEED_TRANSFER",
+                "uk_stock_liquidity_transition_symbol",
+                "chk_stock_liquidity_transition_activation"
+        ).doesNotContain(
+                "UPDATE stock_holding",
+                "DELETE FROM stock_holding",
+                "UPDATE stock_order",
+                "DELETE FROM stock_order"
+        );
+    }
+
+    @Test
+    void issuanceUnderwritingAlterDdl_isAdditiveAndSyncedWithCanonicalSchema() throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_issuance_underwriting_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_issuance_underwriting_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String canonicalDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        for (String tableName : List.of(
+                "stock_underwriting_contract",
+                "stock_security_allocation_ledger"
+        )) {
+            assertThat(normalizeSqlBlock(extractCreateTableBlock(batchDdl, tableName)))
+                    .as(tableName)
+                    .isEqualTo(normalizeSqlBlock(extractCreateTableBlock(canonicalDdl, tableName)));
+        }
+        assertThat(batchDdl).contains(
+                "DEFAULT_ISSUE_UNDERWRITER",
+                "ISSUE_UNDERWRITER:DEFAULT",
+                "tradable_allocation_quantity + locked_allocation_quantity = total_issue_quantity",
+                "external_allocation_quantity + underwritten_quantity = tradable_allocation_quantity",
+                "uk_stock_security_allocation_idempotency",
+                "tradability_status VARCHAR(20) NOT NULL"
+        ).doesNotContain(
+                "UPDATE stock_holding",
+                "DELETE FROM stock_holding",
+                "UPDATE stock_order",
+                "DELETE FROM stock_order"
+        );
+    }
+
+    @Test
+    void underwriterScaledSupplyAlterDdl_isCreateOnlyAndSyncedWithCanonicalSchema()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_underwriter_scaled_supply_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_underwriter_scaled_supply_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String canonicalDdl = Files.readString(CANONICAL_MYSQL_DDL, StandardCharsets.UTF_8);
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
+        assertThat(normalizeSqlBlock(extractCreateTableBlock(
+                batchDdl,
+                "stock_underwriting_daily_supply_state"
+        ))).isEqualTo(normalizeSqlBlock(extractCreateTableBlock(
+                canonicalDdl,
+                "stock_underwriting_daily_supply_state"
+        )));
+        assertThat(batchDdl).contains(
+                "submitted_quantity <= submission_quantity_limit",
+                "submitted_amount <= submission_amount_limit",
+                "state_status VARCHAR(20) NOT NULL DEFAULT 'GATED'"
+        ).doesNotContain(
+                "ALTER TABLE",
+                "UPDATE stock_order",
+                "DELETE FROM stock_order"
+        );
+    }
+
+    @Test
     void listingAutoStrategyPolicyAlterDdl_repairsIssueBasisAndIsSyncedWithBackServiceCopy() throws IOException {
         String batchDdl = Files.readString(
                 Path.of("src/main/resources/db/ddl/stock_listing_auto_strategy_policy_alter.sql"),

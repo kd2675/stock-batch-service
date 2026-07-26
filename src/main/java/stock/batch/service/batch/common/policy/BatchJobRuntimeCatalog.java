@@ -8,7 +8,10 @@ import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
+import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.execution.job.ExecutionAccountDaySummaryFlushJob;
@@ -42,6 +45,9 @@ public class BatchJobRuntimeCatalog {
             @Value("${stock.batch.auto-market.profile-queue.reconcile-enabled:true}") boolean autoMarketProfileQueueReconcileConfigured,
             @Value("${stock.batch.auto-market-order-expiry.enabled:true}") boolean autoMarketOrderExpiryConfigured,
             @Value("${stock.batch.listing-auto-market.enabled:true}") boolean listingAutoMarketConfigured,
+            @Value("${stock.batch.liquidity-provider-market.enabled:true}") boolean liquidityProviderMarketConfigured,
+            @Value("${stock.batch.issue-underwriter-market.enabled:true}") boolean issueUnderwriterMarketConfigured,
+            @Value("${stock.batch.institution-shadow.enabled:true}") boolean institutionShadowConfigured,
             @Value("${stock.batch.auto-participant-cash-flow.enabled:true}") boolean autoParticipantCashFlowConfigured,
             @Value("${stock.batch.market-close.enabled:true}") boolean marketCloseConfigured,
             @Value("${stock.batch.settlement.enabled:true}") boolean settlementConfigured,
@@ -60,6 +66,9 @@ public class BatchJobRuntimeCatalog {
                 autoMarketProfileQueueReconcileConfigured,
                 autoMarketOrderExpiryConfigured,
                 listingAutoMarketConfigured,
+                liquidityProviderMarketConfigured,
+                issueUnderwriterMarketConfigured,
+                institutionShadowConfigured,
                 autoParticipantCashFlowConfigured,
                 marketCloseConfigured,
                 settlementConfigured,
@@ -126,6 +135,9 @@ public class BatchJobRuntimeCatalog {
             boolean autoMarketProfileQueueReconcileConfigured,
             boolean autoMarketOrderExpiryConfigured,
             boolean listingAutoMarketConfigured,
+            boolean liquidityProviderMarketConfigured,
+            boolean issueUnderwriterMarketConfigured,
+            boolean institutionShadowConfigured,
             boolean autoParticipantCashFlowConfigured,
             boolean marketCloseConfigured,
             boolean settlementConfigured,
@@ -145,6 +157,9 @@ public class BatchJobRuntimeCatalog {
         put(createdDefinitions, AutoMarketPreOpenProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
         put(createdDefinitions, AutoMarketOrderExpiryJob.JOB_NAME, autoMarketOrderExpiryConfigured);
         put(createdDefinitions, ListingAutoMarketJob.JOB_NAME, listingAutoMarketConfigured);
+        put(createdDefinitions, LiquidityProviderMarketJob.JOB_NAME, liquidityProviderMarketConfigured);
+        put(createdDefinitions, IssueUnderwriterMarketJob.JOB_NAME, issueUnderwriterMarketConfigured);
+        put(createdDefinitions, InstitutionShadowDecisionJob.JOB_NAME, institutionShadowConfigured);
         put(createdDefinitions, AutoParticipantCashFlowJob.JOB_NAME, autoParticipantCashFlowConfigured);
         put(createdDefinitions, MarketCloseRolloverJob.JOB_NAME, marketCloseConfigured);
         put(createdDefinitions, PortfolioSettlementJob.JOB_NAME, settlementConfigured);

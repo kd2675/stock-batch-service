@@ -28,10 +28,11 @@ public class PostCloseReadinessService {
     private final AutoMarketProfileQueueReconcileService profileQueueReconcileService;
 
     /**
-     * Readiness runs once per close cycle and persists at most ten control rows. The independent
+     * Readiness runs once per close cycle and persists a bounded set of control rows. The independent
      * transaction is intentional: a failed readiness Step must retain its bounded diagnostics even
-     * though Spring Batch marks the outer resourceless tasklet as failed. No order, execution, or
-     * holding ledger is queried here.
+     * though Spring Batch marks the outer resourceless tasklet as failed. Order and execution
+     * ledgers are not queried here. The current holding ledger is read once through the symbol index
+     * after all pre-open corporate actions so post-transform share conservation is fail-closed.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -70,6 +71,8 @@ public class PostCloseReadinessService {
                         "Enabled symbol fences are PREPARING for the next business date"),
                 result("PRICE_SNAPSHOT", counts.priceFailures(),
                         "Close price and order-book daily snapshots are complete"),
+                result("SHARE_SUPPLY", counts.shareSupplyFailures(),
+                        "Current holdings reconcile to issued shares after pre-open transforms"),
                 result("CORPORATE_CASH", corporateCashFailures,
                         "Corporate cash actions are complete"),
                 result("CORPORATE_TRANSFORMS", corporateTransformFailures,
@@ -202,6 +205,29 @@ public class PostCloseReadinessService {
                         ) as price_failures,
                         (
                             select count(*)
+                              from stock_order_book_instrument instrument
+                             where instrument.enabled = true
+                               and (
+                                   coalesce((
+                                       select sum(holding.quantity)
+                                         from stock_holding holding
+                                        where holding.symbol = instrument.symbol
+                                   ), 0) <> instrument.issued_shares
+                                   or exists (
+                                       select 1
+                                         from stock_holding invalid_holding
+                                        where invalid_holding.symbol = instrument.symbol
+                                          and (
+                                              invalid_holding.quantity < 0
+                                              or invalid_holding.reserved_quantity < 0
+                                              or invalid_holding.reserved_quantity
+                                                 > invalid_holding.quantity
+                                          )
+                                   )
+                               )
+                        ) as share_supply_failures,
+                        (
+                            select count(*)
                               from stock_auto_market_config config
                               join stock_order_book_instrument instrument
                                 on instrument.symbol = config.symbol
@@ -242,6 +268,7 @@ public class PostCloseReadinessService {
                         rs.getLong("market_open_failures"),
                         rs.getLong("fence_failures"),
                         rs.getLong("price_failures"),
+                        rs.getLong("share_supply_failures"),
                         rs.getLong("regime_failures"),
                         rs.getLong("settlement_failures")
                 ))
@@ -314,6 +341,7 @@ public class PostCloseReadinessService {
             long marketOpenFailures,
             long fenceFailures,
             long priceFailures,
+            long shareSupplyFailures,
             long regimeFailures,
             long settlementFailures
     ) {

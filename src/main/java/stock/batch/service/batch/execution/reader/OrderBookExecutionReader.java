@@ -59,6 +59,13 @@ public class OrderBookExecutionReader {
                                  and s.status in ('PENDING', 'PARTIALLY_FILLED')
                                  and s.quantity > s.filled_quantity
                                  and s.account_id <> b.account_id
+                                 and coalesce(
+                                         s.self_trade_group_id,
+                                         concat('ACCOUNT:', s.account_id)
+                                     ) <> coalesce(
+                                         b.self_trade_group_id,
+                                         concat('ACCOUNT:', b.account_id)
+                                     )
                                  and (
                                      (b.order_type = 'MARKET'
                                          and s.order_type = 'LIMIT'
@@ -107,7 +114,7 @@ public class OrderBookExecutionReader {
         return jdbcClient.sql(
                 """
                 with buy_scan as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'BUY'
@@ -123,7 +130,7 @@ public class OrderBookExecutionReader {
                      limit :scanLimit
                 ),
                 sell_scan as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'SELL'
@@ -139,7 +146,7 @@ public class OrderBookExecutionReader {
                      limit :scanLimit
                 ),
                 best_buy as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from buy_scan
                      order by case when order_type = 'MARKET' then 1 else 0 end desc,
                               limit_price desc,
@@ -148,7 +155,7 @@ public class OrderBookExecutionReader {
                      limit 1
                 ),
                 best_sell as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from sell_scan
                      order by case when order_type = 'MARKET' then 1 else 0 end desc,
                               limit_price asc,
@@ -157,7 +164,7 @@ public class OrderBookExecutionReader {
                      limit 1
                 ),
                 alternate_buy_account as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'BUY'
@@ -169,9 +176,27 @@ public class OrderBookExecutionReader {
                        and exists (
                            select 1
                              from best_buy b
-                             join best_sell s on s.account_id = b.account_id
+                             join best_sell s
+                               on s.account_id = b.account_id
+                               or coalesce(
+                                      s.self_trade_group_id,
+                                      concat('ACCOUNT:', s.account_id)
+                                  ) = coalesce(
+                                      b.self_trade_group_id,
+                                      concat('ACCOUNT:', b.account_id)
+                                  )
                        )
                        and account_id <> (select account_id from best_sell)
+                       and coalesce(
+                               self_trade_group_id,
+                               concat('ACCOUNT:', account_id)
+                           ) <> (
+                               select coalesce(
+                                   self_trade_group_id,
+                                   concat('ACCOUNT:', account_id)
+                               )
+                                 from best_sell
+                           )
                      order by case when order_type = 'MARKET' then 1 else 0 end desc,
                               limit_price desc,
                               created_at asc,
@@ -179,7 +204,7 @@ public class OrderBookExecutionReader {
                      limit 1
                 ),
                 alternate_sell_account as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'SELL'
@@ -191,9 +216,27 @@ public class OrderBookExecutionReader {
                        and exists (
                            select 1
                              from best_buy b
-                             join best_sell s on s.account_id = b.account_id
+                             join best_sell s
+                               on s.account_id = b.account_id
+                               or coalesce(
+                                      s.self_trade_group_id,
+                                      concat('ACCOUNT:', s.account_id)
+                                  ) = coalesce(
+                                      b.self_trade_group_id,
+                                      concat('ACCOUNT:', b.account_id)
+                                  )
                        )
                        and account_id <> (select account_id from best_buy)
+                       and coalesce(
+                               self_trade_group_id,
+                               concat('ACCOUNT:', account_id)
+                           ) <> (
+                               select coalesce(
+                                   self_trade_group_id,
+                                   concat('ACCOUNT:', account_id)
+                               )
+                                 from best_buy
+                           )
                      order by case when order_type = 'MARKET' then 1 else 0 end desc,
                               limit_price asc,
                               created_at asc,
@@ -201,7 +244,7 @@ public class OrderBookExecutionReader {
                      limit 1
                 ),
                 fallback_limit_buy as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'BUY'
@@ -212,11 +255,21 @@ public class OrderBookExecutionReader {
                        and limit_price is not null
                        and exists (select 1 from best_sell where order_type = 'MARKET')
                        and account_id <> (select account_id from best_sell)
+                       and coalesce(
+                               self_trade_group_id,
+                               concat('ACCOUNT:', account_id)
+                           ) <> (
+                               select coalesce(
+                                   self_trade_group_id,
+                                   concat('ACCOUNT:', account_id)
+                               )
+                                 from best_sell
+                           )
                      order by limit_price desc, created_at asc, id asc
                      limit 1
                 ),
                 fallback_limit_sell as (
-                    select id, account_id, order_type, limit_price, created_at
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at
                       from stock_order
                      where symbol = :symbol
                        and side = 'SELL'
@@ -227,22 +280,32 @@ public class OrderBookExecutionReader {
                        and limit_price is not null
                        and exists (select 1 from best_buy where order_type = 'MARKET')
                        and account_id <> (select account_id from best_buy)
+                       and coalesce(
+                               self_trade_group_id,
+                               concat('ACCOUNT:', account_id)
+                           ) <> (
+                               select coalesce(
+                                   self_trade_group_id,
+                                   concat('ACCOUNT:', account_id)
+                               )
+                                 from best_buy
+                           )
                      order by limit_price asc, created_at asc, id asc
                      limit 1
                 ),
                 buy_candidates as (
-                    select id, account_id, order_type, limit_price, created_at from buy_scan
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from buy_scan
                     union
-                    select id, account_id, order_type, limit_price, created_at from alternate_buy_account
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from alternate_buy_account
                     union
-                    select id, account_id, order_type, limit_price, created_at from fallback_limit_buy
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from fallback_limit_buy
                 ),
                 sell_candidates as (
-                    select id, account_id, order_type, limit_price, created_at from sell_scan
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from sell_scan
                     union
-                    select id, account_id, order_type, limit_price, created_at from alternate_sell_account
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from alternate_sell_account
                     union
-                    select id, account_id, order_type, limit_price, created_at from fallback_limit_sell
+                    select id, account_id, self_trade_group_id, order_type, limit_price, created_at from fallback_limit_sell
                 )
                 select b.id as buy_order_id,
                        b.account_id as buy_account_id,
@@ -251,6 +314,13 @@ public class OrderBookExecutionReader {
                   from buy_candidates b
                   join sell_candidates s
                     on s.account_id <> b.account_id
+                   and coalesce(
+                           s.self_trade_group_id,
+                           concat('ACCOUNT:', s.account_id)
+                       ) <> coalesce(
+                           b.self_trade_group_id,
+                           concat('ACCOUNT:', b.account_id)
+                       )
                    and (
                        (b.order_type = 'MARKET'
                            and s.order_type = 'LIMIT'
@@ -296,6 +366,7 @@ public class OrderBookExecutionReader {
                 """
                 select stock_order.id,
                        stock_order.account_id,
+                       stock_order.self_trade_group_id,
                        stock_order.symbol,
                        stock_order.side,
                        stock_order.order_type,
@@ -381,7 +452,8 @@ public class OrderBookExecutionReader {
                 rs.getBigDecimal("average_fill_price"),
                 rs.getBigDecimal("reserved_cash"),
                 rs.getTimestamp("created_at").toLocalDateTime(),
-                rs.getString("funding_budget_type")
+                rs.getString("funding_budget_type"),
+                rs.getString("self_trade_group_id")
         );
     }
 

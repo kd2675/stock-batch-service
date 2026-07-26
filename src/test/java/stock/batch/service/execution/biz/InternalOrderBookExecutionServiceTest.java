@@ -298,6 +298,43 @@ class InternalOrderBookExecutionServiceTest {
     }
 
     @Test
+    void executeEligibleOrders_differentAccountsInSameGroup_doNotSelfTrade() {
+        insertAccount("firm-buyer", "9930000.00", "10000000.00");
+        insertAccount("firm-seller", "100000.00", "10000000.00");
+        insertHolding("firm-seller", "005930", 1, 1, "50000.00");
+        insertOrder("firm-buy", "firm-buyer", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("firm-sell", "firm-seller", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 2);
+        jdbcTemplate.update(
+                "update stock_order set self_trade_group_id = 'FIRM:ONE' where client_order_id in ('firm-buy', 'firm-sell')"
+        );
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isZero();
+        assertThat(queryString("select status from stock_order where client_order_id = 'firm-buy'"))
+                .isEqualTo("PENDING");
+        assertThat(queryString("select status from stock_order where client_order_id = 'firm-sell'"))
+                .isEqualTo("PENDING");
+        assertThat(queryLong("select count(*) from stock_execution")).isZero();
+    }
+
+    @Test
+    void executeEligibleOrders_sameAccountWithDifferentStoredGroups_doesNotSelfTrade() {
+        insertAccount("changing-firm", "9930000.00", "10000000.00");
+        insertHolding("changing-firm", "005930", 1, 1, "50000.00");
+        insertOrder("old-firm-buy", "changing-firm", "005930", "BUY", "LIMIT", "PENDING", "70000.00", 1, 0, null, "70000.00", 1);
+        insertOrder("new-firm-sell", "changing-firm", "005930", "SELL", "LIMIT", "PENDING", "69000.00", 1, 0, null, "0.00", 2);
+        jdbcTemplate.update(
+                "update stock_order set self_trade_group_id = 'FIRM:NEW' where client_order_id = 'new-firm-sell'"
+        );
+
+        int matchCount = internalOrderBookExecutionService.executeEligibleOrders();
+
+        assertThat(matchCount).isZero();
+        assertThat(queryLong("select count(*) from stock_execution")).isZero();
+    }
+
+    @Test
     void executeEligibleOrders_closingFence_rejectsPreviouslySelectedCrossedPair() {
         insertAccount("closing-buyer", "9930000.00", "10000000.00");
         insertAccount("closing-seller", "100000.00", "10000000.00");

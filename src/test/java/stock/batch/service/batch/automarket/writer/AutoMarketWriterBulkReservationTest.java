@@ -34,6 +34,7 @@ class AutoMarketWriterBulkReservationTest {
                 create table stock_account(
                     id bigint primary key,
                     status varchar(30) not null,
+                    self_trade_group_id varchar(80),
                     cash_balance decimal(19, 2) not null,
                     updated_at timestamp
                 )

@@ -534,6 +534,53 @@ public class CorporateActionReader {
         return quantity == null ? 0L : quantity;
     }
 
+    public long sumPaidEntitlementShareQuantity(long actionId) {
+        Long quantity = jdbcClient.sql(
+                        """
+                        select coalesce(sum(share_quantity), 0)
+                          from stock_corporate_action_entitlement
+                         where action_id = ?
+                           and status = 'PAID'
+                        """
+                )
+                .param(actionId)
+                .query(Long.class)
+                .single();
+        return quantity == null ? 0L : quantity;
+    }
+
+    public long sumPaidIssuanceLockupShareQuantity(
+            long actionId,
+            String symbol,
+            LocalDate effectiveBusinessDate
+    ) {
+        Long quantity = jdbcClient.sql(
+                        """
+                        select coalesce(sum(entitlement.share_quantity), 0)
+                          from stock_corporate_action_entitlement entitlement
+                          join stock_market_participant_account participant_account
+                            on participant_account.account_id = entitlement.account_id
+                         where entitlement.action_id = ?
+                           and entitlement.status = 'PAID'
+                           and participant_account.account_role = 'SYSTEM_CUSTODY'
+                           and participant_account.desk_code = ?
+                           and participant_account.status = 'ACTIVE'
+                           and participant_account.effective_from <= ?
+                           and (
+                               participant_account.effective_to is null
+                               or participant_account.effective_to >= ?
+                           )
+                        """
+                )
+                .param(actionId)
+                .param("ISSUANCE_LOCKUP:" + symbol)
+                .param(effectiveBusinessDate)
+                .param(effectiveBusinessDate)
+                .query(Long.class)
+                .single();
+        return quantity == null ? 0L : quantity;
+    }
+
     public List<AutoParticipantEventProfilePolicy> findEventProfilePolicies() {
         return jdbcClient.sql(
                 """

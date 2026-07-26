@@ -78,6 +78,13 @@ stock:
       enabled: false
     listing-auto-market:
       enabled: false
+    liquidity-provider-market:
+      enabled: false
+    issue-underwriter-market:
+      enabled: false
+      daily-order-limit: 20
+    institution-shadow:
+      enabled: false
     auto-participant-cash-flow:
       enabled: false
     market-close:

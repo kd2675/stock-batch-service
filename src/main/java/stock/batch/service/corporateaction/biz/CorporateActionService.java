@@ -1340,12 +1340,50 @@ public class CorporateActionService {
                 || !orderBookOrderGuard.findSymbolsWithOpenOrders(List.of(lockedRow), ListingActionRow::symbol).isEmpty()) {
             return 0;
         }
+        long paidShareQuantity = corporateActionReader.sumPaidEntitlementShareQuantity(lockedRow.id());
+        if (paidShareQuantity > lockedRow.shareQuantity()) {
+            throw new IllegalStateException(
+                    "Paid free-share entitlements exceed the announced quantity: actionId="
+                            + lockedRow.id()
+            );
+        }
+        long paidIssuanceLockupShareQuantity =
+                corporateActionReader.sumPaidIssuanceLockupShareQuantity(
+                        lockedRow.id(),
+                        lockedRow.symbol(),
+                        today
+                );
+        if (paidIssuanceLockupShareQuantity > paidShareQuantity) {
+            throw new IllegalStateException(
+                    "Paid issuance-lockup entitlements exceed all paid entitlements: actionId="
+                            + lockedRow.id()
+            );
+        }
+        long tradableShareIncrease = paidShareQuantity - paidIssuanceLockupShareQuantity;
         LocalDateTime now = currentDateTime();
+        corporateActionWriter.creditFreeShareRoundingResidualToCustody(
+                lockedRow.id(),
+                lockedRow.symbol(),
+                lockedRow.shareQuantity() - paidShareQuantity,
+                today,
+                now
+        );
         int updatedAction = corporateActionWriter.markActionListed(lockedRow.id(), LISTED, EX_RIGHTS_APPLIED, now);
         if (updatedAction == 0) {
             return 0;
         }
-        addIssuedAndTradableSharesOrThrow(lockedRow, now, "free share distribution");
+        int updatedInstrument = corporateActionWriter.addIssuedAndTradableShares(
+                lockedRow.symbol(),
+                lockedRow.shareQuantity(),
+                tradableShareIncrease,
+                now
+        );
+        if (updatedInstrument == 0) {
+            throw new IllegalStateException(
+                    "Order book instrument not found for free share distribution: "
+                            + lockedRow.symbol()
+            );
+        }
         return updatedAction;
     }
 
@@ -1712,6 +1750,11 @@ public class CorporateActionService {
         if (updatedInstrument == 0) {
             throw new IllegalStateException("Order book instrument not found for stock split: " + row.symbol());
         }
+        corporateActionWriter.multiplyAutomaticMarketQuantitiesForSplit(
+                row.symbol(),
+                multiplier,
+                now
+        );
         corporateActionWriter.adjustPriceForSplit(row.symbol(), priceDivisor, now);
         corporateActionPriceWriter.insertCurrentPriceTick(row.symbol(), "corporate-action-split", now);
         return updatedAction;

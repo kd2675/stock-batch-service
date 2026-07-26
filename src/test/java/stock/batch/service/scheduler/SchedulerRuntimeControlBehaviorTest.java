@@ -17,7 +17,10 @@ import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
+import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
@@ -134,6 +137,39 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
+    void liquidityProviderMarketScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+
+        assertSimpleSchedulerGate(
+                LiquidityProviderMarketJob.JOB_NAME,
+                scheduler::runLiquidityProviderMarket,
+                () -> verify(stockBatchJobLauncher).runLiquidityProviderMarket()
+        );
+    }
+
+    @Test
+    void issueUnderwriterMarketScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+
+        assertSimpleSchedulerGate(
+                IssueUnderwriterMarketJob.JOB_NAME,
+                scheduler::runIssueUnderwriterMarket,
+                () -> verify(stockBatchJobLauncher).runIssueUnderwriterMarket()
+        );
+    }
+
+    @Test
+    void institutionShadowScheduler_checksRuntimeControlBeforeLaunching() {
+        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+
+        assertSimpleSchedulerGate(
+                InstitutionShadowDecisionJob.JOB_NAME,
+                scheduler::runInstitutionShadowDecisions,
+                () -> verify(stockBatchJobLauncher).runInstitutionShadowDecisions()
+        );
+    }
+
+    @Test
     void autoMarketDailyRegimePreCreateScheduler_checksRuntimeControlBeforeLaunching() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
 
@@ -152,6 +188,9 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.runAutoMarket();
         scheduler.expireAutoMarketOrders();
         scheduler.runListingAutoMarket();
+        scheduler.runLiquidityProviderMarket();
+        scheduler.runIssueUnderwriterMarket();
+        scheduler.runInstitutionShadowDecisions();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
@@ -164,6 +203,9 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.runAutoMarket();
         scheduler.expireAutoMarketOrders();
         scheduler.runListingAutoMarket();
+        scheduler.runLiquidityProviderMarket();
+        scheduler.runIssueUnderwriterMarket();
+        scheduler.runInstitutionShadowDecisions();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }

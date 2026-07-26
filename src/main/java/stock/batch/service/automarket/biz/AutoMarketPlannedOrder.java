@@ -7,6 +7,7 @@ import stock.batch.service.automarket.profile.ProfileDecisionReason;
 import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 import stock.batch.service.batch.automarket.model.AutoParticipantFundingBudgetType;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
+import stock.batch.service.batch.automarket.model.StockOrderOriginType;
 
 record AutoMarketPlannedOrder(
         long accountId,
@@ -18,11 +19,50 @@ record AutoMarketPlannedOrder(
         ProfileDecisionReason decisionReason,
         LocalDateTime expiresAt,
         AutoParticipantProfileType profileType,
-        AutoParticipantBehaviorModelVersion behaviorModelVersion
+        AutoParticipantBehaviorModelVersion behaviorModelVersion,
+        StockOrderOriginType originType,
+        AutoMarketOrderStrategyOrigin strategyOrigin
 ) {
 
     AutoMarketPlannedOrder(long accountId, String symbol, String side, BigDecimal price, long quantity) {
-        this(accountId, symbol, side, price, quantity, null, null, null, null, null);
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                null,
+                null,
+                null,
+                null,
+                null,
+                StockOrderOriginType.AUTO_PARTICIPANT,
+                null
+        );
+    }
+
+    AutoMarketPlannedOrder(
+            long accountId,
+            String symbol,
+            String side,
+            BigDecimal price,
+            long quantity,
+            StockOrderOriginType originType
+    ) {
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                null,
+                null,
+                null,
+                null,
+                null,
+                originType,
+                null
+        );
     }
 
     AutoMarketPlannedOrder(
@@ -33,7 +73,20 @@ record AutoMarketPlannedOrder(
             long quantity,
             AutoParticipantFundingBudgetType fundingBudgetType
     ) {
-        this(accountId, symbol, side, price, quantity, fundingBudgetType, null, null, null, null);
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                fundingBudgetType,
+                null,
+                null,
+                null,
+                null,
+                StockOrderOriginType.AUTO_PARTICIPANT,
+                null
+        );
     }
 
     AutoMarketPlannedOrder(
@@ -45,7 +98,67 @@ record AutoMarketPlannedOrder(
             AutoParticipantFundingBudgetType fundingBudgetType,
             ProfileDecisionReason decisionReason
     ) {
-        this(accountId, symbol, side, price, quantity, fundingBudgetType, decisionReason, null, null, null);
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                fundingBudgetType,
+                decisionReason,
+                null,
+                null,
+                null,
+                StockOrderOriginType.AUTO_PARTICIPANT,
+                null
+        );
+    }
+
+    AutoMarketPlannedOrder(
+            long accountId,
+            String symbol,
+            String side,
+            BigDecimal price,
+            long quantity,
+            AutoParticipantFundingBudgetType fundingBudgetType,
+            ProfileDecisionReason decisionReason,
+            LocalDateTime expiresAt,
+            AutoParticipantProfileType profileType,
+            AutoParticipantBehaviorModelVersion behaviorModelVersion
+    ) {
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                fundingBudgetType,
+                decisionReason,
+                expiresAt,
+                profileType,
+                behaviorModelVersion,
+                StockOrderOriginType.AUTO_PARTICIPANT,
+                null
+        );
+    }
+
+    AutoMarketPlannedOrder {
+        if (originType == null) {
+            throw new IllegalArgumentException("Order origin type is required");
+        }
+        if (strategyOrigin != null && strategyOrigin.originType() != originType) {
+            throw new IllegalArgumentException(
+                    "Order origin and strategy-origin metadata must match"
+            );
+        }
+        if ((originType == StockOrderOriginType.INSTITUTIONAL_INVESTOR
+                || originType == StockOrderOriginType.LIQUIDITY_PROVIDER
+                || originType == StockOrderOriginType.ISSUE_UNDERWRITER)
+                && strategyOrigin == null) {
+            throw new IllegalArgumentException(
+                    "Institutional market-role orders require strategy-origin metadata"
+            );
+        }
     }
 
     BigDecimal reservedCash() {

@@ -48,6 +48,21 @@ class AutoMarketSchedulerConfigurationTest {
                         "stock.batch.listing-auto-market.fixed-delay-ms"
                 ),
                 Arguments.of(
+                        "liquidityProviderMarketFixedDelayMillis",
+                        9_999L,
+                        "stock.batch.liquidity-provider-market.fixed-delay-ms"
+                ),
+                Arguments.of(
+                        "issueUnderwriterMarketFixedDelayMillis",
+                        9_999L,
+                        "stock.batch.issue-underwriter-market.fixed-delay-ms"
+                ),
+                Arguments.of(
+                        "institutionShadowFixedDelayMillis",
+                        9_999L,
+                        "stock.batch.institution-shadow.fixed-delay-ms"
+                ),
+                Arguments.of(
                         "profileQueueReconcileFixedDelayMillis",
                         59_999L,
                         "stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms"

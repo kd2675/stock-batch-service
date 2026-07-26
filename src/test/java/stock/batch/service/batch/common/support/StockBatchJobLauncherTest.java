@@ -20,7 +20,10 @@ import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
+import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
+import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
 import stock.batch.service.batch.holdingcleanup.job.HoldingCleanupJob;
@@ -70,6 +73,11 @@ class StockBatchJobLauncherTest {
     private final AutoMarketJob autoMarketTask = mock(AutoMarketJob.class);
     private final AutoMarketOrderExpiryJob expiryTask = mock(AutoMarketOrderExpiryJob.class);
     private final ListingAutoMarketJob listingTask = mock(ListingAutoMarketJob.class);
+    private final LiquidityProviderMarketJob liquidityProviderTask = mock(LiquidityProviderMarketJob.class);
+    private final IssueUnderwriterMarketJob issueUnderwriterMarketTask =
+            mock(IssueUnderwriterMarketJob.class);
+    private final InstitutionShadowDecisionJob institutionShadowDecisionTask =
+            mock(InstitutionShadowDecisionJob.class);
     private final HoldingCleanupJob holdingCleanupTask = mock(HoldingCleanupJob.class);
     private final BatchMetadataRetentionJob metadataRetentionTask = mock(BatchMetadataRetentionJob.class);
     private final Job cashFlowJob = job(AutoParticipantCashFlowJob.JOB_NAME);
@@ -120,6 +128,9 @@ class StockBatchJobLauncherTest {
                 autoMarketTask,
                 expiryTask,
                 listingTask,
+                liquidityProviderTask,
+                issueUnderwriterMarketTask,
+                institutionShadowDecisionTask,
                 holdingCleanupTask,
                 metadataRetentionTask,
                 cashFlowJob,
@@ -141,6 +152,9 @@ class StockBatchJobLauncherTest {
         launcher.runAutoMarket();
         launcher.expireAutoMarketOrders();
         launcher.runListingAutoMarket();
+        launcher.runIssueUnderwriterMarket();
+        launcher.runLiquidityProviderMarket();
+        launcher.runInstitutionShadowDecisions();
         launcher.cleanupEmptyHoldings();
 
         verify(runner).run(marketDataRefreshTask);
@@ -149,6 +163,8 @@ class StockBatchJobLauncherTest {
         verify(runner).run(autoMarketTask);
         verify(runner).run(expiryTask);
         verify(runner).run(listingTask);
+        verify(runner).run(liquidityProviderTask);
+        verify(runner).run(institutionShadowDecisionTask);
         verify(runner).run(holdingCleanupTask);
     }
 

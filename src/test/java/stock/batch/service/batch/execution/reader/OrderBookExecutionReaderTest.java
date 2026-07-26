@@ -58,6 +58,7 @@ class OrderBookExecutionReaderTest {
                 create table stock_order (
                     id bigint not null,
                     account_id bigint not null,
+                    self_trade_group_id varchar(80),
                     symbol varchar(20) not null,
                     side varchar(10) not null,
                     order_type varchar(20) not null,
@@ -137,6 +138,45 @@ class OrderBookExecutionReaderTest {
         OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 10).orElseThrow();
 
         assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(3L, 20L, 2L, 10L));
+    }
+
+    @Test
+    void findBestMatchCandidate_skipsDifferentAccountsInSameSelfTradeGroup() {
+        insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
+        insertOrder(2L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 2);
+        insertOrder(3L, 30L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("69500.00"), 10L, 0L, 3);
+        setSelfTradeGroup(1L, "FIRM:ONE");
+        setSelfTradeGroup(2L, "FIRM:ONE");
+        setSelfTradeGroup(3L, "FIRM:TWO");
+
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 1).orElseThrow();
+
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(3L, 30L, 2L, 20L));
+    }
+
+    @Test
+    void findBestMatchCandidate_skipsSameAccountWithDifferentStoredGroups() {
+        insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
+        insertOrder(2L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 2);
+        insertOrder(3L, 30L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("69500.00"), 10L, 0L, 3);
+        setSelfTradeGroup(1L, "FIRM:NEW");
+        setSelfTradeGroup(3L, "FIRM:OTHER");
+
+        OrderBookMatchCandidate candidate = reader.findBestMatchCandidate("STOCK001", 1).orElseThrow();
+
+        assertThat(candidate).isEqualTo(new OrderBookMatchCandidate(3L, 30L, 2L, 10L));
+    }
+
+    @Test
+    void findExecutableSymbols_sameSelfTradeGroupOnly_isNotExecutable() {
+        jdbcTemplate.update("insert into stock_order_book_market_config(symbol, enabled, market_status) values ('STOCK001', true, 'OPEN')");
+        jdbcTemplate.update("insert into stock_order_book_instrument(symbol, enabled) values ('STOCK001', true)");
+        insertOrder(1L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, 1);
+        insertOrder(2L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("69000.00"), 10L, 0L, 2);
+        setSelfTradeGroup(1L, "FIRM:ONE");
+        setSelfTradeGroup(2L, "FIRM:ONE");
+
+        assertThat(reader.findExecutableSymbolCandidates(10)).isEmpty();
     }
 
     @Test
@@ -221,6 +261,14 @@ class OrderBookExecutionReaderTest {
                 quantity,
                 filledQuantity,
                 LocalDateTime.of(2026, 6, 29, 9, 0).plusSeconds(createdAtSecond)
+        );
+    }
+
+    private void setSelfTradeGroup(long orderId, String selfTradeGroupId) {
+        jdbcTemplate.update(
+                "update stock_order set self_trade_group_id = ? where id = ?",
+                selfTradeGroupId,
+                orderId
         );
     }
 

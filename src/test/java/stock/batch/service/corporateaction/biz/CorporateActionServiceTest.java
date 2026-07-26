@@ -46,6 +46,7 @@ class CorporateActionServiceTest {
 
     @BeforeEach
     void setUp() {
+        jdbcTemplate.update("delete from stock_security_allocation_ledger where symbol like 'ZQ%'");
         jdbcTemplate.update("delete from stock_auto_participant_order_budget");
         jdbcTemplate.update("delete from stock_auto_participant_funding_budget");
         jdbcTemplate.update("delete from stock_execution where symbol like 'ZQ%'");
@@ -59,6 +60,16 @@ class CorporateActionServiceTest {
         jdbcTemplate.update("delete from stock_auto_participant where user_key like 'capital-%' or user_key like 'dividend-%'");
         jdbcTemplate.update("delete from stock_auto_participant_profile_config where profile_type in ('DIVIDEND_REINVESTOR', 'NOISE_TRADER')");
         jdbcTemplate.update("delete from stock_corporate_action_processing");
+        jdbcTemplate.update(
+                """
+                delete from stock_market_participant_account
+                 where account_id in (
+                     select id
+                       from stock_account
+                      where user_key like 'bonus-%'
+                 )
+                """
+        );
         jdbcTemplate.update("delete from stock_account where user_key like 'split-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'dividend-%'");
         jdbcTemplate.update("delete from stock_account where user_key like 'bonus-%'");
@@ -518,6 +529,7 @@ class CorporateActionServiceTest {
         insertPrice("ZQ009", "70000.00");
         insertAccount("bonus-holder");
         insertHolding("bonus-holder", "ZQ009", 100L, 0L, "70000.00");
+        insertAdditionalSystemCustodyAccount("bonus-issuance-lockup");
         insertHoldingSnapshot(
                 "ZQ009",
                 LocalDate.now().minusDays(3),
@@ -551,6 +563,94 @@ class CorporateActionServiceTest {
                 .isEqualTo(10L);
         assertThat(queryString("select status from stock_corporate_action_entitlement where symbol = 'ZQ009'"))
                 .isEqualTo("PAID");
+        assertThat(queryLong(
+                """
+                select h.quantity
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'stock-system-custody'
+                   and h.symbol = 'ZQ009'
+                """
+        )).isEqualTo(9_990L);
+        assertThat(queryDecimal(
+                """
+                select h.average_price
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'stock-system-custody'
+                   and h.symbol = 'ZQ009'
+                """
+        )).isEqualByComparingTo(new BigDecimal("63600.00"));
+        assertThat(queryLong(
+                """
+                select count(*)
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'bonus-issuance-lockup'
+                   and h.symbol = 'ZQ009'
+                """
+        )).isZero();
+        assertThat(queryLong(
+                """
+                select quantity
+                  from stock_security_allocation_ledger
+                 where idempotency_key = 'CORPORATE_ACTION:'
+                     || (select id from stock_corporate_action where symbol = 'ZQ009')
+                     || ':ROUNDING_CUSTODY'
+                """
+        )).isEqualTo(9_990L);
+    }
+
+    @Test
+    void applyDueCorporateActions_bonusIssue_preservesRoleSeparatedTradableShareRatio() {
+        insertCompletedMarketCloseForToday();
+        insertOrderBookInstrument("ZQ052", 1_000L, 500L);
+        insertPrice("ZQ052", "70000.00");
+        insertAccount("bonus-tradable-holder");
+        insertHolding("bonus-tradable-holder", "ZQ052", 500L, 0L, "70000.00");
+        insertIssuanceLockupCustodyAccount("bonus-role-lockup", "ZQ052");
+        insertHolding("bonus-role-lockup", "ZQ052", 500L, 0L, "70000.00");
+        insertHoldingSnapshot(
+                "ZQ052",
+                LocalDate.now().minusDays(3),
+                LocalDate.now().minusDays(3).atTime(18, 0)
+        );
+        insertBonusIssue(
+                "ZQ052",
+                100L,
+                "70000.00",
+                "63636.36",
+                LocalDate.now().minusDays(2),
+                LocalDate.now().minusDays(1)
+        );
+
+        int processedCount = corporateActionService.applyDueCorporateActions();
+
+        assertThat(processedCount).isEqualTo(2);
+        assertThat(queryLong(
+                "select issued_shares from stock_order_book_instrument where symbol = 'ZQ052'"
+        )).isEqualTo(1_100L);
+        assertThat(queryLong(
+                "select tradable_shares from stock_order_book_instrument where symbol = 'ZQ052'"
+        )).isEqualTo(550L);
+        assertThat(queryLong(
+                """
+                select h.quantity
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'bonus-tradable-holder'
+                   and h.symbol = 'ZQ052'
+                """
+        )).isEqualTo(550L);
+        assertThat(queryLong(
+                """
+                select h.quantity
+                  from stock_holding h
+                  join stock_account a on a.id = h.account_id
+                 where a.user_key = 'bonus-role-lockup'
+                   and h.symbol = 'ZQ052'
+                """
+        )).isEqualTo(550L);
     }
 
     @Test
@@ -1814,6 +1914,42 @@ class CorporateActionServiceTest {
                 from stock_account
                 where user_key = ?
                 """,
+                LocalDateTime.now(),
+                userKey
+        );
+    }
+
+    private void insertAdditionalSystemCustodyAccount(String userKey) {
+        jdbcTemplate.update(
+                """
+                insert into stock_account(
+                    user_key, status, participant_category, self_trade_group_id,
+                    cash_balance, created_at, updated_at
+                ) values (?, 'ACTIVE', 'SYSTEM_CUSTODY', 'SYSTEM_CUSTODY:DEFAULT', 0, ?, ?)
+                """,
+                userKey,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void insertIssuanceLockupCustodyAccount(String userKey, String symbol) {
+        insertAdditionalSystemCustodyAccount(userKey);
+        jdbcTemplate.update(
+                """
+                insert into stock_market_participant_account(
+                    participant_id, account_id, account_role, desk_code,
+                    effective_from, effective_to, status, created_at, updated_at
+                )
+                select participant.id, account.id, 'SYSTEM_CUSTODY', ?,
+                       ?, null, 'ACTIVE', ?, ?
+                  from stock_market_participant participant
+                  join stock_account account on account.user_key = ?
+                 where participant.participant_code = 'SYSTEM_CUSTODY'
+                """,
+                "ISSUANCE_LOCKUP:" + symbol,
+                LocalDate.now(),
+                LocalDateTime.now(),
                 LocalDateTime.now(),
                 userKey
         );

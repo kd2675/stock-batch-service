@@ -63,7 +63,9 @@ class AutoMarketWriterTest {
 
         verify(jdbcTemplate).update(sqlCaptor.capture(), parametersCaptor.capture());
         assertThat(insertedCount + ":" + sqlCaptor.getValue().contains("),(") + ":" + parametersCaptor.getValue().length)
-                .isEqualTo("2:true:26");
+                .isEqualTo("2:true:30");
+        assertThat(parametersCaptor.getValue())
+                .contains("AUTO_PARTICIPANT", "ACCOUNT:1", "ACCOUNT:2");
     }
 
     @Test

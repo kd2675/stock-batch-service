@@ -559,7 +559,11 @@ public class MarketCloseRolloverWriter {
                                case
                                  when a.status = 'ACTIVE'
                                   and a.user_key is not null
-                                  and a.participant_category <> 'LISTING_UNDERWRITER'
+                                  and a.participant_category in (
+                                      'MANUAL_PARTICIPANT',
+                                      'AUTO_PARTICIPANT',
+                                      'INSTITUTIONAL_INVESTOR'
+                                  )
                                  then true else false
                                end,
                                a.cash_balance,

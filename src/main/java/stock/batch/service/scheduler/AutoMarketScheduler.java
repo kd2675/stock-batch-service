@@ -19,7 +19,10 @@ import stock.batch.service.batch.automarket.job.AutoMarketDailyRegimePreCreateJo
 import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
+import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
+import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
+import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
 import stock.batch.service.marketclose.biz.MarketSessionFenceService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
@@ -31,6 +34,9 @@ public class AutoMarketScheduler {
     private static final long MIN_AUTO_MARKET_FIXED_RATE_MILLIS = 5_000L;
     private static final long MIN_ORDER_EXPIRY_FIXED_DELAY_MILLIS = 5_000L;
     private static final long MIN_LISTING_AUTO_MARKET_FIXED_DELAY_MILLIS = 5_000L;
+    private static final long MIN_LIQUIDITY_PROVIDER_MARKET_FIXED_DELAY_MILLIS = 10_000L;
+    private static final long MIN_ISSUE_UNDERWRITER_MARKET_FIXED_DELAY_MILLIS = 10_000L;
+    private static final long MIN_INSTITUTION_SHADOW_FIXED_DELAY_MILLIS = 10_000L;
     private static final long MIN_PROFILE_QUEUE_RECONCILE_FIXED_DELAY_MILLIS = 60_000L;
 
     private final StockBatchJobLauncher stockBatchJobLauncher;
@@ -74,6 +80,15 @@ public class AutoMarketScheduler {
     @Value("${stock.batch.listing-auto-market.enabled:true}")
     private boolean listingAutoMarketSchedulerConfigured = true;
 
+    @Value("${stock.batch.liquidity-provider-market.enabled:true}")
+    private boolean liquidityProviderMarketSchedulerConfigured = true;
+
+    @Value("${stock.batch.issue-underwriter-market.enabled:true}")
+    private boolean issueUnderwriterMarketSchedulerConfigured = true;
+
+    @Value("${stock.batch.institution-shadow.enabled:true}")
+    private boolean institutionShadowSchedulerConfigured = true;
+
     @Value("${stock.batch.post-close.coordinator.enabled:true}")
     private boolean postCloseCoordinatorEnabled;
 
@@ -85,6 +100,15 @@ public class AutoMarketScheduler {
 
     @Value("${stock.batch.listing-auto-market.fixed-delay-ms:10000}")
     private long listingAutoMarketFixedDelayMillis = 10_000L;
+
+    @Value("${stock.batch.liquidity-provider-market.fixed-delay-ms:30000}")
+    private long liquidityProviderMarketFixedDelayMillis = 30_000L;
+
+    @Value("${stock.batch.issue-underwriter-market.fixed-delay-ms:30000}")
+    private long issueUnderwriterMarketFixedDelayMillis = 30_000L;
+
+    @Value("${stock.batch.institution-shadow.fixed-delay-ms:30000}")
+    private long institutionShadowFixedDelayMillis = 30_000L;
 
     @Value("${stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms:600000}")
     private long profileQueueReconcileFixedDelayMillis = 600_000L;
@@ -105,6 +129,21 @@ public class AutoMarketScheduler {
                 "stock.batch.listing-auto-market.fixed-delay-ms",
                 listingAutoMarketFixedDelayMillis,
                 MIN_LISTING_AUTO_MARKET_FIXED_DELAY_MILLIS
+        );
+        requireMinimum(
+                "stock.batch.liquidity-provider-market.fixed-delay-ms",
+                liquidityProviderMarketFixedDelayMillis,
+                MIN_LIQUIDITY_PROVIDER_MARKET_FIXED_DELAY_MILLIS
+        );
+        requireMinimum(
+                "stock.batch.issue-underwriter-market.fixed-delay-ms",
+                issueUnderwriterMarketFixedDelayMillis,
+                MIN_ISSUE_UNDERWRITER_MARKET_FIXED_DELAY_MILLIS
+        );
+        requireMinimum(
+                "stock.batch.institution-shadow.fixed-delay-ms",
+                institutionShadowFixedDelayMillis,
+                MIN_INSTITUTION_SHADOW_FIXED_DELAY_MILLIS
         );
         requireMinimum(
                 "stock.batch.auto-market.profile-queue.reconcile-fixed-delay-ms",
@@ -217,6 +256,54 @@ public class AutoMarketScheduler {
                 ListingAutoMarketJob.JOB_NAME,
                 listingAutoMarketSchedulerConfigured,
                 stockBatchJobLauncher::runListingAutoMarket
+        );
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.liquidity-provider-market.initial-delay-ms:12000}",
+            fixedDelayString = "${stock.batch.liquidity-provider-market.fixed-delay-ms:30000}"
+    )
+    public void runLiquidityProviderMarket() {
+        if (!isOrderBookTradingOpen()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(
+                LiquidityProviderMarketJob.JOB_NAME,
+                liquidityProviderMarketSchedulerConfigured,
+                stockBatchJobLauncher::runLiquidityProviderMarket
+        );
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.issue-underwriter-market.initial-delay-ms:14000}",
+            fixedDelayString = "${stock.batch.issue-underwriter-market.fixed-delay-ms:30000}"
+    )
+    public void runIssueUnderwriterMarket() {
+        if (!isOrderBookTradingOpen()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(
+                IssueUnderwriterMarketJob.JOB_NAME,
+                issueUnderwriterMarketSchedulerConfigured,
+                stockBatchJobLauncher::runIssueUnderwriterMarket
+        );
+    }
+
+    @Scheduled(
+            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
+            initialDelayString = "${stock.batch.institution-shadow.initial-delay-ms:15000}",
+            fixedDelayString = "${stock.batch.institution-shadow.fixed-delay-ms:30000}"
+    )
+    public void runInstitutionShadowDecisions() {
+        if (!isOrderBookTradingOpen()) {
+            return;
+        }
+        scheduledJobGuard.runIfEnabled(
+                InstitutionShadowDecisionJob.JOB_NAME,
+                institutionShadowSchedulerConfigured,
+                stockBatchJobLauncher::runInstitutionShadowDecisions
         );
     }
 

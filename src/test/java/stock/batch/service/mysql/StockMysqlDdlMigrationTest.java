@@ -57,6 +57,13 @@ class StockMysqlDdlMigrationTest {
             "stock_auto_participant_shadow_cleanup_alter.sql",
             "stock_auto_participant_profile_behavior_model_alter.sql",
             "stock_auto_participant_withdrawal_settlement_alter.sql",
+            "stock_market_role_foundation_alter.sql",
+            "stock_system_custody_withdrawal_alter.sql",
+            "stock_institution_shadow_engine_alter.sql",
+            "stock_liquidity_provider_engine_alter.sql",
+            "stock_issuance_underwriting_alter.sql",
+            "stock_underwriter_scaled_supply_alter.sql",
+            "stock_liquidity_transition_alter.sql",
             "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"
     );
@@ -166,6 +173,52 @@ class StockMysqlDdlMigrationTest {
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_order_budget")).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_withdrawal")).isEqualTo(1);
         assertThat(tableCount(jdbcTemplate, "stock_auto_participant_share_return")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_institution_portfolio")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_institution_symbol_mandate")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_institution_decision_run")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_institution_decision_item")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_institution_daily_budget")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_liquidity_mandate")).isEqualTo(1);
+        assertThat(tableCount(jdbcTemplate, "stock_liquidity_daily_state")).isEqualTo(1);
+        assertThat(tableCount(
+                jdbcTemplate,
+                "stock_underwriting_daily_supply_state"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_share_return",
+                "receiver_account_id"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_share_return",
+                "receiver_role"
+        )).isEqualTo(1);
+        assertThat(columnCount(
+                jdbcTemplate,
+                "stock_auto_participant_share_return",
+                "transfer_reason"
+        )).isEqualTo(1);
+        assertThat(indexNamedCount(
+                jdbcTemplate,
+                "stock_auto_participant_share_return",
+                "idx_stock_auto_share_return_receiver"
+        )).isEqualTo(1);
+        assertThat(requiredCount(
+                jdbcTemplate,
+                """
+                select count(*)
+                  from stock_account account
+                  join stock_market_participant_account participant_account
+                    on participant_account.account_id = account.id
+                  join stock_market_participant participant
+                    on participant.id = participant_account.participant_id
+                 where account.user_key = 'stock-system-custody'
+                   and account.participant_category = 'SYSTEM_CUSTODY'
+                   and participant.participant_code = 'SYSTEM_CUSTODY'
+                   and participant_account.account_role = 'SYSTEM_CUSTODY'
+                """
+        )).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "funding_budget_type")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "expires_at")).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_order", "auto_profile_type")).isEqualTo(1);

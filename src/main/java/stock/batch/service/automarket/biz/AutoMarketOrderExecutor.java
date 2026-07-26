@@ -223,6 +223,13 @@ class AutoMarketOrderExecutor {
                 .map(order -> {
                     String clientOrderId = nextClientOrderId();
                     clientOrderIds.put(order, clientOrderId);
+                    AutoMarketWriter.AccountReservationState accountState =
+                            accountStates.get(order.accountId());
+                    if (accountState == null) {
+                        throw new IllegalStateException(
+                                "Accepted order account state is missing: accountId=" + order.accountId()
+                        );
+                    }
                     return new AutoMarketWriter.LimitOrderInsert(
                         clientOrderId,
                         order.accountId(),
@@ -234,7 +241,9 @@ class AutoMarketOrderExecutor {
                             order.fundingBudgetType() == null ? null : order.fundingBudgetType().name(),
                             order.expiresAt(),
                             order.profileType() == null ? null : order.profileType().name(),
-                            order.behaviorModelVersion() == null ? null : order.behaviorModelVersion().name()
+                            order.behaviorModelVersion() == null ? null : order.behaviorModelVersion().name(),
+                            order.originType().name(),
+                            accountState.resolvedSelfTradeGroupId()
                     );
                 })
                 .toList();
@@ -242,6 +251,32 @@ class AutoMarketOrderExecutor {
         if (insertedCount != acceptedOrders.size()) {
             throw new IllegalStateException("Auto order batch insert count mismatch: expected=%d, actual=%d"
                     .formatted(acceptedOrders.size(), insertedCount));
+        }
+        List<AutoMarketWriter.StrategyOriginInsert> strategyOrigins = acceptedOrders.stream()
+                .filter(order -> order.strategyOrigin() != null)
+                .map(order -> {
+                    AutoMarketOrderStrategyOrigin strategyOrigin = order.strategyOrigin();
+                    return new AutoMarketWriter.StrategyOriginInsert(
+                            clientOrderIds.get(order),
+                            strategyOrigin.originType().name(),
+                            strategyOrigin.participantId(),
+                            strategyOrigin.portfolioId(),
+                            strategyOrigin.decisionRunId(),
+                            strategyOrigin.liquidityMandateId(),
+                            strategyOrigin.underwritingContractId(),
+                            strategyOrigin.policyVersion()
+                    );
+                })
+                .toList();
+        int strategyOriginCount = autoMarketWriter.insertOrderStrategyOrigins(
+                strategyOrigins,
+                now
+        );
+        if (strategyOriginCount != strategyOrigins.size()) {
+            throw new IllegalStateException(
+                    "Order strategy-origin insert count mismatch: expected=%d, actual=%d"
+                            .formatted(strategyOrigins.size(), strategyOriginCount)
+            );
         }
         fundingBudgetService.reserve(fundingPlan, clientOrderIds, acceptedOrderSet, now);
         markAverageDownDecisions(acceptedOrders, now);

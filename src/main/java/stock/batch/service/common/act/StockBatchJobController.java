@@ -112,6 +112,21 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.runListingAutoMarket());
     }
 
+    @PostMapping("/liquidity-provider-market/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> runLiquidityProviderMarket() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.runLiquidityProviderMarket());
+    }
+
+    @PostMapping("/issue-underwriter-market/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> runIssueUnderwriterMarket() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.runIssueUnderwriterMarket());
+    }
+
+    @PostMapping("/institution-shadow/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> runInstitutionShadowDecisions() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.runInstitutionShadowDecisions());
+    }
+
     @PostMapping("/portfolio-settlement/run")
     public ResponseDataDTO<StockBatchJobRunResponse> settlePortfolios() {
         return ResponseDataDTO.of(stockBatchJobLauncher.settlePortfolios());
