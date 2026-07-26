@@ -66,3 +66,12 @@ DEALLOCATE PREPARE stock_institution_decision_run_drop_mode_check_stmt;
 ALTER TABLE stock_institution_decision_run
   ADD CONSTRAINT chk_stock_institution_decision_run_mode
   CHECK (`execution_mode` = 'LIVE');
+
+-- The direct-to-LIVE engine uses only the institution-market runtime job.
+-- Remove the obsolete SHADOW control and lease rows if an earlier rollout
+-- created them.
+DELETE FROM stock_batch_job_lock
+ WHERE job_name = 'institution-shadow-decision';
+
+DELETE FROM stock_batch_job_control
+ WHERE job_name = 'institution-shadow-decision';
