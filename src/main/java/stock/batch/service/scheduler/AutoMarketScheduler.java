@@ -20,7 +20,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
-import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
@@ -33,7 +32,6 @@ public class AutoMarketScheduler {
 
     private static final long MIN_AUTO_MARKET_FIXED_RATE_MILLIS = 5_000L;
     private static final long MIN_ORDER_EXPIRY_FIXED_DELAY_MILLIS = 5_000L;
-    private static final long MIN_LISTING_AUTO_MARKET_FIXED_DELAY_MILLIS = 5_000L;
     private static final long MIN_LIQUIDITY_PROVIDER_MARKET_FIXED_DELAY_MILLIS = 10_000L;
     private static final long MIN_ISSUE_UNDERWRITER_MARKET_FIXED_DELAY_MILLIS = 10_000L;
     private static final long MIN_INSTITUTION_MARKET_FIXED_DELAY_MILLIS = 10_000L;
@@ -77,9 +75,6 @@ public class AutoMarketScheduler {
     @Value("${stock.batch.auto-market-order-expiry.enabled:true}")
     private boolean autoMarketOrderExpirySchedulerConfigured = true;
 
-    @Value("${stock.batch.listing-auto-market.enabled:false}")
-    private boolean listingAutoMarketSchedulerConfigured;
-
     @Value("${stock.batch.liquidity-provider-market.enabled:true}")
     private boolean liquidityProviderMarketSchedulerConfigured = true;
 
@@ -97,9 +92,6 @@ public class AutoMarketScheduler {
 
     @Value("${stock.batch.auto-market-order-expiry.fixed-delay-ms:10000}")
     private long orderExpiryFixedDelayMillis = 10_000L;
-
-    @Value("${stock.batch.listing-auto-market.fixed-delay-ms:10000}")
-    private long listingAutoMarketFixedDelayMillis = 10_000L;
 
     @Value("${stock.batch.liquidity-provider-market.fixed-delay-ms:30000}")
     private long liquidityProviderMarketFixedDelayMillis = 30_000L;
@@ -124,11 +116,6 @@ public class AutoMarketScheduler {
                 "stock.batch.auto-market-order-expiry.fixed-delay-ms",
                 orderExpiryFixedDelayMillis,
                 MIN_ORDER_EXPIRY_FIXED_DELAY_MILLIS
-        );
-        requireMinimum(
-                "stock.batch.listing-auto-market.fixed-delay-ms",
-                listingAutoMarketFixedDelayMillis,
-                MIN_LISTING_AUTO_MARKET_FIXED_DELAY_MILLIS
         );
         requireMinimum(
                 "stock.batch.liquidity-provider-market.fixed-delay-ms",
@@ -240,22 +227,6 @@ public class AutoMarketScheduler {
                 AutoMarketOrderExpiryJob.JOB_NAME,
                 autoMarketOrderExpirySchedulerConfigured,
                 stockBatchJobLauncher::expireAutoMarketOrders
-        );
-    }
-
-    @Scheduled(
-            scheduler = StockBatchSchedulerNames.AUTO_MARKET,
-            initialDelayString = "${stock.batch.listing-auto-market.initial-delay-ms:8000}",
-            fixedDelayString = "${stock.batch.listing-auto-market.fixed-delay-ms:10000}"
-    )
-    public void runListingAutoMarket() {
-        if (!isOrderBookTradingOpen()) {
-            return;
-        }
-        scheduledJobGuard.runIfEnabled(
-                ListingAutoMarketJob.JOB_NAME,
-                listingAutoMarketSchedulerConfigured,
-                stockBatchJobLauncher::runListingAutoMarket
         );
     }
 

@@ -18,7 +18,6 @@ import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketOrderBookSnapshot;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
-import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 
 @Component
 public class AutoMarketOrderReader {
@@ -186,76 +185,6 @@ public class AutoMarketOrderReader {
                 .param("createdBefore", createdBefore)
                 .param("limit", Math.max(1, limit))
                 .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
-                .list();
-    }
-
-    public List<AutoOrder> findExpiredListingAutoOrders(ListingAutoAccountConfig config, LocalDateTime threshold) {
-        List<Long> orderIds = findExpiredListingAutoOrderIds(config, threshold);
-        if (orderIds.isEmpty()) {
-            return List.of();
-        }
-        return jdbcClient.sql(
-                """
-                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity, o.reserved_cash
-                from stock_order o
-                where o.symbol = :symbol
-                  and o.account_id = :accountId
-                  and o.id in (:orderIds)
-                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                  and o.market_type = 'ORDER_BOOK'
-                  and o.quantity > o.filled_quantity
-                order by o.created_at asc, o.id asc
-                """
-        )
-                .param("symbol", config.symbol())
-                .param("accountId", config.accountId())
-                .param("orderIds", orderIds)
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
-                .list();
-    }
-
-    public List<AutoOrder> findOpenListingAutoOrders(ListingAutoAccountConfig config, String side) {
-        return jdbcClient.sql(
-                """
-                select o.id, o.account_id, o.symbol, o.side, o.quantity, o.filled_quantity,
-                       o.reserved_cash, o.created_at
-                  from stock_order o
-                 where o.symbol = :symbol
-                   and o.account_id = :accountId
-                   and o.side = :side
-                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                   and o.market_type = 'ORDER_BOOK'
-                   and o.quantity > o.filled_quantity
-                 order by o.created_at asc, o.id asc
-                 limit 200
-                """
-        )
-                .param("symbol", config.symbol())
-                .param("accountId", config.accountId())
-                .param("side", side)
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toListingAutoAccountOrder(rs))
-                .list();
-    }
-
-    private List<Long> findExpiredListingAutoOrderIds(ListingAutoAccountConfig config, LocalDateTime threshold) {
-        return jdbcClient.sql(
-                """
-                select o.id
-                from stock_order o
-                where o.symbol = :symbol
-                  and o.account_id = :accountId
-                  and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                  and o.market_type = 'ORDER_BOOK'
-                  and o.quantity > o.filled_quantity
-                  and o.created_at < :threshold
-                order by o.created_at asc, o.id asc
-                limit 200
-                """
-        )
-                .param("symbol", config.symbol())
-                .param("accountId", config.accountId())
-                .param("threshold", threshold)
-                .query(Long.class)
                 .list();
     }
 

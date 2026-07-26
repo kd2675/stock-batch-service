@@ -107,11 +107,6 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.expireAutoMarketOrders());
     }
 
-    @PostMapping("/listing-auto-market/run")
-    public ResponseDataDTO<StockBatchJobRunResponse> runListingAutoMarket() {
-        return ResponseDataDTO.of(stockBatchJobLauncher.runListingAutoMarket());
-    }
-
     @PostMapping("/liquidity-provider-market/run")
     public ResponseDataDTO<StockBatchJobRunResponse> runLiquidityProviderMarket() {
         return ResponseDataDTO.of(stockBatchJobLauncher.runLiquidityProviderMarket());

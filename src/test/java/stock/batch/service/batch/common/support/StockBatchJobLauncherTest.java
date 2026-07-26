@@ -22,7 +22,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueRec
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
-import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -72,7 +71,6 @@ class StockBatchJobLauncherTest {
             mock(AutoMarketPreOpenProfileQueueReconcileJob.class);
     private final AutoMarketJob autoMarketTask = mock(AutoMarketJob.class);
     private final AutoMarketOrderExpiryJob expiryTask = mock(AutoMarketOrderExpiryJob.class);
-    private final ListingAutoMarketJob listingTask = mock(ListingAutoMarketJob.class);
     private final LiquidityProviderMarketJob liquidityProviderTask = mock(LiquidityProviderMarketJob.class);
     private final IssueUnderwriterMarketJob issueUnderwriterMarketTask =
             mock(IssueUnderwriterMarketJob.class);
@@ -127,7 +125,6 @@ class StockBatchJobLauncherTest {
                 preOpenReconcileTask,
                 autoMarketTask,
                 expiryTask,
-                listingTask,
                 liquidityProviderTask,
                 issueUnderwriterMarketTask,
                 institutionMarketTask,
@@ -151,7 +148,6 @@ class StockBatchJobLauncherTest {
         launcher.reconcileAutoMarketProfileQueue();
         launcher.runAutoMarket();
         launcher.expireAutoMarketOrders();
-        launcher.runListingAutoMarket();
         launcher.runIssueUnderwriterMarket();
         launcher.runLiquidityProviderMarket();
         launcher.runInstitutionMarket();
@@ -162,7 +158,6 @@ class StockBatchJobLauncherTest {
         verify(runner).run(reconcileTask);
         verify(runner).run(autoMarketTask);
         verify(runner).run(expiryTask);
-        verify(runner).run(listingTask);
         verify(runner).run(liquidityProviderTask);
         verify(runner).run(institutionMarketTask);
         verify(runner).run(holdingCleanupTask);

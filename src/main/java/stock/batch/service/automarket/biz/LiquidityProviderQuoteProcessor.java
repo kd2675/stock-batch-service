@@ -56,8 +56,6 @@ class LiquidityProviderQuoteProcessor {
                 mandate,
                 account.accountSelfTradeGroupId()
         );
-        int enabledLegacyLiquidityConfigCount =
-                repository.countEnabledLegacyLiquidityConfigs(mandate.symbol());
         LiquidityProviderQuoteInput input = new LiquidityProviderQuoteInput(
                 mandate,
                 marketConfig,
@@ -69,8 +67,7 @@ class LiquidityProviderQuoteProcessor {
                 externalBook,
                 openOrders.orders(),
                 openOrders.overflow(),
-                marketTradingEnabled,
-                enabledLegacyLiquidityConfigCount
+                marketTradingEnabled
         );
         LiquidityProviderQuotePlan plan = quotePlanner.plan(input);
 

@@ -883,7 +883,7 @@ readiness는 완료 phase의 입출력을 현재 코드가 안전하게 이어�
 
 각 종목 집계는 `(close_run_id, symbol)` 결과만 짧은 `REQUIRES_NEW` 안에서 삭제·재생성합니다. 한 tasklet 반복은 `(close_cycle_id, symbol)` 키셋으로 기본 25개, 최대 200개의 cohort를 처리한 뒤 마지막 symbol을 Spring Batch `ExecutionContext`에 한 번 커밋합니다. Step 중간 실패 후 재시작하면 이미 체크포인트된 앞 cohort는 건너뛰고, 체크포인트 직전 장애에서는 현재 cohort만 다시 실행합니다. 재실행되는 각 symbol은 같은 짧은 트랜잭션에서 자기 결과만 삭제·재생성하므로 결과는 멱등이며, 복구 원본 체결 재조회는 최대 설정 cohort로 제한됩니다. 종목마다 metadata COMMIT을 만들지 않으면서도 전체 거래일을 첫 symbol부터 다시 읽는 복구는 금지하고, cycle이 `REPORTS_AGGREGATED`에 도달하기 전의 부분 결과는 최종 보고서로 승인하지 않습니다.
 
-계좌별 참가자 유형도 보고서 실행 시점의 `stock_auto_participant`·`stock_listing_auto_account_config`를 다시 읽지 않습니다. 장마감 계좌 스냅샷 생성 시 `MANUAL_PARTICIPANT`, `AUTO_PARTICIPANT`, `LISTING_UNDERWRITER`를 `stock_close_account_snapshot.participant_category`에 함께 동결하고, 야간 `stock_execution` 집계는 `(close_cycle_id, account_id)` 유일키로 이 작은 스냅샷만 조인합니다. 따라서 장마감 후 프로필 철회·변경에도 같은 cycle의 수급 분류가 재현되며, 기존의 변경 가능한 설정 조인이 제거됩니다. 과거 snapshot backfill은 당시 설정이 보존되지 않았으므로 frozen `user_key`와 현재 저빈도 참가자 registry를 사용하는 최선 추정치이고, 신규 cycle부터만 정확한 시점 분류를 보장합니다. 이 보정과 보고서 조인은 정규장 주문 INSERT·체결 INSERT 경로에는 들어가지 않습니다.
+계좌별 참가자 유형도 보고서 실행 시점의 변경 가능한 전략 설정을 다시 읽지 않습니다. 장마감 계좌 스냅샷 생성 시 `stock_account.participant_category`의 `MANUAL_PARTICIPANT`, `AUTO_PARTICIPANT`, `INSTITUTIONAL_INVESTOR`, `LIQUIDITY_PROVIDER`, `ISSUE_UNDERWRITER`, `SYSTEM_CUSTODY`와 과거 호환 역할을 `stock_close_account_snapshot.participant_category`에 함께 동결하고, 야간 `stock_execution` 집계는 `(close_cycle_id, account_id)` 유일키로 이 작은 스냅샷만 조인합니다. 따라서 장마감 후 역할·프로필 변경에도 같은 cycle의 수급 분류가 재현됩니다. 과거 snapshot backfill은 당시 설정이 보존되지 않았으므로 frozen `user_key`와 현재 저빈도 참가자 registry를 사용하는 최선 추정치이고, 신규 cycle부터만 정확한 시점 분류를 보장합니다. 이 보정과 보고서 조인은 정규장 주문 INSERT·체결 INSERT 경로에는 들어가지 않습니다.
 
 보고서·차트·관리자 일별 수급 조회도 `close_run.status='COMPLETED'`만으로 승인하지 않습니다. 장마감 run 완료는 원장 동결 완료를 뜻할 뿐 보고서 집계 완료를 뜻하지 않으므로, `stock_post_close_cycle`을 `close_run_id`로 조인해 phase가 `REPORTS_AGGREGATED` 이상인 결과만 읽습니다. 종목별 `REQUIRES_NEW` 커밋 중 장애가 나도 이전 완료 거래일을 계속 제공하고 부분 생성된 당일 데이터는 숨깁니다.
 
@@ -1123,17 +1123,16 @@ schedule lease claim도 후보 참여자 수만큼 원격 UPDATE를 반복하지
 - 장마감 이외 fence exclusive-lock 대기 0건
 - 주문·체결 TPS가 기준 부하 대비 95% 미만으로 하락하면 cut-over 금지
 
-상장주관사 유동성 공급은 `stock_listing_auto_account_config`의 종목 PK 때문에 현재 종목당 설정 1건으로 한정되고, 만료 후보와 방향별 열린 주문도 각각 최대 200건만 읽습니다. 따라서 설정·주문을 무제한 JVM 적재하지는 않습니다. 다만 한 종목 transaction이 Redis symbol lock을 보유한 채 만료·초과 주문 정리·호가 상태·신규 주문을 처리하므로 다음을 별도 승인 지표로 둡니다.
+종목별 LP는 `stock_liquidity_mandate` 한 건과 전용 계좌·일일 상태를 읽고, 외부 호가 깊이·재고 밴드·일일 제출/체결/손실 한도를 모두 적용합니다. 한 종목 transaction은 Redis symbol lock 안에서 bounded 후보와 주문 batch만 처리합니다. 레거시 상장주관사 자동 유동성 job과 설정 테이블은 제거됐으며, 과거 origin·종료 계좌·체결만 감사 이력으로 보존합니다.
 
-목표 잔량을 실제로 유지하기 위해 한 방향에 필요한 주문 조각은 `ceil(유효 목표 잔량 / max_order_quantity)`입니다. 기존 방향별 1건 생성은 목표 30,000주·최대 3,000주·TTL 60초·10초 공급 주기에서 목표 도달 전에 앞 주문이 만료될 수 있었습니다. 방향별 최대 10개를 한 번에 계획하되 건별 executor 호출을 반복하지 않고 동일 계좌의 예약과 INSERT를 1회 batch로 묶습니다. 따라서 정상 상태에서 추가 commit 수는 종목당 기존과 같고, 초기 부족분의 INSERT row만 최대 양방향 20건으로 제한됩니다. 이 변경은 `stock_order`·`stock_execution` 인덱스나 체결 worker 쿼리를 추가하지 않으며, 아래 승인 지표를 넘으면 조각 상한·종목 slice를 낮춰야 합니다.
+LP 승인 지표는 다음과 같습니다.
 
-- `stock.listing.auto.market` 종목 transaction p95 100ms 이하, p99 300ms 이하
+- `stock.liquidity.provider.market` 종목 transaction p95 100ms 이하, p99 300ms 이하
 - 해당 작업 때문에 발생한 execution symbol-lock skip 비율 1% 이하
-- 하나의 10초 run이 전체 종목을 연속 처리하더라도 다음 run과 상시 겹치지 않을 것
-- 한 run은 기본 100·최대 500종목의 결정적 시간 slice만 처리한다. 100종목 검증에서 위 기준을 넘으면 상한을 낮추거나 종목별 query read-model을 통합할 것
-- 기존 hot-ledger 인덱스로 부족하다는 `EXPLAIN ANALYZE` 없이 listing 전용 `stock_order` 인덱스를 추가하지 않을 것
-- 목표 잔량이 이미 충족된 steady state에는 계좌·보유 추가 조회와 주문 INSERT가 0건일 것
-- 설정 저장 시 활성 방향 목표 잔량이 `max_order_quantity × 10`을 넘지 않게 하여 여러 run에 걸친 무한 추격을 허용하지 않을 것
+- 한 run이 다음 run과 상시 겹치지 않고, 정책의 종목 처리 상한을 넘지 않을 것
+- 기존 hot-ledger 인덱스로 부족하다는 `EXPLAIN ANALYZE` 없이 LP 전용 `stock_order` 인덱스를 추가하지 않을 것
+- 목표 잔량이 이미 충족된 steady state에는 신규 주문 INSERT가 0건일 것
+- 설정 저장 시 단일 주문·미체결 잔량·체결·제출 한도가 기준 거래량과 재고 밴드 안에 있을 것
 
 ### 11.3 쿼리
 
@@ -1849,7 +1848,7 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 |---|---|---|
 | 사용자 신규 주문·정정·장마감 후 취소 vs fence | `TradingSessionFenceServiceTest`의 마감시각·closing fence·late cancel 테스트 | 소스/H2 확인, 실제 18시 경합 운영 대기 |
 | 자동 참여자 주문 vs 장마감 | `AutoMarketOrderExecutorTest.placeOrders_closedSessionDropsOrdersBeforeReservationDatabaseAccess` | 계좌·보유·주문 쓰기 전 차단 확인, MySQL 경합 대기 |
-| 상장주관사 주문 vs 장마감 | `ListingAutoMarketJobServiceTest.runListingAutoMarket_closedFenceSkipsListingOrderWrites` | 실제 상장주관사 주문 호출 전 차단 확인, MySQL 경합 대기 |
+| LP 주문 vs 장마감 | `LiquidityProviderQuoteProcessorTest`와 session-fence 계약 테스트 | LP 주문 쓰기 전 세션 차단 확인, MySQL 경합 대기 |
 | 체결 후보 확정 vs 장마감 | `InternalOrderBookExecutionServiceTest`의 closing-fence 재검증과 concurrent match-once 테스트 | 소스/H2 확인, `FOR SHARE OF f` 실잠금 테스트는 Docker 부재로 미실행이며 strict task가 실패 |
 | fence 직전/직후 승인·잠금 범위 | `StockMysqlConcurrencyTest`의 session-fence·owned-order locking-read 테스트 | 테스트 소스와 fail-closed gate 존재, 현재 Docker 부재로 컨테이너 초기화 실패이므로 운영 미확인 |
 | 정산 전 현금·가격 변경 | `PortfolioSettlementJobIntegrationTest`의 `settle_afterFreezeCashChanges_usesFrozenAccountCash`, `settle_afterFreezePriceChanges_usesFrozenClosePrice` | 확인 |

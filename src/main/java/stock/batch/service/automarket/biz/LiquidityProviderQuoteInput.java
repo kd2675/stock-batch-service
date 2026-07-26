@@ -18,8 +18,7 @@ record LiquidityProviderQuoteInput(
         LiquidityProviderExternalBook externalBook,
         List<AutoOrder> openOrders,
         boolean openOrderOverflow,
-        boolean marketTradingEnabled,
-        int enabledLegacyLiquidityConfigCount
+        boolean marketTradingEnabled
 ) {
 
     LiquidityProviderQuoteInput {

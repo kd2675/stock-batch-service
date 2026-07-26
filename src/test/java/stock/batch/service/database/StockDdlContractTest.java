@@ -769,30 +769,6 @@ class StockDdlContractTest {
     }
 
     @Test
-    void stockH2Ddl_definesInstitutionalListingAutoPolicy() throws IOException {
-        String h2Ddl = readDdlResource("db/ddl/stock_h2.sql");
-
-        assertThat(extractCreateTableBlock(h2Ddl, "stock_listing_auto_account_config"))
-                .contains(
-                        "target_buy_quantity BIGINT NOT NULL",
-                        "target_sell_quantity BIGINT NOT NULL",
-                        "target_holding_quantity BIGINT NOT NULL",
-                        "inventory_band_quantity BIGINT NOT NULL",
-                        "operation_mode VARCHAR(30) NOT NULL",
-                        "strategy_profile VARCHAR(30) NOT NULL",
-                        "initial_inventory_quantity BIGINT NOT NULL",
-                        "initial_issue_price DECIMAL(19,2) NOT NULL",
-                        "target_spread_ticks INT NOT NULL",
-                        "aggressive_order_ratio DECIMAL(8,4) NOT NULL",
-                        "WHEN 'TWO_SIDED' THEN 1",
-                        "chk_stock_listing_auto_account_target_buy",
-                        "chk_stock_listing_auto_account_target_sell",
-                        "chk_stock_listing_auto_account_target_holding",
-                        "chk_stock_listing_auto_account_inventory_band"
-                );
-    }
-
-    @Test
     void alterDdlFiles_selectStockServiceSchemaBeforeChanges() throws IOException {
         List<Path> alterFiles = listAlterDdlFiles();
 
@@ -884,20 +860,6 @@ class StockDdlContractTest {
         );
         assertThat(batchDdl.toLowerCase()).doesNotContain("add index idx_stock_order_auto_reprice");
         assertThat(batchDdl).doesNotContain("stock_execution");
-    }
-
-    @Test
-    void listingAutoInstitutionPolicyAlterDdl_isSyncedWithBackServiceCopy() throws IOException {
-        String batchDdl = Files.readString(
-                Path.of("src/main/resources/db/ddl/stock_listing_auto_institution_policy_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-        String backDdl = Files.readString(
-                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_institution_policy_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-
-        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
     }
 
     @Test
@@ -1148,49 +1110,6 @@ class StockDdlContractTest {
                 "ALTER TABLE",
                 "UPDATE stock_order",
                 "DELETE FROM stock_order"
-        );
-    }
-
-    @Test
-    void listingAutoStrategyPolicyAlterDdl_repairsIssueBasisAndIsSyncedWithBackServiceCopy() throws IOException {
-        String batchDdl = Files.readString(
-                Path.of("src/main/resources/db/ddl/stock_listing_auto_strategy_policy_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-        String backDdl = Files.readString(
-                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_strategy_policy_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-
-        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
-        assertThat(batchDdl).contains(
-                "USE STOCK_SERVICE;",
-                "operation_mode VARCHAR(30) NOT NULL",
-                "initial_inventory_quantity BIGINT NOT NULL",
-                "MIN(candidate.id)",
-                "COALESCE(initial_issue.share_quantity, instrument.issued_shares)",
-                "DROP COLUMN buy_price_offset_direction",
-                "DROP COLUMN sell_price_offset_direction"
-        );
-    }
-
-    @Test
-    void listingAutoInventoryBandAlterDdl_isIdempotentAndSyncedWithBackServiceCopy() throws IOException {
-        String batchDdl = Files.readString(
-                Path.of("src/main/resources/db/ddl/stock_listing_auto_inventory_band_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-        String backDdl = Files.readString(
-                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_listing_auto_inventory_band_alter.sql"),
-                StandardCharsets.UTF_8
-        );
-
-        assertThat(normalizeSqlBlock(backDdl)).isEqualTo(normalizeSqlBlock(batchDdl));
-        assertThat(batchDdl).contains(
-                "USE STOCK_SERVICE;",
-                "information_schema.columns",
-                "inventory_band_quantity",
-                "chk_stock_listing_auto_account_inventory_band"
         );
     }
 

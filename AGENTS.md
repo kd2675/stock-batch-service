@@ -28,7 +28,6 @@
 - `/internal/stock-batch/v1/jobs/runtime-controls/{jobName}`
 - `/internal/stock-batch/v1/jobs/auto-market/run`
 - `/internal/stock-batch/v1/jobs/auto-market-order-expiry/run`
-- `/internal/stock-batch/v1/jobs/listing-auto-market/run`
 - `/internal/stock-batch/v1/jobs/liquidity-provider-market/run`
 - `/internal/stock-batch/v1/jobs/issue-underwriter-market/run`
 - `/internal/stock-batch/v1/jobs/institution-market/run`
@@ -69,7 +68,7 @@
 
 - 사용자 API를 이 서버에 추가하지 않습니다. 외부에서 직접 호출할 API는 `stock-back-service`에 둡니다.
 - Spring Batch 6.x JDBC `JobRepository`는 별도 metadata schema로 사용합니다. 장마감·포트폴리오 정산·기업 이벤트·자동 참여자 현금 지급·일별 regime 생성은 실제 Spring Batch `Job`/`Step`으로 실행하고 `BATCH_*`에 재시작 상태와 처리 count를 기록합니다.
-- 체결·자동 주문·자동 주문 만료·상장주관사 유동성 공급·프로필 큐 정합화처럼 초단위로 반복되는 작업은 `LightweightBatchTask`로 실행하며 `BATCH_*` row를 만들지 않습니다. 새 작업은 실행 빈도와 재시작 필요성을 먼저 판단해 두 경계 중 하나를 선택합니다.
+- 체결·자동 주문·자동 주문 만료·LP 유동성 공급·프로필 큐 정합화처럼 초단위로 반복되는 작업은 `LightweightBatchTask`로 실행하며 `BATCH_*` row를 만들지 않습니다. 새 작업은 실행 빈도와 재시작 필요성을 먼저 판단해 두 경계 중 하나를 선택합니다.
 - `scheduler`는 실행 시점만 담당하고, 수동 API와 스케줄러는 `StockBatchJobLauncher`를 통해 `batch/<domain>/job` 컴포넌트를 실행합니다.
 - job 중복 실행 방지, 스케줄러 runtime 제어, `COMPLETED`/`SKIPPED`/`FAILED` 응답 변환은 `batch/common` 경계에서 공통 처리합니다. native Job은 stable identifying parameter로 같은 `JobInstance`를 재시작하며 임의 `runId`를 붙이지 않습니다.
 - 비정상 종료로 native `JobExecution`이 `STARTING`/`STARTED`/`STOPPING`에 남으면 다음 실행 노드가 해당 job의 business lock을 획득한 뒤 그 job만 `FAILED`로 복구하고 같은 `JobInstance`를 재시작합니다. 다른 job이나 다른 노드가 lock을 보유한 실행을 전역 sweep으로 변경하지 않습니다.

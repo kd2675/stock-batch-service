@@ -43,11 +43,6 @@ class AutoMarketSchedulerConfigurationTest {
                         "stock.batch.auto-market-order-expiry.fixed-delay-ms"
                 ),
                 Arguments.of(
-                        "listingAutoMarketFixedDelayMillis",
-                        4_999L,
-                        "stock.batch.listing-auto-market.fixed-delay-ms"
-                ),
-                Arguments.of(
                         "liquidityProviderMarketFixedDelayMillis",
                         9_999L,
                         "stock.batch.liquidity-provider-market.fixed-delay-ms"

@@ -44,7 +44,8 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             "stock_auto_participant", Set.of("behavior_evaluation_mode", "behavior_model_version")
     );
     private static final Set<String> FORBIDDEN_LEGACY_TABLES = Set.of(
-            "stock_auto_profile_decision_day_summary"
+            "stock_auto_profile_decision_day_summary",
+            "stock_listing_auto_account_config"
     );
     private static final Set<String> FORBIDDEN_LEGACY_CHECKS = Set.of(
             "chk_stock_auto_participant_behavior_evaluation",
@@ -187,7 +188,8 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     "transition_key", "symbol", "mandate_id", "participant_id",
                     "liquidity_account_id", "source_account_id",
                     "stage", "reference_daily_volume", "seed_inventory_quantity",
-                    "seed_cash_amount", "effective_business_date",
+                    "seed_cash_amount", "transferred_inventory_quantity",
+                    "transferred_cash_amount", "effective_business_date",
                     "requested_by", "change_reason", "policy_version",
                     "created_at", "updated_at"
             )),
@@ -874,8 +876,9 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                 "id", "transition_key", "symbol", "mandate_id", "participant_id",
                 "liquidity_account_id", "source_account_id", "legacy_account_id",
                 "stage", "reference_daily_volume", "seed_inventory_quantity",
-                "seed_cash_amount", "effective_business_date",
-                "legacy_disabled_at", "activated_at", "requested_by",
+                "seed_cash_amount", "transferred_inventory_quantity",
+                "transferred_cash_amount", "effective_business_date",
+                "legacy_disabled_at", "legacy_retired_at", "activated_at", "requested_by",
                 "change_reason", "policy_version", "created_at", "updated_at"
         ));
         requirements.put("stock_underwriting_contract", Set.of(

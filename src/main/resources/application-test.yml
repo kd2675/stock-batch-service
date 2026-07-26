@@ -76,8 +76,6 @@ stock:
         reconcile-enabled: false
     auto-market-order-expiry:
       enabled: false
-    listing-auto-market:
-      enabled: false
     liquidity-provider-market:
       enabled: false
     issue-underwriter-market:

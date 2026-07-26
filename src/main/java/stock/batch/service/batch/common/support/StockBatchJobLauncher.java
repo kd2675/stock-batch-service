@@ -18,7 +18,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueRec
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
-import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -72,7 +71,6 @@ public class StockBatchJobLauncher {
     private final AutoMarketPreOpenProfileQueueReconcileJob autoMarketPreOpenProfileQueueReconcileTask;
     private final AutoMarketJob autoMarketTask;
     private final AutoMarketOrderExpiryJob autoMarketOrderExpiryTask;
-    private final ListingAutoMarketJob listingAutoMarketTask;
     private final LiquidityProviderMarketJob liquidityProviderMarketTask;
     private final IssueUnderwriterMarketJob issueUnderwriterMarketTask;
     private final InstitutionMarketJob institutionMarketTask;
@@ -100,7 +98,6 @@ public class StockBatchJobLauncher {
             AutoMarketPreOpenProfileQueueReconcileJob autoMarketPreOpenProfileQueueReconcileTask,
             AutoMarketJob autoMarketTask,
             AutoMarketOrderExpiryJob autoMarketOrderExpiryTask,
-            ListingAutoMarketJob listingAutoMarketTask,
             LiquidityProviderMarketJob liquidityProviderMarketTask,
             IssueUnderwriterMarketJob issueUnderwriterMarketTask,
             InstitutionMarketJob institutionMarketTask,
@@ -127,7 +124,6 @@ public class StockBatchJobLauncher {
         this.autoMarketPreOpenProfileQueueReconcileTask = autoMarketPreOpenProfileQueueReconcileTask;
         this.autoMarketTask = autoMarketTask;
         this.autoMarketOrderExpiryTask = autoMarketOrderExpiryTask;
-        this.listingAutoMarketTask = listingAutoMarketTask;
         this.liquidityProviderMarketTask = liquidityProviderMarketTask;
         this.issueUnderwriterMarketTask = issueUnderwriterMarketTask;
         this.institutionMarketTask = institutionMarketTask;
@@ -385,10 +381,6 @@ public class StockBatchJobLauncher {
 
     public StockBatchJobRunResponse expireAutoMarketOrders() {
         return stockBatchJobRunner.run(autoMarketOrderExpiryTask);
-    }
-
-    public StockBatchJobRunResponse runListingAutoMarket() {
-        return stockBatchJobRunner.run(listingAutoMarketTask);
     }
 
     public StockBatchJobRunResponse runLiquidityProviderMarket() {

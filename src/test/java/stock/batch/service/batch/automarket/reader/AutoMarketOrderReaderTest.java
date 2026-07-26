@@ -15,7 +15,6 @@ import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
-import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.testsupport.BatchTestDatabaseFactory;
 
 class AutoMarketOrderReaderTest {
@@ -230,46 +229,6 @@ class AutoMarketOrderReaderTest {
                 """);
 
         assertThat(reader.findActiveV2MarketMakerAccountIds(10)).isEmpty();
-    }
-
-    @Test
-    void findExpiredListingAutoOrders_readsOrdersForListingAccountOnly() {
-        ListingAutoAccountConfig config = new ListingAutoAccountConfig(
-                "STOCK001",
-                20L,
-                "listing-020",
-                "SELL_ONLY",
-                "UNDERWRITER_RETURN",
-                "RETURN_FIRST",
-                1000L,
-                new BigDecimal("70000.00"),
-                100,
-                15,
-                0,
-                8,
-                3,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
-                BigDecimal.ZERO,
-                0L,
-                100L,
-                0L,
-                0L,
-                new BigDecimal("100.00"),
-                new BigDecimal("70000.00"),
-                new BigDecimal("70000.00"),
-                new BigDecimal("30.00")
-        );
-        LocalDateTime threshold = LocalDateTime.of(2026, 6, 29, 10, 0);
-        insertOrder(200L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, BigDecimal.ZERO, threshold.minusMinutes(1));
-        insertOrder(201L, 21L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, BigDecimal.ZERO, threshold.minusMinutes(2));
-        insertOrder(202L, 20L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70000.00"), 10L, 0L, BigDecimal.ZERO, threshold.plusMinutes(1));
-
-        List<AutoOrder> orders = reader.findExpiredListingAutoOrders(config, threshold);
-
-        assertThat(orders)
-                .extracting(AutoOrder::id)
-                .containsExactly(200L);
     }
 
     @Test

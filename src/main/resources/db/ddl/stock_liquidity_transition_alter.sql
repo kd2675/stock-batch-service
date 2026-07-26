@@ -27,8 +27,11 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   reference_daily_volume BIGINT NOT NULL,
   seed_inventory_quantity BIGINT NOT NULL,
   seed_cash_amount DECIMAL(19,2) NOT NULL,
+  transferred_inventory_quantity BIGINT NOT NULL DEFAULT 0,
+  transferred_cash_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
   effective_business_date DATE NOT NULL,
   legacy_disabled_at DATETIME NULL,
+  legacy_retired_at DATETIME NULL,
   activated_at DATETIME NULL,
   requested_by VARCHAR(64) NOT NULL,
   change_reason VARCHAR(500) NOT NULL,
@@ -57,6 +60,10 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     reference_daily_volume > 0
     AND seed_inventory_quantity > 0
     AND seed_cash_amount > 0
+  ),
+  CONSTRAINT chk_stock_liquidity_transition_transfer CHECK (
+    transferred_inventory_quantity >= 0
+    AND transferred_cash_amount >= 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
     stage IN ('LIVE_ACTIVE', 'SUSPENDED')
@@ -89,6 +96,7 @@ SET @security_allocation_reason_check_ready := (
      AND tc.constraint_name = 'chk_stock_security_allocation_reason'
      AND tc.constraint_type = 'CHECK'
      AND cc.check_clause LIKE '%LIQUIDITY_SEED_TRANSFER%'
+     AND cc.check_clause LIKE '%LIQUIDITY_ACCOUNT_TRANSFER%'
 );
 SET @drop_security_allocation_reason_check := IF(
   @security_allocation_reason_check_ready = 0
@@ -103,7 +111,7 @@ DEALLOCATE PREPARE stock_liquidity_transition_stmt;
 
 SET @add_security_allocation_reason_check := IF(
   @security_allocation_reason_check_ready = 0,
-  'ALTER TABLE stock_security_allocation_ledger ADD CONSTRAINT chk_stock_security_allocation_reason CHECK (CASE allocation_reason WHEN ''INITIAL_FLOAT_CUSTODY'' THEN 1 WHEN ''INITIAL_FLOAT_UNDERWRITER'' THEN 1 WHEN ''INITIAL_LOCKED_CUSTODY'' THEN 1 WHEN ''PUBLIC_ALLOCATION'' THEN 1 WHEN ''UNSOLD_UNDERWRITING'' THEN 1 WHEN ''CORPORATE_ACTION_ALLOCATION'' THEN 1 WHEN ''LOCK_RELEASE'' THEN 1 WHEN ''LIQUIDITY_SEED_TRANSFER'' THEN 1 ELSE 0 END = 1)',
+  'ALTER TABLE stock_security_allocation_ledger ADD CONSTRAINT chk_stock_security_allocation_reason CHECK (CASE allocation_reason WHEN ''INITIAL_FLOAT_CUSTODY'' THEN 1 WHEN ''INITIAL_FLOAT_UNDERWRITER'' THEN 1 WHEN ''INITIAL_LOCKED_CUSTODY'' THEN 1 WHEN ''PUBLIC_ALLOCATION'' THEN 1 WHEN ''UNSOLD_UNDERWRITING'' THEN 1 WHEN ''CORPORATE_ACTION_ALLOCATION'' THEN 1 WHEN ''LOCK_RELEASE'' THEN 1 WHEN ''LIQUIDITY_SEED_TRANSFER'' THEN 1 WHEN ''LIQUIDITY_ACCOUNT_TRANSFER'' THEN 1 ELSE 0 END = 1)',
   'SELECT 1'
 );
 PREPARE stock_liquidity_transition_stmt

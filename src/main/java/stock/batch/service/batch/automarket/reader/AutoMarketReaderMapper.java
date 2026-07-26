@@ -10,7 +10,6 @@ import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVe
 import stock.batch.service.batch.automarket.model.AutoParticipantRecentCashFlow;
 import stock.batch.service.batch.automarket.model.AutoParticipantRecurringCashTarget;
 import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot;
-import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 import stock.batch.service.batch.automarket.model.RecurringCashIntervalUnit;
 import web.common.core.utils.DeterministicSeed;
 
@@ -149,36 +148,6 @@ final class AutoMarketReaderMapper {
         );
     }
 
-    static ListingAutoAccountConfig toListingAutoAccountConfig(ResultSet rs) throws SQLException {
-        return new ListingAutoAccountConfig(
-                normalizeSymbol(rs.getString("symbol")),
-                rs.getString("market"),
-                rs.getLong("account_id"),
-                rs.getString("user_key"),
-                rs.getString("position_side"),
-                rs.getString("operation_mode"),
-                rs.getString("strategy_profile"),
-                Math.max(0L, rs.getLong("initial_inventory_quantity")),
-                positiveOrDefault(rs.getBigDecimal("initial_issue_price"), BigDecimal.ONE),
-                Math.max(1, rs.getInt("max_order_quantity")),
-                Math.max(1, rs.getInt("order_ttl_seconds")),
-                Math.max(0, rs.getInt("price_offset_ticks")),
-                Math.clamp(rs.getInt("target_spread_ticks"), 1, 50),
-                Math.clamp(rs.getInt("inventory_skew_ticks"), 0, 50),
-                rs.getBigDecimal("minimum_profit_rate"),
-                rs.getBigDecimal("aggressive_unwind_threshold"),
-                rs.getBigDecimal("aggressive_order_ratio"),
-                Math.max(0L, rs.getLong("target_buy_quantity")),
-                Math.max(0L, rs.getLong("target_sell_quantity")),
-                Math.max(0L, rs.getLong("target_holding_quantity")),
-                Math.max(0L, rs.getLong("inventory_band_quantity")),
-                positiveOrDefault(rs.getBigDecimal("tick_size"), DEFAULT_TICK_SIZE),
-                rs.getBigDecimal("current_price"),
-                positiveOrDefault(rs.getBigDecimal("previous_close"), rs.getBigDecimal("current_price")),
-                positiveOrDefault(rs.getBigDecimal("price_limit_rate"), DEFAULT_PRICE_LIMIT_RATE)
-        );
-    }
-
     static AutoOrder toAutoParticipantOrder(ResultSet rs) throws SQLException {
         return new AutoOrder(
                 rs.getLong("id"),
@@ -195,18 +164,6 @@ final class AutoMarketReaderMapper {
                 ),
                 rs.getTimestamp("expires_at") == null ? null : rs.getTimestamp("expires_at").toLocalDateTime(),
                 rs.getTimestamp("created_at").toLocalDateTime()
-        );
-    }
-
-    static AutoOrder toListingAutoAccountOrder(ResultSet rs) throws SQLException {
-        return new AutoOrder(
-                rs.getLong("id"),
-                rs.getLong("account_id"),
-                rs.getString("symbol"),
-                rs.getString("side"),
-                rs.getLong("quantity"),
-                rs.getLong("filled_quantity"),
-                rs.getBigDecimal("reserved_cash")
         );
     }
 

@@ -351,20 +351,6 @@ class LiquidityProviderRepository {
         );
     }
 
-    int countEnabledLegacyLiquidityConfigs(String symbol) {
-        return jdbcClient.sql(
-                """
-                select count(*)
-                  from stock_listing_auto_account_config
-                 where symbol = :symbol
-                   and enabled = true
-                """
-        )
-                .param("symbol", symbol)
-                .query(Integer.class)
-                .single();
-    }
-
     LiquidityProviderExecutionSnapshot findExecutionSnapshot(
             LiquidityProviderMandate mandate,
             LocalDate simulationTradeDate

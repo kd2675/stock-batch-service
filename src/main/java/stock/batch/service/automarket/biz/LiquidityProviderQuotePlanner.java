@@ -282,12 +282,6 @@ class LiquidityProviderQuotePlanner {
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
-        if (input.enabledLegacyLiquidityConfigCount() > 0) {
-            return terminalPlan(
-                    input, HALTED, "LEGACY_LIQUIDITY_ENGINE_ACTIVE", true, pressures,
-                    executionLimit, submissionLimit, unrealizedProfit, netAssets, allOpenOrders
-            );
-        }
         String roleFailure = input.account().eligibilityFailure(mandate, input.simulationTradeDate());
         if (roleFailure != null) {
             return terminalPlan(

@@ -51,9 +51,6 @@ class AutoMarketServiceTest {
     private AutoMarketReadyProfileQueue autoMarketReadyProfileQueue;
 
     @Autowired
-    private ListingAutoMarketJobService listingAutoMarketJobService;
-
-    @Autowired
     private AutoParticipantCashFlowService autoParticipantCashFlowService;
 
     @Autowired
@@ -83,7 +80,6 @@ class AutoMarketServiceTest {
         jdbcTemplate.update("delete from stock_instrument");
         jdbcTemplate.update("delete from stock_order_book_instrument");
         jdbcTemplate.update("delete from stock_order_book_market_config");
-        jdbcTemplate.update("delete from stock_listing_auto_account_config");
         jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
         jdbcTemplate.update("delete from stock_order_book_regime_modifier");
         jdbcTemplate.update("delete from stock_order_book_daily_regime");
@@ -761,75 +757,6 @@ class AutoMarketServiceTest {
 
         assertThat(queryLong("select reserved_quantity from stock_holding where account_id = " + accountId + " and symbol = '005930'"))
                 .isZero();
-    }
-
-    @Test
-    void runListingAutoMarket_listingSellOnlyAccountCreatesSmallSellOrderWithoutParticipants() {
-        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
-        jdbcTemplate.update("delete from stock_auto_participant");
-        insertListingAccount("SELL_ONLY", "0.00", 100L, 0L);
-
-        listingAutoMarketJobService.runListingAutoMarket();
-
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'SELL'"))
-                .isEqualTo(1L);
-        assertThat(queryLong("select quantity from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930'"))
-                .isEqualTo(7L);
-        assertThat(queryLong("select reserved_quantity from stock_holding h join stock_account a on a.id = h.account_id where a.user_key = 'stock-listing-005930' and h.symbol = '005930'"))
-                .isEqualTo(7L);
-    }
-
-    @Test
-    void runListingAutoMarket_listingOrdersExpireWithSimulationScaledTtl() {
-        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
-        jdbcTemplate.update("delete from stock_auto_participant");
-        insertListingAccount("SELL_ONLY", "0.00", 100L, 7L);
-        Long accountId = queryLong("select id from stock_account where user_key = 'stock-listing-005930'");
-        jdbcTemplate.update(
-                """
-                insert into stock_order(
-                    client_order_id, account_id, symbol, market_type, side, order_type, status,
-                    limit_price, quantity, filled_quantity, reserved_cash, created_at, updated_at
-                )
-                values ('listing-old-ttl-test', ?, '005930', 'ORDER_BOOK', 'SELL', 'LIMIT', 'PENDING',
-                        70000.00, 7, 0, 0.00, ?, ?)
-                """,
-                accountId,
-                LocalDateTime.of(2026, 1, 1, 8, 59, 29),
-                LocalDateTime.of(2026, 1, 1, 8, 59, 29)
-        );
-
-        listingAutoMarketJobService.runListingAutoMarket();
-
-        assertThat(queryLong("select count(*) from stock_order where client_order_id = 'listing-old-ttl-test' and status = 'CANCELLED'"))
-                .isEqualTo(1L);
-        assertThat(queryLong("""
-                select count(*)
-                from stock_order o
-                join stock_account a on a.id = o.account_id
-                where a.user_key = 'stock-listing-005930'
-                  and o.symbol = '005930'
-                  and o.side = 'SELL'
-                  and o.status = 'PENDING'
-                """)).isEqualTo(1L);
-        assertThat(queryLong("select reserved_quantity from stock_holding where account_id = " + accountId + " and symbol = '005930'"))
-                .isEqualTo(7L);
-    }
-
-    @Test
-    void runListingAutoMarket_listingBuyOnlyAccountCreatesBuyOrderOnlyWithinCash() {
-        jdbcTemplate.update("delete from stock_auto_participant_symbol_config");
-        jdbcTemplate.update("delete from stock_auto_participant");
-        insertListingAccount("BUY_ONLY", "150000.00", 0L, 0L);
-
-        listingAutoMarketJobService.runListingAutoMarket();
-
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'BUY'"))
-                .isEqualTo(1L);
-        assertThat(queryLong("select count(*) from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930' and o.side = 'SELL'"))
-                .isZero();
-        assertThat(queryLong("select quantity from stock_order o join stock_account a on a.id = o.account_id where a.user_key = 'stock-listing-005930' and o.symbol = '005930'"))
-                .isEqualTo(2L);
     }
 
     @Test
@@ -3189,49 +3116,6 @@ class AutoMarketServiceTest {
                 """,
                 userKey,
                 new BigDecimal(amount)
-        );
-    }
-
-    private void insertListingAccount(String positionSide, String cashBalance, long holdingQuantity, long reservedQuantity) {
-        jdbcTemplate.update(
-                """
-                insert into stock_account(user_key, cash_balance, created_at, updated_at)
-                values ('stock-listing-005930', ?, current_timestamp, current_timestamp)
-                """,
-                new BigDecimal(cashBalance)
-        );
-        if (holdingQuantity > 0) {
-            jdbcTemplate.update(
-                    """
-                    insert into stock_holding(account_id, symbol, quantity, reserved_quantity, average_price, updated_at)
-                    select id, '005930', ?, ?, 70000.00, current_timestamp
-                    from stock_account
-                    where user_key = 'stock-listing-005930'
-                    """,
-                    holdingQuantity,
-                    reservedQuantity
-            );
-        }
-        jdbcTemplate.update(
-                """
-                insert into stock_listing_auto_account_config(
-                    symbol, user_key, display_name, enabled, position_side,
-                    operation_mode, strategy_profile, initial_inventory_quantity, initial_issue_price,
-                    max_order_quantity, order_ttl_seconds, price_offset_ticks,
-                    target_spread_ticks, inventory_skew_ticks, minimum_profit_rate,
-                    aggressive_unwind_threshold, aggressive_order_ratio,
-                    target_buy_quantity, target_sell_quantity, target_holding_quantity, inventory_band_quantity,
-                    created_at, updated_at
-                )
-                values ('005930', 'stock-listing-005930', '삼성전자 상장주관사', true, ?,
-                        'UNDERWRITER_RETURN', 'RETURN_FIRST', 1000000, 70000.00,
-                        7, 30, 0, 8, 3, 1.0, 1.0, 0.0,
-                        ?, ?, ?, 0, current_timestamp, current_timestamp)
-                """,
-                positionSide,
-                "BUY_ONLY".equals(positionSide) ? 7L : 0L,
-                "SELL_ONLY".equals(positionSide) ? 7L : 0L,
-                "BUY_ONLY".equals(positionSide) ? 7L : 0L
         );
     }
 

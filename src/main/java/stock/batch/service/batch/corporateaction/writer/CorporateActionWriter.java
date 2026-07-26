@@ -204,10 +204,6 @@ public class CorporateActionWriter {
         disableSymbolConfig("stock_auto_market_config", symbol, updatedAt);
     }
 
-    public void disableListingAutoAccount(String symbol, LocalDateTime updatedAt) {
-        disableSymbolConfig("stock_listing_auto_account_config", symbol, updatedAt);
-    }
-
     public void disableParticipantSymbolConfigs(String symbol, LocalDateTime updatedAt) {
         disableSymbolConfig("stock_auto_participant_symbol_config", symbol, updatedAt);
     }
@@ -336,29 +332,6 @@ public class CorporateActionWriter {
                        updated_at = ?
                  where symbol = ?
                 """,
-                multiplier,
-                multiplier,
-                multiplier,
-                multiplier,
-                updatedAt,
-                symbol
-        );
-        jdbcTemplate.update(
-                """
-                update stock_listing_auto_account_config
-                   set initial_inventory_quantity = initial_inventory_quantity * ?,
-                       initial_issue_price = initial_issue_price / ?,
-                       max_order_quantity = max_order_quantity * ?,
-                       target_buy_quantity = target_buy_quantity * ?,
-                       target_sell_quantity = target_sell_quantity * ?,
-                       target_holding_quantity = target_holding_quantity * ?,
-                       inventory_band_quantity = inventory_band_quantity * ?,
-                       updated_at = ?
-                 where symbol = ?
-                """,
-                multiplier,
-                multiplier,
-                multiplier,
                 multiplier,
                 multiplier,
                 multiplier,

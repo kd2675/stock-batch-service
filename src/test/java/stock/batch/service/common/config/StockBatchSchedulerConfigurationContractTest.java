@@ -295,25 +295,6 @@ class StockBatchSchedulerConfigurationContractTest {
     }
 
     @Test
-    void listingAutoMarketRetryDefaults_areExternallyConfigurableAndBounded() throws IOException {
-        PropertySource<?> applicationProperties = loadApplicationProperties();
-
-        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.enabled"))
-                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_ENABLED:false}");
-        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))
-                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}");
-        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))
-                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_MAX_ATTEMPTS:5}");
-        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.symbol-limit-per-run"))
-                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_SYMBOL_LIMIT_PER_RUN:100}");
-        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-backoff-ms"))
-                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_DEADLOCK_RETRY_BACKOFF_MS:50}");
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))).isBetween(5_000, 10_000);
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.symbol-limit-per-run"))).isBetween(1, 500);
-        assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))).isBetween(1, 10);
-    }
-
-    @Test
     void autoParticipantCashFlowDefaultPollInterval_isNotOneSecondDatabaseScan() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
         String schedulerSource = Files.readString(

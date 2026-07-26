@@ -10,7 +10,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueRec
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
-import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.corporateaction.job.CorporateActionJob;
 import stock.batch.service.batch.execution.job.OrderBookExecutionJob;
@@ -44,7 +43,6 @@ public class BatchJobRuntimeCatalog {
             @Value("${stock.batch.auto-market.daily-regime.enabled:true}") boolean autoMarketDailyRegimeConfigured,
             @Value("${stock.batch.auto-market.profile-queue.reconcile-enabled:true}") boolean autoMarketProfileQueueReconcileConfigured,
             @Value("${stock.batch.auto-market-order-expiry.enabled:true}") boolean autoMarketOrderExpiryConfigured,
-            @Value("${stock.batch.listing-auto-market.enabled:false}") boolean listingAutoMarketConfigured,
             @Value("${stock.batch.liquidity-provider-market.enabled:true}") boolean liquidityProviderMarketConfigured,
             @Value("${stock.batch.issue-underwriter-market.enabled:true}") boolean issueUnderwriterMarketConfigured,
             @Value("${stock.batch.institution-market.enabled:true}") boolean institutionMarketConfigured,
@@ -65,7 +63,6 @@ public class BatchJobRuntimeCatalog {
                 autoMarketDailyRegimeConfigured,
                 autoMarketProfileQueueReconcileConfigured,
                 autoMarketOrderExpiryConfigured,
-                listingAutoMarketConfigured,
                 liquidityProviderMarketConfigured,
                 issueUnderwriterMarketConfigured,
                 institutionMarketConfigured,
@@ -134,7 +131,6 @@ public class BatchJobRuntimeCatalog {
             boolean autoMarketDailyRegimeConfigured,
             boolean autoMarketProfileQueueReconcileConfigured,
             boolean autoMarketOrderExpiryConfigured,
-            boolean listingAutoMarketConfigured,
             boolean liquidityProviderMarketConfigured,
             boolean issueUnderwriterMarketConfigured,
             boolean institutionMarketConfigured,
@@ -156,7 +152,6 @@ public class BatchJobRuntimeCatalog {
         put(createdDefinitions, AutoMarketProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
         put(createdDefinitions, AutoMarketPreOpenProfileQueueReconcileJob.JOB_NAME, autoMarketProfileQueueReconcileConfigured);
         put(createdDefinitions, AutoMarketOrderExpiryJob.JOB_NAME, autoMarketOrderExpiryConfigured);
-        put(createdDefinitions, ListingAutoMarketJob.JOB_NAME, listingAutoMarketConfigured);
         put(createdDefinitions, LiquidityProviderMarketJob.JOB_NAME, liquidityProviderMarketConfigured);
         put(createdDefinitions, IssueUnderwriterMarketJob.JOB_NAME, issueUnderwriterMarketConfigured);
         put(createdDefinitions, InstitutionMarketJob.JOB_NAME, institutionMarketConfigured);

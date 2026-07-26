@@ -35,23 +35,4 @@ class AutoMarketMaintenanceVolumeConfigurationTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("auto-market-order-expiry.symbol-limit-per-run must be between 1 and 500");
     }
-
-    @Test
-    void listingSymbolLimit_aboveMaximum_rejectsStartup() {
-        ListingAutoMarketJobService service = new ListingAutoMarketJobService(
-                mock(AutoMarketReader.class),
-                mock(ListingAutoAccountOrderService.class),
-                mock(SimulationClockService.class),
-                mock(SimulationMarketSessionService.class),
-                mock(TransactionTemplate.class),
-                mock(OrderBookSymbolLock.class),
-                mock(MarketSessionFenceService.class),
-                new SimpleMeterRegistry()
-        );
-        ReflectionTestUtils.setField(service, "symbolLimitPerRun", 501);
-
-        assertThatThrownBy(service::validateRetryConfiguration)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("listing-auto-market.symbol-limit-per-run must be between 1 and 500");
-    }
 }

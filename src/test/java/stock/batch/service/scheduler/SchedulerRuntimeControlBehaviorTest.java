@@ -19,7 +19,6 @@ import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJ
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
 import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
-import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
 import stock.batch.service.batch.common.policy.BatchJobRuntimeControl;
 import stock.batch.service.batch.common.support.StockBatchJobLauncher;
@@ -126,22 +125,6 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void listingAutoMarketScheduler_checksRuntimeControlBeforeLaunching() {
-        AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
-        ReflectionTestUtils.setField(
-                scheduler,
-                "listingAutoMarketSchedulerConfigured",
-                true
-        );
-
-        assertSimpleSchedulerGate(
-                ListingAutoMarketJob.JOB_NAME,
-                scheduler::runListingAutoMarket,
-                () -> verify(stockBatchJobLauncher).runListingAutoMarket()
-        );
-    }
-
-    @Test
     void liquidityProviderMarketScheduler_checksRuntimeControlBeforeLaunching() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
 
@@ -192,7 +175,6 @@ class SchedulerRuntimeControlBehaviorTest {
 
         scheduler.runAutoMarket();
         scheduler.expireAutoMarketOrders();
-        scheduler.runListingAutoMarket();
         scheduler.runLiquidityProviderMarket();
         scheduler.runIssueUnderwriterMarket();
         scheduler.runInstitutionMarket();
@@ -207,7 +189,6 @@ class SchedulerRuntimeControlBehaviorTest {
 
         scheduler.runAutoMarket();
         scheduler.expireAutoMarketOrders();
-        scheduler.runListingAutoMarket();
         scheduler.runLiquidityProviderMarket();
         scheduler.runIssueUnderwriterMarket();
         scheduler.runInstitutionMarket();

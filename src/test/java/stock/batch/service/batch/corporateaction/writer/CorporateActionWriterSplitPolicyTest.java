@@ -48,21 +48,6 @@ class CorporateActionWriterSplitPolicyTest {
                 .containsEntry("INVENTORY_BAND_QUANTITY", 2_500L);
         assertThat(jdbcTemplate.queryForMap(
                 """
-                select initial_inventory_quantity, initial_issue_price,
-                       max_order_quantity, target_buy_quantity,
-                       target_sell_quantity, target_holding_quantity,
-                       inventory_band_quantity
-                  from stock_listing_auto_account_config
-                """
-        )).containsEntry("INITIAL_INVENTORY_QUANTITY", 50_000L)
-                .containsEntry("INITIAL_ISSUE_PRICE", new BigDecimal("14000.00"))
-                .containsEntry("MAX_ORDER_QUANTITY", 500)
-                .containsEntry("TARGET_BUY_QUANTITY", 5_000L)
-                .containsEntry("TARGET_SELL_QUANTITY", 5_000L)
-                .containsEntry("TARGET_HOLDING_QUANTITY", 25_000L)
-                .containsEntry("INVENTORY_BAND_QUANTITY", 10_000L);
-        assertThat(jdbcTemplate.queryForMap(
-                """
                 select issue_price, stabilization_quantity_limit
                   from stock_underwriting_contract
                  where id = 1
@@ -122,19 +107,6 @@ class CorporateActionWriterSplitPolicyTest {
                 )
                 """);
         jdbcTemplate.execute("""
-                create table stock_listing_auto_account_config(
-                    symbol varchar(20) primary key,
-                    initial_inventory_quantity bigint not null,
-                    initial_issue_price decimal(19,2) not null,
-                    max_order_quantity int not null,
-                    target_buy_quantity bigint not null,
-                    target_sell_quantity bigint not null,
-                    target_holding_quantity bigint not null,
-                    inventory_band_quantity bigint not null,
-                    updated_at timestamp not null
-                )
-                """);
-        jdbcTemplate.execute("""
                 create table stock_underwriting_contract(
                     id bigint primary key,
                     symbol varchar(20) not null,
@@ -174,16 +146,6 @@ class CorporateActionWriterSplitPolicyTest {
                     id, symbol, max_order_quantity, reference_daily_volume,
                     target_inventory_quantity, inventory_band_quantity, updated_at
                 ) values (1, 'DEMO001', 30, 3000, 500, 500, ?)
-                """,
-                SPLIT_AT.minusDays(1)
-        );
-        jdbcTemplate.update(
-                """
-                insert into stock_listing_auto_account_config(
-                    symbol, initial_inventory_quantity, initial_issue_price,
-                    max_order_quantity, target_buy_quantity, target_sell_quantity,
-                    target_holding_quantity, inventory_band_quantity, updated_at
-                ) values ('DEMO001', 10000, 70000, 100, 1000, 1000, 5000, 2000, ?)
                 """,
                 SPLIT_AT.minusDays(1)
         );

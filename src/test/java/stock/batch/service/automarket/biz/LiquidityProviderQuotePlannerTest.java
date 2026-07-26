@@ -56,8 +56,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         );
 
         LiquidityProviderQuotePlan plan = planner.plan(input);
@@ -80,8 +79,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 new AutoMarketPressure(100, 0, 100, 100, 100),
                 new AutoMarketPressure(-100, 0, -100, -100, -100),
-                true,
-                0
+                true
         ));
         LiquidityProviderQuotePlan negative = planner.plan(input(
                 mandate,
@@ -92,8 +90,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 new AutoMarketPressure(-100, 0, -100, -100, -100),
                 new AutoMarketPressure(100, 0, 100, 100, 100),
-                true,
-                0
+                true
         ));
 
         assertThat(positive.blendedPricePressure()).isEqualTo(0.4);
@@ -167,8 +164,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.targetBuyOpenQuantity()).isZero();
@@ -204,8 +200,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(buy),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -238,8 +233,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(sell),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.riskProfit()).isEqualByComparingTo("-2000000.00");
@@ -259,8 +253,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.unrealizedProfit()).isEqualByComparingTo("-2000000.00");
@@ -331,8 +324,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(existing),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -340,26 +332,6 @@ class LiquidityProviderQuotePlannerTest {
         assertThat(plan.proposedOrders()).isEmpty();
         assertThat(plan.executableOrders()).isEmpty();
         assertThat(plan.cancellationOrders()).containsExactly(existing);
-    }
-
-    @Test
-    void plan_liveModeWhileLegacyLiquidityIsEnabled_haltsInsteadOfDoubleSupplying() {
-        LiquidityProviderQuotePlan plan = planner.plan(input(
-                mandate("LIVE"),
-                account(1_000L, BigDecimal.valueOf(100L)),
-                LiquidityProviderExecutionSnapshot.EMPTY,
-                dailyState(),
-                deepExternalBook(),
-                List.of(),
-                AutoMarketPressure.NEUTRAL,
-                AutoMarketPressure.NEUTRAL,
-                true,
-                1
-        ));
-
-        assertThat(plan.stateStatus()).isEqualTo("HALTED");
-        assertThat(plan.gateReason()).isEqualTo("LEGACY_LIQUIDITY_ENGINE_ACTIVE");
-        assertThat(plan.executableOrders()).isEmpty();
     }
 
     @Test
@@ -386,8 +358,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(existing),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -415,8 +386,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -436,8 +406,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -478,8 +447,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
@@ -497,8 +465,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         ));
 
         assertThat(plan.gateReason()).isEqualTo("ROLE_DESK_SYMBOL_MISMATCH");
@@ -514,8 +481,7 @@ class LiquidityProviderQuotePlannerTest {
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         );
     }
 
@@ -530,8 +496,7 @@ class LiquidityProviderQuotePlannerTest {
                 orders,
                 AutoMarketPressure.NEUTRAL,
                 AutoMarketPressure.NEUTRAL,
-                true,
-                0
+                true
         );
     }
 
@@ -544,8 +509,7 @@ class LiquidityProviderQuotePlannerTest {
             List<AutoOrder> orders,
             AutoMarketPressure primaryPressure,
             AutoMarketPressure secondaryPressure,
-            boolean marketTradingEnabled,
-            int legacyLiquidityCount
+            boolean marketTradingEnabled
     ) {
         return new LiquidityProviderQuoteInput(
                 mandate,
@@ -558,8 +522,7 @@ class LiquidityProviderQuotePlannerTest {
                 externalBook,
                 orders,
                 false,
-                marketTradingEnabled,
-                legacyLiquidityCount
+                marketTradingEnabled
         );
     }
 

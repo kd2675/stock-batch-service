@@ -1835,7 +1835,6 @@ public class CorporateActionService {
         }
         corporateActionWriter.haltOrderBookMarket(row.symbol(), now);
         corporateActionWriter.disableAutoMarket(row.symbol(), now);
-        corporateActionWriter.disableListingAutoAccount(row.symbol(), now);
         corporateActionWriter.disableParticipantSymbolConfigs(row.symbol(), now);
         corporateActionPriceWriter.upsertPrice(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);
         corporateActionPriceWriter.insertPriceTick(row.symbol(), BigDecimal.ZERO, DELISTING_PROVIDER, now);

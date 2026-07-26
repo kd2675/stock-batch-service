@@ -1,7 +1,6 @@
 package stock.batch.service.automarket.biz;
 
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
-import stock.batch.service.batch.automarket.model.ListingAutoAccountConfig;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -37,16 +36,6 @@ final class AutoMarketPricePolicy {
     }
 
     static BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, AutoMarketConfig config, BigDecimal tick) {
-        return normalizePriceWithinDailyLimit(
-                config.market(),
-                rawPrice,
-                config.currentPrice(),
-                config.previousClose(),
-                config.priceLimitRate()
-        );
-    }
-
-    static BigDecimal normalizePriceWithinDailyLimit(BigDecimal rawPrice, ListingAutoAccountConfig config, BigDecimal tick) {
         return normalizePriceWithinDailyLimit(
                 config.market(),
                 rawPrice,

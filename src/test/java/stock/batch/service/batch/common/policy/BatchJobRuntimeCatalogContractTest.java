@@ -60,7 +60,6 @@ class BatchJobRuntimeCatalogContractTest {
                 false,
                 false,
                 false,
-                false,
                 false
         );
 
@@ -109,7 +108,6 @@ class BatchJobRuntimeCatalogContractTest {
     private BatchJobRuntimeCatalog createRuntimeCatalog(boolean marketCloseConfigured, boolean settlementConfigured) {
         return new BatchJobRuntimeCatalog(
                 new BatchJobRuntimeControl(createJdbcTemplate()),
-                true,
                 true,
                 true,
                 true,

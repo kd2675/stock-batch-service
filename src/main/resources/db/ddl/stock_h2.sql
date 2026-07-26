@@ -2289,8 +2289,11 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   reference_daily_volume BIGINT NOT NULL,
   seed_inventory_quantity BIGINT NOT NULL,
   seed_cash_amount DECIMAL(19,2) NOT NULL,
+  transferred_inventory_quantity BIGINT NOT NULL DEFAULT 0,
+  transferred_cash_amount DECIMAL(19,2) NOT NULL DEFAULT 0.00,
   effective_business_date DATE NOT NULL,
   legacy_disabled_at TIMESTAMP,
+  legacy_retired_at TIMESTAMP,
   activated_at TIMESTAMP,
   requested_by VARCHAR(64) NOT NULL,
   change_reason VARCHAR(500) NOT NULL,
@@ -2304,6 +2307,10 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     reference_daily_volume > 0
     AND seed_inventory_quantity > 0
     AND seed_cash_amount > 0
+  ),
+  CONSTRAINT chk_stock_liquidity_transition_transfer CHECK (
+    transferred_inventory_quantity >= 0
+    AND transferred_cash_amount >= 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
     stage IN ('LIVE_ACTIVE', 'SUSPENDED')
@@ -2381,51 +2388,6 @@ CREATE TABLE IF NOT EXISTS stock_order_book_regime_modifier (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_order_book_regime_modifier_window ON stock_order_book_regime_modifier(simulation_trade_date, regime_phase, modifier_window_start_at, symbol);
-
-CREATE TABLE IF NOT EXISTS stock_listing_auto_account_config (
-  symbol VARCHAR(20) NOT NULL PRIMARY KEY,
-  user_key VARCHAR(64) NOT NULL UNIQUE,
-  display_name VARCHAR(80) NOT NULL,
-  enabled BOOLEAN NOT NULL,
-  position_side VARCHAR(20) NOT NULL,
-  operation_mode VARCHAR(30) NOT NULL,
-  strategy_profile VARCHAR(30) NOT NULL,
-  initial_inventory_quantity BIGINT NOT NULL,
-  initial_issue_price DECIMAL(19,2) NOT NULL,
-  max_order_quantity INT NOT NULL,
-  order_ttl_seconds INT NOT NULL,
-  price_offset_ticks INT NOT NULL,
-  target_spread_ticks INT NOT NULL,
-  inventory_skew_ticks INT NOT NULL,
-  minimum_profit_rate DECIMAL(8,4) NOT NULL,
-  aggressive_unwind_threshold DECIMAL(8,4) NOT NULL,
-  aggressive_order_ratio DECIMAL(8,4) NOT NULL,
-  target_buy_quantity BIGINT NOT NULL,
-  target_sell_quantity BIGINT NOT NULL,
-  target_holding_quantity BIGINT NOT NULL,
-  inventory_band_quantity BIGINT NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  CONSTRAINT chk_stock_listing_auto_account_position CHECK (CASE `position_side` WHEN 'SELL_ONLY' THEN 1 WHEN 'BUY_ONLY' THEN 1 WHEN 'TWO_SIDED' THEN 1 ELSE 0 END = 1),
-  CONSTRAINT chk_stock_listing_auto_account_operation_mode CHECK (operation_mode IN ('UNDERWRITER_RETURN', 'LIQUIDITY_PROVIDER', 'HYBRID')),
-  CONSTRAINT chk_stock_listing_auto_account_strategy_profile CHECK (strategy_profile IN ('LIQUIDITY_FIRST', 'BALANCED', 'RETURN_FIRST')),
-  CONSTRAINT chk_stock_listing_auto_account_initial_quantity CHECK (initial_inventory_quantity > 0),
-  CONSTRAINT chk_stock_listing_auto_account_initial_price CHECK (initial_issue_price > 0),
-  CONSTRAINT chk_stock_listing_auto_account_max_order_quantity CHECK (max_order_quantity > 0),
-  CONSTRAINT chk_stock_listing_auto_account_order_ttl_seconds CHECK (order_ttl_seconds > 0),
-  CONSTRAINT chk_stock_listing_auto_account_price_offset CHECK (price_offset_ticks >= 0),
-  CONSTRAINT chk_stock_listing_auto_account_target_spread CHECK (target_spread_ticks BETWEEN 1 AND 50),
-  CONSTRAINT chk_stock_listing_auto_account_inventory_skew CHECK (inventory_skew_ticks BETWEEN 0 AND 50),
-  CONSTRAINT chk_stock_listing_auto_account_minimum_profit CHECK (minimum_profit_rate BETWEEN 0 AND 100),
-  CONSTRAINT chk_stock_listing_auto_account_unwind_threshold CHECK (aggressive_unwind_threshold BETWEEN 0 AND 1),
-  CONSTRAINT chk_stock_listing_auto_account_aggressive_ratio CHECK (aggressive_order_ratio BETWEEN 0 AND 1),
-  CONSTRAINT chk_stock_listing_auto_account_target_buy CHECK (target_buy_quantity >= 0),
-  CONSTRAINT chk_stock_listing_auto_account_target_sell CHECK (target_sell_quantity >= 0),
-  CONSTRAINT chk_stock_listing_auto_account_target_holding CHECK (target_holding_quantity >= 0),
-  CONSTRAINT chk_stock_listing_auto_account_inventory_band CHECK (inventory_band_quantity >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_stock_listing_auto_account_enabled ON stock_listing_auto_account_config(enabled, symbol);
 
 CREATE TABLE IF NOT EXISTS stock_auto_participant_symbol_config (
   user_key VARCHAR(64) NOT NULL,
@@ -2722,7 +2684,7 @@ CREATE TABLE IF NOT EXISTS stock_security_allocation_ledger (
       'INITIAL_LOCKED_CUSTODY',
       'PUBLIC_ALLOCATION', 'UNSOLD_UNDERWRITING',
       'CORPORATE_ACTION_ALLOCATION', 'LOCK_RELEASE',
-      'LIQUIDITY_SEED_TRANSFER'
+      'LIQUIDITY_SEED_TRANSFER', 'LIQUIDITY_ACCOUNT_TRANSFER'
     )
   ),
   CONSTRAINT chk_stock_security_allocation_tradability CHECK (

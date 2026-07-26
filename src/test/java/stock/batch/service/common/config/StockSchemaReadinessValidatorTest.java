@@ -242,6 +242,11 @@ class StockSchemaReadinessValidatorTest {
                     business_date date not null primary key
                 )
                 """);
+        jdbcTemplate.execute("""
+                create table stock_listing_auto_account_config(
+                    symbol varchar(20) not null primary key
+                )
+                """);
         StockSchemaReadinessValidator validator = new StockSchemaReadinessValidator(
                 dataSource,
                 mock(StockRuntimeIdentity.class)
@@ -251,6 +256,7 @@ class StockSchemaReadinessValidatorTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("stock_auto_participant.behavior_evaluation_mode legacy column removal")
                 .hasMessageContaining("stock_auto_profile_decision_day_summary legacy table removal")
+                .hasMessageContaining("stock_listing_auto_account_config legacy table removal")
                 .hasMessageContaining("chk_stock_auto_participant_behavior_evaluation legacy CHECK removal");
     }
 
