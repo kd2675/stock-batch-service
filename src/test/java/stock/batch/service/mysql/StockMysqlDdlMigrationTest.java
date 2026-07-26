@@ -62,6 +62,7 @@ class StockMysqlDdlMigrationTest {
             "stock_institution_shadow_engine_alter.sql",
             "stock_liquidity_provider_engine_alter.sql",
             "stock_issuance_underwriting_alter.sql",
+            "stock_market_role_independent_provisioning_alter.sql",
             "stock_underwriter_scaled_supply_alter.sql",
             "stock_liquidity_transition_alter.sql",
             "stock_eod_runtime_contract_alter.sql",

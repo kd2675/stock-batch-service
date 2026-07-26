@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS stock_security_allocation_ledger (
   ),
   CONSTRAINT chk_stock_security_allocation_reason CHECK (
     CASE allocation_reason
+      WHEN 'INITIAL_FLOAT_CUSTODY' THEN 1
       WHEN 'INITIAL_FLOAT_UNDERWRITER' THEN 1
       WHEN 'INITIAL_LOCKED_CUSTODY' THEN 1
       WHEN 'PUBLIC_ALLOCATION' THEN 1

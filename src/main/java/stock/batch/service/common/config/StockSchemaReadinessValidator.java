@@ -372,7 +372,8 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     "initial_issue", "capital_increase", "lock_release", "manual_reallocation"
             )),
             Map.entry("chk_stock_security_allocation_reason", Set.of(
-                    "initial_float_underwriter", "initial_locked_custody",
+                    "initial_float_custody", "initial_float_underwriter",
+                    "initial_locked_custody",
                     "public_allocation", "unsold_underwriting",
                     "corporate_action_allocation", "lock_release",
                     "liquidity_seed_transfer"
