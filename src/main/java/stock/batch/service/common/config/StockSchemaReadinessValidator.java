@@ -12,33 +12,29 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
 @ConditionalOnProperty(
         name = "stock.batch.schema-readiness.enabled",
         havingValue = "true",
         matchIfMissing = true
 )
 @Slf4j
-public class StockSchemaReadinessValidator implements ApplicationRunner {
+public class StockSchemaReadinessValidator implements SmartInitializingSingleton {
 
     private static final Set<String> AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS =
             Arrays.stream(AutoParticipantProfileType.values())
@@ -522,13 +518,28 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
     }
 
     @Override
+    public void afterSingletonsInstantiated() {
+        try {
+            run(null);
+        } catch (RuntimeException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalStateException("Stock schema readiness validation failed", ex);
+        }
+    }
+
     public void run(ApplicationArguments args) throws Exception {
         List<String> missing = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             DatabaseMetaData metadata = connection.getMetaData();
             String catalog = connection.getCatalog();
+            Map<String, Map<String, Boolean>> columnsByTable =
+                    readColumnMetadata(metadata, catalog);
+            Map<String, String> checkClauses = readCheckClauses(connection);
             for (Map.Entry<String, Set<String>> requirement : REQUIRED_COLUMNS.entrySet()) {
-                Set<String> actualColumns = readColumns(metadata, catalog, requirement.getKey());
+                Set<String> actualColumns = columnsByTable
+                        .getOrDefault(normalize(requirement.getKey()), Map.of())
+                        .keySet();
                 if (actualColumns.isEmpty()) {
                     missing.add(requirement.getKey() + " table");
                     continue;
@@ -540,7 +551,9 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 }
             }
             for (Map.Entry<String, Set<String>> legacyColumns : FORBIDDEN_LEGACY_COLUMNS.entrySet()) {
-                Set<String> actualColumns = readColumns(metadata, catalog, legacyColumns.getKey());
+                Set<String> actualColumns = columnsByTable
+                        .getOrDefault(normalize(legacyColumns.getKey()), Map.of())
+                        .keySet();
                 for (String forbiddenColumn : legacyColumns.getValue()) {
                     if (actualColumns.contains(forbiddenColumn)) {
                         missing.add(legacyColumns.getKey() + "." + forbiddenColumn + " legacy column removal");
@@ -548,7 +561,9 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 }
             }
             for (String forbiddenTable : FORBIDDEN_LEGACY_TABLES) {
-                if (!readColumns(metadata, catalog, forbiddenTable).isEmpty()) {
+                if (!columnsByTable
+                        .getOrDefault(normalize(forbiddenTable), Map.of())
+                        .isEmpty()) {
                     missing.add(forbiddenTable + " legacy table removal");
                 }
             }
@@ -561,21 +576,25 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 }
             }
             for (Map.Entry<String, Set<String>> requirement : REQUIRED_NOT_NULL_COLUMNS.entrySet()) {
+                Map<String, Boolean> actualColumns = columnsByTable.getOrDefault(
+                        normalize(requirement.getKey()),
+                        Map.of()
+                );
                 for (String requiredColumn : requirement.getValue()) {
-                    readColumnNullable(metadata, catalog, requirement.getKey(), requiredColumn)
-                            .filter(Boolean::booleanValue)
-                            .ifPresent(nullable -> missing.add(
-                                    requirement.getKey() + "." + requiredColumn + " NOT NULL constraint"
-                            ));
+                    if (Boolean.TRUE.equals(actualColumns.get(normalize(requiredColumn)))) {
+                        missing.add(
+                                requirement.getKey() + "." + requiredColumn + " NOT NULL constraint"
+                        );
+                    }
                 }
             }
             for (Map.Entry<String, Set<String>> requirement : REQUIRED_CHECK_TOKENS.entrySet()) {
-                Optional<String> checkClause = readCheckClause(connection, requirement.getKey());
-                if (checkClause.isEmpty()) {
+                String checkClause = checkClauses.get(normalize(requirement.getKey()));
+                if (checkClause == null) {
                     missing.add(requirement.getKey() + " CHECK constraint");
                     continue;
                 }
-                String normalizedClause = normalize(checkClause.get());
+                String normalizedClause = normalize(checkClause);
                 for (String requiredToken : requirement.getValue()) {
                     if (!normalizedClause.contains(normalize(requiredToken))) {
                         missing.add(requirement.getKey() + " CHECK token " + requiredToken);
@@ -583,7 +602,7 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
                 }
             }
             for (String forbiddenCheck : FORBIDDEN_LEGACY_CHECKS) {
-                if (readCheckClause(connection, forbiddenCheck).isPresent()) {
+                if (checkClauses.containsKey(normalize(forbiddenCheck))) {
                     missing.add(forbiddenCheck + " legacy CHECK removal");
                 }
             }
@@ -602,31 +621,23 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         );
     }
 
-    private Set<String> readColumns(
+    private Map<String, Map<String, Boolean>> readColumnMetadata(
             DatabaseMetaData metadata,
-            String catalog,
-            String tableName
+            String catalog
     ) throws SQLException {
-        Set<String> columns = new LinkedHashSet<>();
-        try (ResultSet rows = metadata.getColumns(catalog, null, tableName, null)) {
+        Map<String, Map<String, Boolean>> columnsByTable = new LinkedHashMap<>();
+        try (ResultSet rows = metadata.getColumns(catalog, null, "%", "%")) {
             while (rows.next()) {
-                columns.add(normalize(rows.getString("COLUMN_NAME")));
+                String tableName = normalize(rows.getString("TABLE_NAME"));
+                String columnName = normalize(rows.getString("COLUMN_NAME"));
+                boolean nullable =
+                        rows.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls;
+                columnsByTable
+                        .computeIfAbsent(tableName, ignored -> new LinkedHashMap<>())
+                        .put(columnName, nullable);
             }
         }
-        if (!columns.isEmpty()) {
-            return columns;
-        }
-        try (ResultSet rows = metadata.getColumns(
-                catalog,
-                null,
-                tableName.toUpperCase(Locale.ROOT),
-                null
-        )) {
-            while (rows.next()) {
-                columns.add(normalize(rows.getString("COLUMN_NAME")));
-            }
-        }
-        return columns;
+        return columnsByTable;
     }
 
     private Set<String> readIndexes(
@@ -640,38 +651,6 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
             readIndexes(metadata, catalog, tableName.toUpperCase(Locale.ROOT), indexes);
         }
         return indexes;
-    }
-
-    private Optional<Boolean> readColumnNullable(
-            DatabaseMetaData metadata,
-            String catalog,
-            String tableName,
-            String columnName
-    ) throws SQLException {
-        Optional<Boolean> nullable = readColumnNullableExact(metadata, catalog, tableName, columnName);
-        if (nullable.isPresent()) {
-            return nullable;
-        }
-        return readColumnNullableExact(
-                metadata,
-                catalog,
-                tableName.toUpperCase(Locale.ROOT),
-                columnName.toUpperCase(Locale.ROOT)
-        );
-    }
-
-    private Optional<Boolean> readColumnNullableExact(
-            DatabaseMetaData metadata,
-            String catalog,
-            String tableName,
-            String columnName
-    ) throws SQLException {
-        try (ResultSet rows = metadata.getColumns(catalog, null, tableName, columnName)) {
-            if (!rows.next()) {
-                return Optional.empty();
-            }
-            return Optional.of(rows.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls);
-        }
     }
 
     private void readIndexes(
@@ -690,40 +669,40 @@ public class StockSchemaReadinessValidator implements ApplicationRunner {
         }
     }
 
-    private Optional<String> readCheckClause(Connection connection, String constraintName) throws SQLException {
+    private Map<String, String> readCheckClauses(Connection connection) throws SQLException {
         String productName = connection.getMetaData().getDatabaseProductName();
         String normalizedProductName = normalize(productName);
         boolean mysql = normalizedProductName.contains("mysql");
         boolean h2 = normalizedProductName.contains("h2");
         String sql = mysql
                 ? """
-                  select check_clause
+                  select constraint_name, check_clause
                    from information_schema.check_constraints
                    where constraint_schema = database()
-                     and lower(constraint_name) = lower(?)
                   """
                 : h2
                 ? """
-                  select "CHECK_CLAUSE"
+                  select "CONSTRAINT_NAME", "CHECK_CLAUSE"
                     from "INFORMATION_SCHEMA"."CHECK_CONSTRAINTS"
                    where lower("CONSTRAINT_SCHEMA") = lower(current_schema)
-                     and lower("CONSTRAINT_NAME") = lower(?)
                   """
                 : """
-                  select check_clause
+                  select constraint_name, check_clause
                    from information_schema.check_constraints
                    where constraint_schema = current_schema
-                     and lower(constraint_name) = lower(?)
                   """;
+        Map<String, String> clauses = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, constraintName);
             try (ResultSet rows = statement.executeQuery()) {
-                if (!rows.next()) {
-                    return Optional.empty();
+                while (rows.next()) {
+                    clauses.put(
+                            normalize(rows.getString(1)),
+                            rows.getString(2)
+                    );
                 }
-                return Optional.ofNullable(rows.getString("check_clause"));
             }
         }
+        return clauses;
     }
 
     private String normalize(String value) {
