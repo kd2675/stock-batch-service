@@ -186,6 +186,39 @@ class StockSchemaReadinessValidatorTest {
     }
 
     @Test
+    void run_legacyInstitutionDecisionModeCheck_failsBeforeSchedulersStart() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:h2:mem:batch_schema_readiness_institution_mode;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false",
+                "sa",
+                ""
+        );
+        dataSource.setDriverClassName("org.h2.Driver");
+        new ResourceDatabasePopulator(new ClassPathResource("db/ddl/stock_h2.sql")).execute(dataSource);
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        jdbcTemplate.execute(
+                "alter table stock_institution_decision_run "
+                        + "drop constraint chk_stock_institution_decision_run_mode"
+        );
+        jdbcTemplate.execute(
+                """
+                alter table stock_institution_decision_run
+                  add constraint chk_stock_institution_decision_run_mode
+                  check (execution_mode in ('SHADOW', 'PILOT', 'LIVE'))
+                """
+        );
+        StockSchemaReadinessValidator validator = new StockSchemaReadinessValidator(
+                dataSource,
+                mock(StockRuntimeIdentity.class)
+        );
+
+        assertThatThrownBy(() -> validator.run(null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "chk_stock_institution_decision_run_mode CHECK forbidden token shadow"
+                );
+    }
+
+    @Test
     void run_legacyShadowSchema_failsBeforeSchedulersStart() {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
                 "jdbc:h2:mem:batch_schema_readiness_legacy_shadow;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false",

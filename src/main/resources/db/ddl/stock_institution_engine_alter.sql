@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_portfolio (
   portfolio_code VARCHAR(64) NOT NULL,
   display_name VARCHAR(120) NOT NULL,
   investment_style VARCHAR(40) NOT NULL,
-  execution_mode VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  execution_mode VARCHAR(20) NOT NULL DEFAULT 'LIVE',
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   base_stock_allocation_rate DECIMAL(8,6) NOT NULL,
   min_stock_allocation_rate DECIMAL(8,6) NOT NULL,
@@ -38,14 +38,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_portfolio (
       ELSE 0
     END = 1
   ),
-  CONSTRAINT chk_stock_institution_portfolio_mode CHECK (
-    CASE `execution_mode`
-      WHEN 'SHADOW' THEN 1
-      WHEN 'PILOT' THEN 1
-      WHEN 'LIVE' THEN 1
-      ELSE 0
-    END = 1
-  ),
+  CONSTRAINT chk_stock_institution_portfolio_mode CHECK (`execution_mode` = 'LIVE'),
   CONSTRAINT chk_stock_institution_portfolio_status CHECK (
     CASE `status` WHEN 'ACTIVE' THEN 1 WHEN 'SUSPENDED' THEN 1 WHEN 'RETIRED' THEN 1 ELSE 0 END = 1
   ),
@@ -136,9 +129,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_decision_run (
   UNIQUE KEY uk_stock_institution_decision_slot (portfolio_id, decision_slot),
   KEY idx_stock_institution_decision_run_date (simulation_trade_date, portfolio_id, decision_slot),
   KEY idx_stock_institution_decision_run_status (status, decision_slot, id),
-  CONSTRAINT chk_stock_institution_decision_run_mode CHECK (
-    CASE `execution_mode` WHEN 'SHADOW' THEN 1 WHEN 'PILOT' THEN 1 WHEN 'LIVE' THEN 1 ELSE 0 END = 1
-  ),
+  CONSTRAINT chk_stock_institution_decision_run_mode CHECK (`execution_mode` = 'LIVE'),
   CONSTRAINT chk_stock_institution_decision_run_status CHECK (
     CASE `status` WHEN 'CLAIMED' THEN 1 WHEN 'COMPLETED' THEN 1 WHEN 'FAILED' THEN 1 ELSE 0 END = 1
   ),

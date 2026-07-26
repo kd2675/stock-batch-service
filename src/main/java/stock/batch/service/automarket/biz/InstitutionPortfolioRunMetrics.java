@@ -5,21 +5,21 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
 @Component
-class InstitutionShadowPortfolioRunMetrics {
+class InstitutionPortfolioRunMetrics {
 
     private final Counter completed;
     private final Counter failed;
     private final Counter skipped;
     private final Counter unexpectedFailure;
 
-    InstitutionShadowPortfolioRunMetrics(MeterRegistry meterRegistry) {
+    InstitutionPortfolioRunMetrics(MeterRegistry meterRegistry) {
         completed = counter(meterRegistry, "completed");
         failed = counter(meterRegistry, "failed");
         skipped = counter(meterRegistry, "skipped");
         unexpectedFailure = counter(meterRegistry, "rollback");
     }
 
-    void record(InstitutionShadowPortfolioProcessor.ProcessResult result) {
+    void record(InstitutionPortfolioProcessor.ProcessResult result) {
         switch (result) {
             case COMPLETED -> completed.increment();
             case FAILED -> failed.increment();
@@ -32,7 +32,7 @@ class InstitutionShadowPortfolioRunMetrics {
     }
 
     private Counter counter(MeterRegistry meterRegistry, String result) {
-        return Counter.builder("stock.institution.shadow.decision")
+        return Counter.builder("stock.institution.live.decision")
                 .tag("result", result)
                 .register(meterRegistry);
     }

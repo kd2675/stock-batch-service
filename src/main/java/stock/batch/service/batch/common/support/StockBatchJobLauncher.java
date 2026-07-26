@@ -16,7 +16,7 @@ import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoMarketPreOpenProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
-import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
@@ -75,7 +75,7 @@ public class StockBatchJobLauncher {
     private final ListingAutoMarketJob listingAutoMarketTask;
     private final LiquidityProviderMarketJob liquidityProviderMarketTask;
     private final IssueUnderwriterMarketJob issueUnderwriterMarketTask;
-    private final InstitutionShadowDecisionJob institutionShadowDecisionTask;
+    private final InstitutionMarketJob institutionMarketTask;
     private final HoldingCleanupJob holdingCleanupTask;
     private final BatchMetadataRetentionJob batchMetadataRetentionTask;
     private final Job autoParticipantCashFlowJob;
@@ -103,7 +103,7 @@ public class StockBatchJobLauncher {
             ListingAutoMarketJob listingAutoMarketTask,
             LiquidityProviderMarketJob liquidityProviderMarketTask,
             IssueUnderwriterMarketJob issueUnderwriterMarketTask,
-            InstitutionShadowDecisionJob institutionShadowDecisionTask,
+            InstitutionMarketJob institutionMarketTask,
             HoldingCleanupJob holdingCleanupTask,
             BatchMetadataRetentionJob batchMetadataRetentionTask,
             @Qualifier(AutoParticipantCashFlowJob.JOB_NAME) Job autoParticipantCashFlowJob,
@@ -130,7 +130,7 @@ public class StockBatchJobLauncher {
         this.listingAutoMarketTask = listingAutoMarketTask;
         this.liquidityProviderMarketTask = liquidityProviderMarketTask;
         this.issueUnderwriterMarketTask = issueUnderwriterMarketTask;
-        this.institutionShadowDecisionTask = institutionShadowDecisionTask;
+        this.institutionMarketTask = institutionMarketTask;
         this.holdingCleanupTask = holdingCleanupTask;
         this.batchMetadataRetentionTask = batchMetadataRetentionTask;
         this.autoParticipantCashFlowJob = autoParticipantCashFlowJob;
@@ -399,8 +399,8 @@ public class StockBatchJobLauncher {
         return stockBatchJobRunner.run(issueUnderwriterMarketTask);
     }
 
-    public StockBatchJobRunResponse runInstitutionShadowDecisions() {
-        return stockBatchJobRunner.run(institutionShadowDecisionTask);
+    public StockBatchJobRunResponse runInstitutionMarket() {
+        return stockBatchJobRunner.run(institutionMarketTask);
     }
 
     public StockBatchJobRunResponse settlePortfolios() {

@@ -169,39 +169,6 @@ class LiquidityProviderQuoteProcessorIntegrationTest {
     }
 
     @Test
-    void process_shadowMandateWritesHypotheticalAuditButNeverReservesOrOrders() {
-        seedMandate("SHADOW");
-        seedExternalDepth("OTHER:ONE", 10_000L);
-
-        LiquidityProviderQuoteProcessor.ProcessResult result = process(NOW);
-
-        assertThat(result.generatedOrderCount()).isZero();
-        assertThat(jdbcTemplate.queryForObject(
-                "select count(*) from stock_order where account_id = 200",
-                Integer.class
-        )).isZero();
-        assertThat(jdbcTemplate.queryForObject(
-                "select cash_balance from stock_account where id = 200",
-                BigDecimal.class
-        )).isEqualByComparingTo("10000000.00");
-        assertThat(jdbcTemplate.queryForMap(
-                """
-                select submitted_buy_quantity, submitted_sell_quantity,
-                       target_buy_open_quantity, target_sell_open_quantity,
-                       state_status, gate_reason
-                  from stock_liquidity_daily_state
-                 where simulation_trade_date = date '2027-01-27'
-                   and mandate_id = 1
-                """
-        )).containsEntry("submitted_buy_quantity", 0L)
-                .containsEntry("submitted_sell_quantity", 0L)
-                .containsEntry("target_buy_open_quantity", 100L)
-                .containsEntry("target_sell_open_quantity", 100L)
-                .containsEntry("state_status", "SHADOW")
-                .containsEntry("gate_reason", "SHADOW_ONLY");
-    }
-
-    @Test
     void process_suspendedMandateCancelsAndReleasesEveryLiveQuote() {
         seedMandate("LIVE");
         seedExternalDepth("OTHER:ONE", 10_000L);
@@ -248,7 +215,7 @@ class LiquidityProviderQuoteProcessorIntegrationTest {
 
     @Test
     void externalBookExcludesEveryOrderInTheParticipantSelfTradeGroup() {
-        seedMandate("SHADOW");
+        seedMandate("LIVE");
         seedExternalDepth("LP:ONE", 10_000L);
         seedExternalDepth("OTHER:ONE", 50L);
         LiquidityProviderMandate mandate = transactionTemplate.execute(

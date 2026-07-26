@@ -52,8 +52,4 @@ record LiquidityProviderMandate(
     boolean live() {
         return "LIVE".equals(executionMode);
     }
-
-    boolean shadowLike() {
-        return "SHADOW".equals(executionMode) || "PILOT".equals(executionMode);
-    }
 }

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
   account_id BIGINT NOT NULL,
   symbol VARCHAR(20) NOT NULL,
   mandate_code VARCHAR(80) NOT NULL,
-  execution_mode VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  execution_mode VARCHAR(20) NOT NULL DEFAULT 'LIVE',
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   contract_start_date DATE NOT NULL,
   contract_end_date DATE NULL,
@@ -49,12 +49,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
     participant_id, status, id
   ),
   CONSTRAINT chk_stock_liquidity_mandate_mode CHECK (
-    CASE `execution_mode`
-      WHEN 'SHADOW' THEN 1
-      WHEN 'PILOT' THEN 1
-      WHEN 'LIVE' THEN 1
-      ELSE 0
-    END = 1
+    `execution_mode` = 'LIVE'
   ),
   CONSTRAINT chk_stock_liquidity_mandate_status CHECK (
     CASE `status`
@@ -147,7 +142,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_daily_state (
   blended_price_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
   blended_volatility_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
   blended_liquidity_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
-  state_status VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  state_status VARCHAR(20) NOT NULL DEFAULT 'QUOTING',
   gate_reason VARCHAR(120) NOT NULL DEFAULT 'NOT_RUN',
   quote_run_count BIGINT NOT NULL DEFAULT 0,
   limit_breached BOOLEAN NOT NULL DEFAULT FALSE,
@@ -205,7 +200,6 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_daily_state (
   ),
   CONSTRAINT chk_stock_liquidity_daily_state_status CHECK (
     CASE `state_status`
-      WHEN 'SHADOW' THEN 1
       WHEN 'QUOTING' THEN 1
       WHEN 'EXEMPT' THEN 1
       WHEN 'HALTED' THEN 1

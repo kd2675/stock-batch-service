@@ -18,9 +18,9 @@ import web.common.core.utils.DeterministicSeed;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-class InstitutionShadowPortfolioProcessor {
+class InstitutionPortfolioProcessor {
 
-    private final InstitutionShadowPortfolioRepository repository;
+    private final InstitutionPortfolioRepository repository;
     private final InstitutionPortfolioPlanner planner;
 
     @Transactional(
@@ -70,11 +70,6 @@ class InstitutionShadowPortfolioProcessor {
         InstitutionDecisionPlan plan;
         try {
             mandates = repository.findEnabledMandates(policy.portfolioId());
-            if (policy.pilot() && mandates.size() != 1) {
-                throw new IllegalStateException(
-                        "Institution PILOT requires exactly one enabled symbol mandate"
-                );
-            }
             List<String> symbols = mandates.stream()
                     .map(InstitutionSymbolMandate::symbol)
                     .toList();
@@ -110,7 +105,7 @@ class InstitutionShadowPortfolioProcessor {
                     simulationDateTime
             );
             log.warn(
-                    "Institution shadow planning rejected: portfolio={}, slot={}, reason={}",
+                    "Institution LIVE planning rejected: portfolio={}, slot={}, reason={}",
                     policy.portfolioCode(),
                     decisionSlot,
                     planningFailure.getMessage()

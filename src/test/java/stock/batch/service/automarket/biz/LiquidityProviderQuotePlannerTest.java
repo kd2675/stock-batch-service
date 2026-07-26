@@ -310,7 +310,7 @@ class LiquidityProviderQuotePlannerTest {
     }
 
     @Test
-    void plan_shadowMode_recordsHypotheticalQuotesButNeverReturnsExecutableOrders() {
+    void plan_invalidExecutionMode_haltsAndCancelsUnexpectedOrders() {
         AutoOrder existing = openOrder(
                 100L,
                 "BUY",
@@ -323,7 +323,7 @@ class LiquidityProviderQuotePlannerTest {
                 new BigDecimal("10000.00")
         );
         LiquidityProviderQuotePlan plan = planner.plan(input(
-                mandate("SHADOW"),
+                mandate("INVALID"),
                 account,
                 LiquidityProviderExecutionSnapshot.EMPTY,
                 establishedDailyState(account, List.of(existing)),
@@ -335,9 +335,9 @@ class LiquidityProviderQuotePlannerTest {
                 0
         ));
 
-        assertThat(plan.stateStatus()).isEqualTo("SHADOW");
-        assertThat(plan.gateReason()).isEqualTo("SHADOW_ONLY");
-        assertThat(plan.proposedOrders()).hasSize(2);
+        assertThat(plan.stateStatus()).isEqualTo("HALTED");
+        assertThat(plan.gateReason()).isEqualTo("INVALID_EXECUTION_MODE");
+        assertThat(plan.proposedOrders()).isEmpty();
         assertThat(plan.executableOrders()).isEmpty();
         assertThat(plan.cancellationOrders()).containsExactly(existing);
     }

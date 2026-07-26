@@ -83,7 +83,7 @@ stock:
     issue-underwriter-market:
       enabled: false
       daily-order-limit: 20
-    institution-shadow:
+    institution-market:
       enabled: false
     auto-participant-cash-flow:
       enabled: false

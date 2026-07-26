@@ -122,9 +122,9 @@ public class StockBatchJobController {
         return ResponseDataDTO.of(stockBatchJobLauncher.runIssueUnderwriterMarket());
     }
 
-    @PostMapping("/institution-shadow/run")
-    public ResponseDataDTO<StockBatchJobRunResponse> runInstitutionShadowDecisions() {
-        return ResponseDataDTO.of(stockBatchJobLauncher.runInstitutionShadowDecisions());
+    @PostMapping("/institution-market/run")
+    public ResponseDataDTO<StockBatchJobRunResponse> runInstitutionMarket() {
+        return ResponseDataDTO.of(stockBatchJobLauncher.runInstitutionMarket());
     }
 
     @PostMapping("/portfolio-settlement/run")

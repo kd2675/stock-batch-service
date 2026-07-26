@@ -53,6 +53,7 @@ class LiquidityProviderRepository {
                    and (
                        (
                            m.status = 'ACTIVE'
+                           and m.execution_mode = 'LIVE'
                            and m.contract_start_date <= :simulationTradeDate
                            and (
                                m.contract_end_date is null

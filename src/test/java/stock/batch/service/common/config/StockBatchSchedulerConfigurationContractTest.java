@@ -298,6 +298,8 @@ class StockBatchSchedulerConfigurationContractTest {
     void listingAutoMarketRetryDefaults_areExternallyConfigurableAndBounded() throws IOException {
         PropertySource<?> applicationProperties = loadApplicationProperties();
 
+        assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.enabled"))
+                .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_ENABLED:false}");
         assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.fixed-delay-ms"))
                 .isEqualTo("${STOCK_BATCH_LISTING_AUTO_MARKET_FIXED_DELAY_MS:10000}");
         assertThat(applicationProperties.getProperty("stock.batch.listing-auto-market.deadlock-retry-max-attempts"))

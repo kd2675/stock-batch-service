@@ -345,20 +345,6 @@ public class CorporateActionWriter {
         );
         jdbcTemplate.update(
                 """
-                update stock_liquidity_transition
-                   set reference_daily_volume = reference_daily_volume * ?,
-                       seed_inventory_quantity = seed_inventory_quantity * ?,
-                       updated_at = ?
-                 where symbol = ?
-                   and stage = 'SHADOW_READY'
-                """,
-                multiplier,
-                multiplier,
-                updatedAt,
-                symbol
-        );
-        jdbcTemplate.update(
-                """
                 update stock_listing_auto_account_config
                    set initial_inventory_quantity = initial_inventory_quantity * ?,
                        initial_issue_price = initial_issue_price / ?,

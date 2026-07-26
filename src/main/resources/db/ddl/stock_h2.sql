@@ -1728,7 +1728,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_portfolio (
   portfolio_code VARCHAR(64) NOT NULL,
   display_name VARCHAR(120) NOT NULL,
   investment_style VARCHAR(40) NOT NULL,
-  execution_mode VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  execution_mode VARCHAR(20) NOT NULL DEFAULT 'LIVE',
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   base_stock_allocation_rate DECIMAL(8,6) NOT NULL,
   min_stock_allocation_rate DECIMAL(8,6) NOT NULL,
@@ -1750,9 +1750,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_portfolio (
       'BALANCED_LONG_TERM', 'VALUE_CONTRARIAN', 'MOMENTUM', 'ACTIVE_SHORT_TERM'
     )
   ),
-  CONSTRAINT chk_stock_institution_portfolio_mode CHECK (
-    execution_mode IN ('SHADOW', 'PILOT', 'LIVE')
-  ),
+  CONSTRAINT chk_stock_institution_portfolio_mode CHECK (execution_mode = 'LIVE'),
   CONSTRAINT chk_stock_institution_portfolio_status CHECK (
     status IN ('ACTIVE', 'SUSPENDED', 'RETIRED')
   ),
@@ -1850,9 +1848,7 @@ CREATE TABLE IF NOT EXISTS stock_institution_decision_run (
   error_message VARCHAR(1000),
   created_at TIMESTAMP NOT NULL,
   completed_at TIMESTAMP,
-  CONSTRAINT chk_stock_institution_decision_run_mode CHECK (
-    execution_mode IN ('SHADOW', 'PILOT', 'LIVE')
-  ),
+  CONSTRAINT chk_stock_institution_decision_run_mode CHECK (execution_mode = 'LIVE'),
   CONSTRAINT chk_stock_institution_decision_run_status CHECK (
     status IN ('CLAIMED', 'COMPLETED', 'FAILED')
   ),
@@ -2085,7 +2081,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
   account_id BIGINT NOT NULL,
   symbol VARCHAR(20) NOT NULL,
   mandate_code VARCHAR(80) NOT NULL,
-  execution_mode VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  execution_mode VARCHAR(20) NOT NULL DEFAULT 'LIVE',
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   contract_start_date DATE NOT NULL,
   contract_end_date DATE,
@@ -2118,7 +2114,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_liquidity_mandate_mode CHECK (
-    execution_mode IN ('SHADOW', 'PILOT', 'LIVE')
+    execution_mode = 'LIVE'
   ),
   CONSTRAINT chk_stock_liquidity_mandate_status CHECK (
     status IN ('ACTIVE', 'SUSPENDED', 'EXPIRED')
@@ -2217,7 +2213,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_daily_state (
   blended_price_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
   blended_volatility_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
   blended_liquidity_pressure DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
-  state_status VARCHAR(20) NOT NULL DEFAULT 'SHADOW',
+  state_status VARCHAR(20) NOT NULL DEFAULT 'QUOTING',
   gate_reason VARCHAR(120) NOT NULL DEFAULT 'NOT_RUN',
   quote_run_count BIGINT NOT NULL DEFAULT 0,
   limit_breached BOOLEAN NOT NULL DEFAULT FALSE,
@@ -2268,7 +2264,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_daily_state (
     AND blended_liquidity_pressure BETWEEN -1 AND 1
   ),
   CONSTRAINT chk_stock_liquidity_daily_state_status CHECK (
-    state_status IN ('SHADOW', 'QUOTING', 'EXEMPT', 'HALTED', 'ERROR')
+    state_status IN ('QUOTING', 'EXEMPT', 'HALTED', 'ERROR')
   ),
   CONSTRAINT chk_stock_liquidity_daily_state_version CHECK (
     quote_run_count >= 0 AND policy_version > 0 AND version >= 0
@@ -2289,7 +2285,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   liquidity_account_id BIGINT NOT NULL,
   source_account_id BIGINT NOT NULL,
   legacy_account_id BIGINT,
-  stage VARCHAR(30) NOT NULL DEFAULT 'SHADOW_READY',
+  stage VARCHAR(30) NOT NULL DEFAULT 'LIVE_ACTIVE',
   reference_daily_volume BIGINT NOT NULL,
   seed_inventory_quantity BIGINT NOT NULL,
   seed_cash_amount DECIMAL(19,2) NOT NULL,
@@ -2302,7 +2298,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_liquidity_transition_stage CHECK (
-    stage IN ('SHADOW_READY', 'LIVE_ACTIVE', 'SUSPENDED')
+    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
   ),
   CONSTRAINT chk_stock_liquidity_transition_seed CHECK (
     reference_daily_volume > 0
@@ -2310,15 +2306,8 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     AND seed_cash_amount > 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
-    (
-      stage = 'SHADOW_READY'
-      AND legacy_disabled_at IS NULL
-      AND activated_at IS NULL
-    )
-    OR (
-      stage IN ('LIVE_ACTIVE', 'SUSPENDED')
-      AND activated_at IS NOT NULL
-    )
+    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
+    AND activated_at IS NOT NULL
   ),
   CONSTRAINT chk_stock_liquidity_transition_audit CHECK (
     transition_key <> ''

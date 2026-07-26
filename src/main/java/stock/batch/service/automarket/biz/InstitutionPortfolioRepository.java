@@ -19,12 +19,12 @@ import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Component;
 
 @Component
-class InstitutionShadowPortfolioRepository {
+class InstitutionPortfolioRepository {
 
     private final JdbcTemplate jdbcTemplate;
     private final JdbcClient jdbcClient;
 
-    InstitutionShadowPortfolioRepository(JdbcTemplate jdbcTemplate) {
+    InstitutionPortfolioRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
     }
@@ -35,7 +35,7 @@ class InstitutionShadowPortfolioRepository {
                         select id
                          from stock_institution_portfolio
                          where status = 'ACTIVE'
-                           and execution_mode in ('SHADOW', 'PILOT')
+                           and execution_mode = 'LIVE'
                            and (next_decision_at is null or next_decision_at <= :simulationDateTime)
                            and not exists (
                                select 1
@@ -81,7 +81,7 @@ class InstitutionShadowPortfolioRepository {
                           from stock_institution_portfolio
                          where id = :portfolioId
                            and status = 'ACTIVE'
-                           and execution_mode in ('SHADOW', 'PILOT')
+                           and execution_mode = 'LIVE'
                            and (next_decision_at is null or next_decision_at <= :simulationDateTime)
                            and not exists (
                                select 1
@@ -828,23 +828,14 @@ class InstitutionShadowPortfolioRepository {
             List<InstitutionDecisionItem> items,
             LocalDateTime now
     ) {
-        if (!policy.pilot()) {
-            return;
-        }
         List<InstitutionDecisionItem> actionableItems = items.stream()
                 .filter(item -> item.action() != InstitutionDecisionAction.HOLD)
                 .filter(item -> item.gatedQuantity() > 0L)
                 .toList();
-        if (actionableItems.size() > 1) {
-            throw new IllegalStateException(
-                    "Institution PILOT decision produced more than one order intent"
-            );
-        }
         if (actionableItems.isEmpty()) {
             return;
         }
-        InstitutionDecisionItem item = actionableItems.getFirst();
-        int inserted = jdbcTemplate.update(
+        int[][] insertedChunks = jdbcTemplate.batchUpdate(
                 """
                 insert into stock_institution_order_intent(
                     decision_run_id, symbol, portfolio_id, participant_id,
@@ -858,23 +849,31 @@ class InstitutionShadowPortfolioRepository {
                     null, null, 0, null, ?, ?, null
                 )
                 """,
-                decisionRunId,
-                item.symbol(),
-                policy.portfolioId(),
-                policy.participantId(),
-                policy.accountId(),
-                item.action().name(),
-                item.gatedQuantity(),
-                item.referenceDailyVolume(),
-                item.gatedTradeAmount(),
-                item.blendedExecutionAggressionPressure(),
-                policy.policyVersion(),
-                now,
-                now
+                actionableItems,
+                actionableItems.size(),
+                (statement, item) -> {
+                    statement.setLong(1, decisionRunId);
+                    statement.setString(2, item.symbol());
+                    statement.setLong(3, policy.portfolioId());
+                    statement.setLong(4, policy.participantId());
+                    statement.setLong(5, policy.accountId());
+                    statement.setString(6, item.action().name());
+                    statement.setLong(7, item.gatedQuantity());
+                    statement.setLong(8, item.referenceDailyVolume());
+                    statement.setBigDecimal(9, item.gatedTradeAmount());
+                    statement.setBigDecimal(10, item.blendedExecutionAggressionPressure());
+                    statement.setLong(11, policy.policyVersion());
+                    statement.setObject(12, now);
+                    statement.setObject(13, now);
+                }
         );
-        if (inserted != 1) {
+        long insertedCount = java.util.Arrays.stream(insertedChunks)
+                .flatMapToInt(java.util.Arrays::stream)
+                .filter(count -> count == 1 || count == Statement.SUCCESS_NO_INFO)
+                .count();
+        if (insertedCount != actionableItems.size()) {
             throw new IllegalStateException(
-                    "Institution PILOT order intent insert failed for symbol " + item.symbol()
+                    "Institution LIVE order intent insert count mismatch"
             );
         }
     }
@@ -947,7 +946,7 @@ class InstitutionShadowPortfolioRepository {
 
     private String truncate(String value, int maximumLength) {
         if (value == null || value.isBlank()) {
-            return "Unknown institution shadow planning failure";
+            return "Unknown institution LIVE planning failure";
         }
         return value.length() <= maximumLength ? value : value.substring(0, maximumLength);
     }

@@ -28,8 +28,8 @@ record InstitutionOrderIntent(
 ) {
 
     String validationFailure() {
-        if (!"ACTIVE".equals(portfolioStatus) || !"PILOT".equals(executionMode)) {
-            return "PORTFOLIO_NOT_ACTIVE_PILOT";
+        if (!"ACTIVE".equals(portfolioStatus) || !"LIVE".equals(executionMode)) {
+            return "PORTFOLIO_NOT_ACTIVE_LIVE";
         }
         if (!"ACTIVE".equals(accountStatus)
                 || !"INSTITUTIONAL_INVESTOR".equals(participantCategory)) {

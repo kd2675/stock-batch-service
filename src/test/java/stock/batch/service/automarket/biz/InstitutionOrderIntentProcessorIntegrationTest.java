@@ -74,11 +74,11 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                 new InstitutionOrderExecutionPlanner(),
                 orderExecutor
         );
-        seedPilotIntent();
+        seedLiveIntent();
     }
 
     @Test
-    void process_pendingPilotIntent_reservesAndLinksExactlyOneInstitutionOrder() {
+    void process_pendingLiveIntent_reservesAndLinksExactlyOneInstitutionOrder() {
         InstitutionOrderIntentProcessor.ProcessResult result = process();
 
         assertThat(result.processed()).isTrue();
@@ -95,7 +95,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
         assertThat(order.get("quantity")).isEqualTo(50L);
         assertThat(order.get("reserved_cash")).isEqualTo(new BigDecimal("4950.00"));
         assertThat(order.get("origin_type")).isEqualTo("INSTITUTIONAL_INVESTOR");
-        assertThat(order.get("self_trade_group_id")).isEqualTo("INSTITUTION:PILOT");
+        assertThat(order.get("self_trade_group_id")).isEqualTo("INSTITUTION:LIVE");
 
         assertThat(jdbcTemplate.queryForMap(
                 """
@@ -154,8 +154,8 @@ class InstitutionOrderIntentProcessorIntegrationTest {
 
     @Test
     void externalBook_excludesEveryOrderInTheInstitutionSelfTradeGroup() {
-        seedExternalOrder(901L, "INSTITUTION:PILOT", "BUY", "98.00", 1_000L);
-        seedExternalOrder(901L, "INSTITUTION:PILOT", "SELL", "102.00", 1_000L);
+        seedExternalOrder(901L, "INSTITUTION:LIVE", "BUY", "98.00", 1_000L);
+        seedExternalOrder(901L, "INSTITUTION:LIVE", "SELL", "102.00", 1_000L);
         seedExternalOrder(902L, "OTHER:ONE", "BUY", "97.00", 40L);
         seedExternalOrder(902L, "OTHER:ONE", "SELL", "103.00", 60L);
         InstitutionOrderIntent intent = transactionTemplate.execute(status ->
@@ -226,6 +226,24 @@ class InstitutionOrderIntentProcessorIntegrationTest {
     @Test
     void runPendingIntents_thirdFailureSuspendsAndCancelsExistingPortfolioOrders() {
         seedInstitutionOpenBuyOrder();
+        jdbcTemplate.update(
+                """
+                insert into stock_institution_order_intent(
+                    decision_run_id, symbol, portfolio_id, participant_id, account_id,
+                    side, requested_quantity, planned_amount, reference_daily_volume,
+                    execution_aggression_pressure, policy_version, status, attempt_count,
+                    submitted_order_id, submitted_price, submitted_quantity,
+                    submission_reason, created_at, updated_at, submitted_at
+                )
+                select decision_run_id, 'DEMO002', portfolio_id, participant_id, account_id,
+                       side, requested_quantity, planned_amount, reference_daily_volume,
+                       execution_aggression_pressure, policy_version, 'PENDING', 0,
+                       null, null, 0, null, created_at, updated_at, null
+                  from stock_institution_order_intent
+                 where decision_run_id = 900
+                   and symbol = 'DEMO001'
+                """
+        );
         InstitutionOrderIntentExecutionService executionService =
                 new InstitutionOrderIntentExecutionService(
                         repository,
@@ -255,6 +273,18 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                 .containsEntry("submission_reason", "ACTIVE_MARKET_CONFIG_MISSING");
         assertThat(jdbcTemplate.queryForMap(
                 """
+                select status, submission_reason
+                  from stock_institution_order_intent
+                 where decision_run_id = 900
+                   and symbol = 'DEMO002'
+                """
+        )).containsEntry("status", "REJECTED")
+                .containsEntry(
+                        "submission_reason",
+                        "PORTFOLIO_SUSPENDED_AFTER_TERMINAL_FAILURE:900:DEMO001"
+                );
+        assertThat(jdbcTemplate.queryForMap(
+                """
                 select status, policy_version, next_decision_at
                   from stock_institution_portfolio
                  where id = 900
@@ -279,7 +309,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                 select version_no, status, changed_by
                   from stock_market_policy_version
                  where policy_scope = 'INSTITUTIONAL_PORTFOLIO'
-                   and scope_key = 'PILOT'
+                   and scope_key = 'LIVE'
                    and version_no = 2
                 """
         )).containsEntry("version_no", 2L)
@@ -331,15 +361,15 @@ class InstitutionOrderIntentProcessorIntegrationTest {
         ));
     }
 
-    private void seedPilotIntent() {
+    private void seedLiveIntent() {
         jdbcTemplate.update(
                 """
                 insert into stock_account(
                     id, user_key, account_code, status, participant_category,
                     self_trade_group_id, cash_balance, created_at, updated_at
                 ) values (
-                    900, 'institution-pilot', 'INST-PILOT', 'ACTIVE',
-                    'INSTITUTIONAL_INVESTOR', 'INSTITUTION:PILOT',
+                    900, 'institution-live', 'INST-LIVE', 'ACTIVE',
+                    'INSTITUTIONAL_INVESTOR', 'INSTITUTION:LIVE',
                     1000000.00, ?, ?
                 )
                 """,
@@ -352,9 +382,9 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                     id, participant_code, display_name, participant_type,
                     status, self_trade_group_id, created_at, updated_at
                 ) values (
-                    90, 'INSTITUTION_PILOT', 'Institution Pilot',
+                    90, 'INSTITUTION_LIVE', 'Institution Live',
                     'INSTITUTIONAL_INVESTOR', 'ACTIVE',
-                    'INSTITUTION:PILOT', ?, ?
+                    'INSTITUTION:LIVE', ?, ?
                 )
                 """,
                 NOW.minusHours(1),
@@ -366,7 +396,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                     id, participant_id, account_id, account_role, desk_code,
                     effective_from, effective_to, status, created_at, updated_at
                 ) values (
-                    90, 90, 900, 'INSTITUTIONAL_INVESTOR', 'PILOT',
+                    90, 90, 900, 'INSTITUTIONAL_INVESTOR', 'LIVE',
                     date '2027-01-01', null, 'ACTIVE', ?, ?
                 )
                 """,
@@ -386,8 +416,8 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                     decision_interval_minutes, next_decision_at, policy_version,
                     created_at, updated_at
                 ) values (
-                    900, 90, 900, 'PILOT', 'Institution Pilot',
-                    'BALANCED_LONG_TERM', 'PILOT', 'ACTIVE',
+                    900, 90, 900, 'LIVE', 'Institution Live',
+                    'BALANCED_LONG_TERM', 'LIVE', 'ACTIVE',
                     0.600000, 0.300000, 0.800000, 0.700000,
                     0.020000, 0.020000, 0.005000, 0.002000,
                     0.010000, 0.002000, 60, null, 1, ?, ?
@@ -404,7 +434,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                     status, error_message, created_at, completed_at
                 ) values (
                     900, ?, date '2027-01-27', 900,
-                    'PILOT', 1, 1234,
+                    'LIVE', 1, 1234,
                     'COMPLETED', null, ?, ?
                 )
                 """,
@@ -517,7 +547,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                     symbol, market_type, side, order_type, status, limit_price,
                     quantity, filled_quantity, reserved_cash, created_at, updated_at
                 ) values (
-                    'INST-OPEN-BUY', 900, 'INSTITUTIONAL_INVESTOR', 'INSTITUTION:PILOT',
+                    'INST-OPEN-BUY', 900, 'INSTITUTIONAL_INVESTOR', 'INSTITUTION:LIVE',
                     'DEMO001', 'ORDER_BOOK', 'BUY', 'LIMIT', 'PENDING', 100.00,
                     5, 0, 500.00, ?, ?
                 )

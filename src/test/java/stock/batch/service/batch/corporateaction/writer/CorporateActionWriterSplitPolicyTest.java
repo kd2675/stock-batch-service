@@ -48,22 +48,6 @@ class CorporateActionWriterSplitPolicyTest {
                 .containsEntry("INVENTORY_BAND_QUANTITY", 2_500L);
         assertThat(jdbcTemplate.queryForMap(
                 """
-                select reference_daily_volume, seed_inventory_quantity
-                  from stock_liquidity_transition
-                 where id = 1
-                """
-        )).containsEntry("REFERENCE_DAILY_VOLUME", 15_000L)
-                .containsEntry("SEED_INVENTORY_QUANTITY", 2_500L);
-        assertThat(jdbcTemplate.queryForMap(
-                """
-                select reference_daily_volume, seed_inventory_quantity
-                  from stock_liquidity_transition
-                 where id = 2
-                """
-        )).containsEntry("REFERENCE_DAILY_VOLUME", 3_000L)
-                .containsEntry("SEED_INVENTORY_QUANTITY", 500L);
-        assertThat(jdbcTemplate.queryForMap(
-                """
                 select initial_inventory_quantity, initial_issue_price,
                        max_order_quantity, target_buy_quantity,
                        target_sell_quantity, target_holding_quantity,
@@ -151,16 +135,6 @@ class CorporateActionWriterSplitPolicyTest {
                 )
                 """);
         jdbcTemplate.execute("""
-                create table stock_liquidity_transition(
-                    id bigint primary key,
-                    symbol varchar(20) not null,
-                    reference_daily_volume bigint not null,
-                    seed_inventory_quantity bigint not null,
-                    stage varchar(30) not null,
-                    updated_at timestamp not null
-                )
-                """);
-        jdbcTemplate.execute("""
                 create table stock_underwriting_contract(
                     id bigint primary key,
                     symbol varchar(20) not null,
@@ -200,24 +174,6 @@ class CorporateActionWriterSplitPolicyTest {
                     id, symbol, max_order_quantity, reference_daily_volume,
                     target_inventory_quantity, inventory_band_quantity, updated_at
                 ) values (1, 'DEMO001', 30, 3000, 500, 500, ?)
-                """,
-                SPLIT_AT.minusDays(1)
-        );
-        jdbcTemplate.update(
-                """
-                insert into stock_liquidity_transition(
-                    id, symbol, reference_daily_volume,
-                    seed_inventory_quantity, stage, updated_at
-                ) values (1, 'DEMO001', 3000, 500, 'SHADOW_READY', ?)
-                """,
-                SPLIT_AT.minusDays(1)
-        );
-        jdbcTemplate.update(
-                """
-                insert into stock_liquidity_transition(
-                    id, symbol, reference_daily_volume,
-                    seed_inventory_quantity, stage, updated_at
-                ) values (2, 'DEMO001', 3000, 500, 'LIVE', ?)
                 """,
                 SPLIT_AT.minusDays(1)
         );

@@ -17,7 +17,7 @@ import stock.batch.service.batch.automarket.job.AutoMarketJob;
 import stock.batch.service.batch.automarket.job.AutoMarketOrderExpiryJob;
 import stock.batch.service.batch.automarket.job.AutoMarketProfileQueueReconcileJob;
 import stock.batch.service.batch.automarket.job.AutoParticipantCashFlowJob;
-import stock.batch.service.batch.automarket.job.InstitutionShadowDecisionJob;
+import stock.batch.service.batch.automarket.job.InstitutionMarketJob;
 import stock.batch.service.batch.automarket.job.IssueUnderwriterMarketJob;
 import stock.batch.service.batch.automarket.job.ListingAutoMarketJob;
 import stock.batch.service.batch.automarket.job.LiquidityProviderMarketJob;
@@ -128,6 +128,11 @@ class SchedulerRuntimeControlBehaviorTest {
     @Test
     void listingAutoMarketScheduler_checksRuntimeControlBeforeLaunching() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
+        ReflectionTestUtils.setField(
+                scheduler,
+                "listingAutoMarketSchedulerConfigured",
+                true
+        );
 
         assertSimpleSchedulerGate(
                 ListingAutoMarketJob.JOB_NAME,
@@ -159,13 +164,13 @@ class SchedulerRuntimeControlBehaviorTest {
     }
 
     @Test
-    void institutionShadowScheduler_checksRuntimeControlBeforeLaunching() {
+    void institutionMarketScheduler_checksRuntimeControlBeforeLaunching() {
         AutoMarketScheduler scheduler = newAutoMarketScheduler(command -> command.run());
 
         assertSimpleSchedulerGate(
-                InstitutionShadowDecisionJob.JOB_NAME,
-                scheduler::runInstitutionShadowDecisions,
-                () -> verify(stockBatchJobLauncher).runInstitutionShadowDecisions()
+                InstitutionMarketJob.JOB_NAME,
+                scheduler::runInstitutionMarket,
+                () -> verify(stockBatchJobLauncher).runInstitutionMarket()
         );
     }
 
@@ -190,7 +195,7 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.runListingAutoMarket();
         scheduler.runLiquidityProviderMarket();
         scheduler.runIssueUnderwriterMarket();
-        scheduler.runInstitutionShadowDecisions();
+        scheduler.runInstitutionMarket();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }
@@ -205,7 +210,7 @@ class SchedulerRuntimeControlBehaviorTest {
         scheduler.runListingAutoMarket();
         scheduler.runLiquidityProviderMarket();
         scheduler.runIssueUnderwriterMarket();
-        scheduler.runInstitutionShadowDecisions();
+        scheduler.runInstitutionMarket();
 
         verifyNoInteractions(batchJobRuntimeControl, stockBatchJobLauncher);
     }

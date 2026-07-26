@@ -20,12 +20,12 @@ import web.common.core.simulation.SimulationMarketSession;
 
 @Service
 @Slf4j
-public class InstitutionShadowDecisionService {
+public class InstitutionMarketService {
 
-    private final InstitutionShadowPortfolioRepository repository;
-    private final InstitutionShadowPortfolioProcessor processor;
+    private final InstitutionPortfolioRepository repository;
+    private final InstitutionPortfolioProcessor processor;
     private final InstitutionOrderIntentExecutionService intentExecutionService;
-    private final InstitutionShadowPortfolioRunMetrics metrics;
+    private final InstitutionPortfolioRunMetrics metrics;
     private final AutoMarketReader autoMarketReader;
     private final AutoMarketDailyRegimeService dailyRegimeService;
     private final SimulationClockService simulationClockService;
@@ -33,17 +33,17 @@ public class InstitutionShadowDecisionService {
     private final MarketSessionFenceService marketSessionFenceService;
     private final int portfolioLimitPerRun;
 
-    InstitutionShadowDecisionService(
-            InstitutionShadowPortfolioRepository repository,
-            InstitutionShadowPortfolioProcessor processor,
+    InstitutionMarketService(
+            InstitutionPortfolioRepository repository,
+            InstitutionPortfolioProcessor processor,
             InstitutionOrderIntentExecutionService intentExecutionService,
-            InstitutionShadowPortfolioRunMetrics metrics,
+            InstitutionPortfolioRunMetrics metrics,
             AutoMarketReader autoMarketReader,
             AutoMarketDailyRegimeService dailyRegimeService,
             SimulationClockService simulationClockService,
             SimulationMarketSessionService marketSessionService,
             MarketSessionFenceService marketSessionFenceService,
-            @Value("${stock.batch.institution-shadow.portfolio-limit-per-run:20}") int portfolioLimitPerRun
+            @Value("${stock.batch.institution-market.portfolio-limit-per-run:20}") int portfolioLimitPerRun
     ) {
         this.repository = repository;
         this.processor = processor;
@@ -57,7 +57,7 @@ public class InstitutionShadowDecisionService {
         this.portfolioLimitPerRun = Math.clamp(portfolioLimitPerRun, 1, 100);
     }
 
-    public int runShadowStep() {
+    public int runMarketStep() {
         SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
         if (!clock.running()
                 || marketSessionService.sessionAt(clock.simulationDateTime()) != SimulationMarketSession.REGULAR
@@ -110,16 +110,16 @@ public class InstitutionShadowDecisionService {
         int completed = 0;
         for (Long portfolioId : duePortfolioIds) {
             try {
-                InstitutionShadowPortfolioProcessor.ProcessResult result =
+                InstitutionPortfolioProcessor.ProcessResult result =
                         processor.process(portfolioId, clock.simulationDateTime(), marketInputs);
                 metrics.record(result);
-                if (result == InstitutionShadowPortfolioProcessor.ProcessResult.COMPLETED) {
+                if (result == InstitutionPortfolioProcessor.ProcessResult.COMPLETED) {
                     completed++;
                 }
             } catch (RuntimeException ex) {
                 metrics.recordUnexpectedFailure();
                 log.warn(
-                        "Institution shadow transaction rolled back: portfolioId={}, reason={}",
+                        "Institution LIVE transaction rolled back: portfolioId={}, reason={}",
                         portfolioId,
                         ex.getMessage(),
                         ex

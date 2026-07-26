@@ -995,6 +995,61 @@ class StockDdlContractTest {
     }
 
     @Test
+    void liquidityLiveOnlyAlterDdl_isSyncedAndDoesNotRewriteBusinessLedgers()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_liquidity_live_only_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_liquidity_live_only_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(batchDdl)).isEqualTo(normalizeSqlBlock(backDdl));
+        assertThat(batchDdl).contains(
+                "execution_mode SET DEFAULT 'LIVE'",
+                "state_status SET DEFAULT 'QUOTING'",
+                "stage SET DEFAULT 'LIVE_ACTIVE'"
+        ).doesNotContain(
+                "UPDATE stock_account",
+                "UPDATE stock_holding",
+                "UPDATE stock_order",
+                "UPDATE stock_execution"
+        );
+    }
+
+    @Test
+    void institutionLiveOnlyAlterDdl_isSyncedAndRetiresPendingLegacyModes()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_institution_live_only_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/stock_institution_live_only_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(batchDdl)).isEqualTo(normalizeSqlBlock(backDdl));
+        assertThat(batchDdl).contains(
+                "LEGACY_NON_LIVE_MODE_RETIRED",
+                "SET execution_mode = 'LIVE'",
+                "execution_mode SET DEFAULT 'LIVE'",
+                "table_name = 'stock_institution_decision_run'",
+                "chk_stock_institution_decision_run_mode",
+                "CHECK (`execution_mode` = 'LIVE')"
+        ).doesNotContain(
+                "UPDATE stock_account",
+                "UPDATE stock_holding",
+                "UPDATE stock_order",
+                "UPDATE stock_execution"
+        );
+    }
+
+    @Test
     void issuanceUnderwritingAlterDdl_isAdditiveAndSyncedWithCanonicalSchema() throws IOException {
         String batchDdl = Files.readString(
                 Path.of("src/main/resources/db/ddl/stock_issuance_underwriting_alter.sql"),

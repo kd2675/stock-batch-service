@@ -25,7 +25,7 @@
 - `POST /internal/stock-batch/v1/jobs/auto-market-order-expiry/run`
 - `POST /internal/stock-batch/v1/jobs/listing-auto-market/run`
 - `POST /internal/stock-batch/v1/jobs/liquidity-provider-market/run`
-- `POST /internal/stock-batch/v1/jobs/institution-shadow/run`
+- `POST /internal/stock-batch/v1/jobs/institution-market/run`
 - `POST /internal/stock-batch/v1/jobs/portfolio-settlement/run`
 - `POST /internal/stock-batch/v1/jobs/market-close/rollover`
 - `POST /internal/stock-batch/v1/jobs/corporate-actions/run` (호환 모드 전용. 기본 post-close coordinator가 켜져 있으면 실행하지 않고 `SKIPPED`)
@@ -113,7 +113,7 @@ scripts/stock-gateway-h2-smoke.sh
 - Batch metadata Hikari 풀은 local/dev 기본 12개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
 - 배치 업무 SQL은 `stock.batch.jdbc.query-timeout-seconds`로 statement query timeout을 적용합니다. 기본값은 30초이며 `STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS`로 조정합니다.
 - DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
-- 축소시장 역할 재구성 ALTER의 기준 파일과 적용 순서는 stock-back README를 따릅니다. batch에 둔 여덟 ALTER 사본은 배포 전에 canonical 사본과 byte 단위로 같아야 하며, 여덟 스키마의 readiness가 모두 통과하기 전에는 기관 shadow, LP, 인수기관 공급 job을 켜지 않습니다.
+- 축소시장 역할 재구성 ALTER의 기준 파일과 적용 순서는 stock-back README를 따릅니다. batch에 둔 역할 ALTER 사본은 배포 전에 canonical 사본과 byte 단위로 같아야 하며, 역할 스키마 readiness가 모두 통과하기 전에는 기관 LIVE, LP LIVE, 인수기관 공급 job을 켜지 않습니다.
 - EOD 정방향 ALTER는 stock-back canonical 사본과 byte 단위로 맞추고, stock-back과 stock-batch가 모두 종료된 유지보수 창에서만 실행합니다.
 - 구버전 애플리케이션 호환용 rollback ALTER는 제공하지 않습니다. 적용 오류는 마지막 성공 지점을 확인한 뒤 멱등 정방향 ALTER로 보정하며, 정확한 이전 스키마와 데이터가 필요할 때만 적용 전 schema·영향 테이블 dump를 복원합니다.
 - Redis key: `stock:price:{symbol}`. 값은 현재 단일 가격 문자열이며 `stock-back-service` 시장 가격 API가 우선 조회합니다. TTL 기본값은 60초이며 `STOCK_PRICE_CACHE_TTL_SECONDS`로 조정합니다.
@@ -191,20 +191,20 @@ KIS_MARKET_DIV_CODE=J
   9. `stock_auto_participant_profile_behavior_model_alter.sql`
   정리 ALTER는 과거 rollout CHECK를 먼저 제거하고, 실제 주문이 V1이었던 SHADOW 계정을 `V1`로 보정한 뒤 평가 모드 컬럼과 판단 비교 테이블을 멱등 제거합니다. 9번은 현재 프로필 설정을 전부 `V2`로 전환하고 행동 모델 권위를 참여자 행에서 프로필 설정 행으로 옮긴 뒤 참여자별 모델 컬럼을 제거합니다. 기존 `stock_order.auto_behavior_model_version`은 생성 당시 실행 정책을 보존하는 불변 스냅샷이므로 유지합니다. `stock_auto_participant_realized_performance_alter.sql`은 과거 중간 배포본의 성과 상태 테이블도 같은 최종 계약으로 보정합니다. 적용 전후에는 `stock_order` 행 수와 `SHOW CREATE TABLE`, 인덱스 목록을 저장하고, 7번이 끝난 뒤 `idx_stock_order_auto_reprice`가 없으며 세 CHECK만 존재하는지 확인합니다.
 - `stock_eod_runtime_contract_alter.sql`은 위 자동시장 정책 ALTER와 별개의 EOD 제어 테이블 마이그레이션입니다. cycle과 phase attempt에 `eod_contract_version`을 추가하고, 재시작 가능한 현행 cycle만 `EOD_V1`, 과거 완료 cycle은 `LEGACY_COMPLETED`, 증명할 수 없는 미완료 cycle은 `UNDECLARED`로 보정합니다. 기본값을 `UNDECLARED`로 두므로 신규 컬럼을 모르는 구형 프로세스가 만든 cycle은 호환으로 오인되지 않습니다. 이 ALTER는 `stock_order`·`stock_execution`을 읽거나 변경하지 않습니다.
-- `stock.batch.listing-auto-market.enabled`: 상장주관사 자동계정 주문 공급 job 활성화 여부
+- `stock.batch.listing-auto-market.enabled`: 마이그레이션 전 상장주관사 자동계정 주문 공급 호환 job 활성화 여부입니다. 기본값은 `false`이며 신규 LP 전환 뒤에는 수동으로도 다시 켜지 않습니다.
 - `stock.batch.listing-auto-market.fixed-delay-ms`: 상장주관사 자동계정 주문 공급 주기. 기본값은 10000ms, 허용 최소값은 5000ms입니다.
 - `stock.batch.listing-auto-market.symbol-limit-per-run`: 한 공급 run에서 처리할 종목 상한입니다. 기본값은 100, 허용 범위는 1~500이며 만료 작업과 같은 결정적 10초 slice를 사용합니다. 현재 3종목에서는 기존처럼 모두 처리합니다.
-- `stock.batch.liquidity-provider-market.enabled`: 역할·계약·종목별 전용 LP 호가 job 활성화 여부입니다. SHADOW와 PILOT은 현재 주문 없는 감사 모드이고 LIVE만 주문을 제출합니다. LIVE 계약은 같은 종목의 legacy listing-auto가 켜져 있으면 중복 유동성 공급을 막기 위해 실패 폐쇄합니다.
+- `stock.batch.liquidity-provider-market.enabled`: 역할·계약·종목별 전용 LP 호가 job 활성화 여부입니다. LP는 생성 시점부터 LIVE이며 그 외 실행 모드는 `INVALID_EXECUTION_MODE`로 실패 폐쇄합니다. 같은 종목의 legacy listing-auto가 켜져 있어도 중복 유동성 공급을 막기 위해 실패 폐쇄합니다.
 - `stock.batch.issue-underwriter-market.enabled`: 역할 분리형 인수계정의 유한 초기 공급 job 활성화 여부입니다. 활성 계약만 `SELL` 지정가 1개를 유지하며 매수, 레짐 방향 추종, 가격 추격, 영구 목표잔량 보충을 하지 않습니다. 기준 거래량은 현재 유통주식의 3%로 독립 계산하고, 기본 일일 제출상한은 그 기준 거래량의 10%, 주문 1건은 2%이며 종목·계약별 하루 신규 주문도 최대 20건입니다. 외부 매수 5호가가 있으면 그 깊이의 10%를 추가 상한으로 사용합니다. 자동참여자용 `max_order_quantity`는 신규 종목 기본값이 4주인 별도 정책이므로 인수기관 상한으로 재사용하지 않습니다. TTL 취소와 관리자 중단은 주식 예약만 반환하고 이미 사용한 일일·계약 제출예산과 주문 횟수는 복원하지 않습니다.
 - `issue-underwriter-market`는 계약·계좌·보유·주문 origin·자기체결 그룹뿐 아니라 `전체 보유주식 합계 = 현재 발행주식`과 최초 배정원장을 매 실행 재검증합니다. 계약 기간 또는 수량·금액 상한이 끝나면 계약을 `COMPLETED`, 현재 정책을 `RETIRED`로 같은 트랜잭션에서 종료합니다. 유통주식이 없거나 시장·역할·주식수 대사가 맞지 않으면 주문을 만들지 않고 일일 gate 사유만 남기며, 계약 origin과 실제 주문 계좌·종목·정책 버전이 어긋난 손상 주문은 자동 취소하지 않고 공급을 차단합니다. 수동 실행은 `POST /internal/stock-batch/v1/jobs/issue-underwriter-market/run`입니다.
 - 일반 자동참여자에는 별도의 일일 위험예산이나 공용 예산 행 잠금을 적용하지 않습니다. 기존 현금·주식 예약, 공매도 방지, 주문당·미체결 수량 제한과 프로필 정책을 유지하며, 유한 일일 수량·금액 예산은 새 기관·LP·인수기관 역할에만 적용합니다.
-- `stock.batch.institution-shadow.enabled`: 기관 포트폴리오 목표 비중 계산과 결정 감사 shadow job 활성화 여부입니다. SHADOW 단계에서는 `stock_order`를 만들거나 현금·주식을 예약하지 않습니다. `institution-shadow-decision` runtime control과 `POST /internal/stock-batch/v1/jobs/institution-shadow/run` 수동 감사 실행을 함께 지원합니다.
-- 기관 PILOT은 한 종목만 주문하며 주문 의도 3회 실패 시 포트폴리오와 정책 버전을 자동 `SUSPENDED`로 고정합니다. 이때 전용 계좌의 기존 미체결 주문도 같은 트랜잭션에서 취소하고 현금·주식 예약을 반환합니다. 상태만 중단되고 과거 주문이 계속 체결되는 형태를 허용하지 않습니다.
+- `stock.batch.institution-market.enabled`: 기관 포트폴리오 목표 비중 계산과 제한된 다종목 LIVE 주문 job 활성화 여부입니다. `institution-market` runtime control과 `POST /internal/stock-batch/v1/jobs/institution-market/run` 수동 실행을 함께 지원합니다.
+- 기관 LIVE는 미체결을 포함한 예상 포지션, 종목 참여율, 일일 총매매, 결정당·단일 주문 한도를 모두 적용합니다. 한 주문 의도가 3회 실패하면 포트폴리오와 정책 버전을 자동 `SUSPENDED`로 고정하고, 나머지 대기 의도를 거절한 뒤 전용 계좌의 기존 미체결 주문도 같은 트랜잭션에서 취소해 현금·주식 예약을 반환합니다.
 - 역할별 장마감 감사는 새 중복 테이블을 만들지 않고 동결된 `stock_close_account_snapshot`, `stock_execution_daily_account_snapshot`, `stock_order_book_daily_snapshot`을 기본 원장으로 사용합니다. 기관 결정·예산과 LP 의무·손익은 각 전용 일일 테이블에서 보완합니다.
 - 만료·상장주관사 공급의 symbol-lock skip metric은 종목 코드를 tag로 사용하지 않는 전역 counter입니다. 종목 식별은 debug 로그에만 남겨 종목 수 증가가 Micrometer 시계열 cardinality와 heap 사용량으로 이어지지 않습니다.
 - 만료·상장주관사 공급의 활성 종목 조회는 자동 주문 생성용 최신 보고서 점수·분포 편향 상관 서브쿼리를 사용하지 않습니다. 두 작업에 필요한 TTL·가격·수량·틱 정보만 읽는 경량 설정 쿼리로 분리해 10초 주기 보고서 원장 접근을 제거합니다.
 
-레거시 `LISTING_UNDERWRITER` 자동계정은 `UNDERWRITER_RETURN`, `LIQUIDITY_PROVIDER`, `HYBRID` 운용 목적과 `LIQUIDITY_FIRST`, `BALANCED`, `RETURN_FIRST` 전략 정책을 분리합니다. 이 설명은 신규 `ISSUE_UNDERWRITER`에 적용되지 않습니다. 역할 분리형 신규 상장은 인수·LP를 별도 계정과 job으로 운용하고, 종목 전환이 끝날 때까지 레거시 설정은 중복 공급 방지용 호환 경로로만 유지합니다. 레거시 계정의 최초 발행주식수와 발행가의 곱은 변경되지 않는 인수원가이며, 계정 성과는 `가용 현금 + 예약 매수금 + 보유 평가액 - 최초 인수원가`로 계산합니다.
+레거시 `LISTING_UNDERWRITER` 자동계정의 `UNDERWRITER_RETURN`, `LIQUIDITY_PROVIDER`, `HYBRID` 정책은 과거 감사·전환 전 호환용입니다. 신규 생성과 기본 스케줄 실행에는 사용하지 않습니다. 종목별 LP 생성 트랜잭션이 해당 레거시 미체결 주문과 예약을 정리하고 설정을 비활성화한 뒤 역할·계정·계약이 분리된 LP를 바로 LIVE로 만듭니다.
 
 `SELL_ONLY`, `BUY_ONLY`, `TWO_SIDED`는 활성 주문 방향을 제어합니다. `LIQUIDITY_PROVIDER`와 `HYBRID`는 반드시 `TWO_SIDED`여야 합니다. 실제 신규 주문은 `유효 목표 잔량 - 현재 미체결 잔량`만큼만 생성하고 `max_order_quantity`를 주문 1건 상한으로 사용합니다. 부족분은 방향별 최대 10개 주문으로 나누며, 계좌·보유 잠금과 예약·INSERT는 종목 실행당 한 번의 bounded batch로 처리합니다. `TWO_SIDED`는 `target_holding_quantity ± inventory_band_quantity`를 재고 허용 구간으로 사용하고 각 방향의 미체결 전량이 단독 체결되어도 해당 구간을 넘지 않도록 제한합니다. 목표·밴드·운용 정책이 바뀌면 초과 호가를 취소한 뒤 필요한 수량만 다시 채웁니다. `price_offset_ticks`는 무작위 방향이 아니라 기준 호가에서 바깥 방향으로 분산할 사다리 깊이입니다. 동일 계좌 또는 동일 `self_trade_group_id`의 자기체결은 체결 후보 조회와 주문 잠금 후 재검증에서 모두 차단합니다.
 - `stock.batch.auto-participant-cash-flow.enabled`: 자동 참여자 주기 입금 job 활성화 여부

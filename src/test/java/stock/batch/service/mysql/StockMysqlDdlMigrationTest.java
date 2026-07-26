@@ -59,12 +59,14 @@ class StockMysqlDdlMigrationTest {
             "stock_auto_participant_withdrawal_settlement_alter.sql",
             "stock_market_role_foundation_alter.sql",
             "stock_system_custody_withdrawal_alter.sql",
-            "stock_institution_shadow_engine_alter.sql",
+            "stock_institution_engine_alter.sql",
+            "stock_institution_live_only_alter.sql",
             "stock_liquidity_provider_engine_alter.sql",
             "stock_issuance_underwriting_alter.sql",
             "stock_market_role_independent_provisioning_alter.sql",
             "stock_underwriter_scaled_supply_alter.sql",
             "stock_liquidity_transition_alter.sql",
+            "stock_liquidity_live_only_alter.sql",
             "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"
     );

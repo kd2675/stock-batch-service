@@ -110,7 +110,7 @@ class InstitutionOrderIntentRepository {
                           join stock_institution_decision_run decision_run
                             on decision_run.id = intent.decision_run_id
                            and decision_run.portfolio_id = intent.portfolio_id
-                           and decision_run.execution_mode = 'PILOT'
+                           and decision_run.execution_mode = 'LIVE'
                            and decision_run.status = 'COMPLETED'
                            and decision_run.policy_version = intent.policy_version
                           join stock_institution_portfolio portfolio
@@ -388,8 +388,33 @@ class InstitutionOrderIntentRepository {
         );
     }
 
-    void suspendPilotPortfolio(long portfolioId, LocalDateTime suspendedAt) {
-        PilotSuspensionRow portfolio = jdbcClient.sql(
+    int rejectPendingPortfolioIntents(
+            long portfolioId,
+            IntentReference terminalFailure,
+            LocalDateTime rejectedAt
+    ) {
+        return jdbcTemplate.update(
+                """
+                update stock_institution_order_intent
+                   set status = 'REJECTED',
+                       submission_reason = ?,
+                       updated_at = ?
+                 where portfolio_id = ?
+                   and status = 'PENDING'
+                """,
+                truncate(
+                        "PORTFOLIO_SUSPENDED_AFTER_TERMINAL_FAILURE:"
+                                + terminalFailure.decisionRunId()
+                                + ":"
+                                + terminalFailure.symbol()
+                ),
+                rejectedAt,
+                portfolioId
+        );
+    }
+
+    void suspendLivePortfolio(long portfolioId, LocalDateTime suspendedAt) {
+        LiveSuspensionRow portfolio = jdbcClient.sql(
                         """
                         select portfolio_code, execution_mode, status, policy_version
                           from stock_institution_portfolio
@@ -398,7 +423,7 @@ class InstitutionOrderIntentRepository {
                         """
                 )
                 .param(portfolioId)
-                .query((rs, rowNum) -> new PilotSuspensionRow(
+                .query((rs, rowNum) -> new LiveSuspensionRow(
                         rs.getString("portfolio_code"),
                         rs.getString("execution_mode"),
                         rs.getString("status"),
@@ -412,10 +437,10 @@ class InstitutionOrderIntentRepository {
         if ("SUSPENDED".equals(portfolio.status())) {
             return;
         }
-        if (!"PILOT".equals(portfolio.executionMode())
+        if (!"LIVE".equals(portfolio.executionMode())
                 || !"ACTIVE".equals(portfolio.status())) {
             throw new IllegalStateException(
-                    "Only an active institution PILOT can be automatically suspended"
+                    "Only an active institution LIVE portfolio can be automatically suspended"
             );
         }
         long nextPolicyVersion = Math.addExact(portfolio.policyVersion(), 1L);
@@ -428,7 +453,7 @@ class InstitutionOrderIntentRepository {
                        updated_at = ?
                  where id = ?
                    and status = 'ACTIVE'
-                   and execution_mode = 'PILOT'
+                   and execution_mode = 'LIVE'
                    and policy_version = ?
                 """,
                 nextPolicyVersion,
@@ -469,7 +494,7 @@ class InstitutionOrderIntentRepository {
                 portfolio.portfolioCode(),
                 nextPolicyVersion,
                 suspendedAt.toLocalDate(),
-                "{\"transition\":\"PILOT_AUTOMATIC_SUSPEND\",\"status\":\"SUSPENDED\"}",
+                "{\"transition\":\"LIVE_AUTOMATIC_SUSPEND\",\"status\":\"SUSPENDED\"}",
                 suspendedAt,
                 suspendedAt
         );
@@ -559,7 +584,7 @@ class InstitutionOrderIntentRepository {
     private record IntentFailureRow(long portfolioId, String status, int attemptCount) {
     }
 
-    private record PilotSuspensionRow(
+    private record LiveSuspensionRow(
             String portfolioCode,
             String executionMode,
             String status,

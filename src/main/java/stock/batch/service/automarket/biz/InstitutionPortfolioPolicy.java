@@ -23,12 +23,4 @@ record InstitutionPortfolioPolicy(
         int decisionIntervalMinutes,
         long policyVersion
 ) {
-
-    boolean shadow() {
-        return "SHADOW".equals(executionMode);
-    }
-
-    boolean pilot() {
-        return "PILOT".equals(executionMode);
-    }
 }

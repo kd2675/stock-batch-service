@@ -26,7 +26,7 @@ class InstitutionPortfolioPlanner {
     private static final double MOMENTUM_NORMALIZATION = 0.10;
     private static final double VALUE_NORMALIZATION = 0.20;
     private static final double EPSILON = 1.0e-10;
-    private static final BigDecimal PILOT_SINGLE_ORDER_REFERENCE_RATE =
+    private static final BigDecimal LIVE_SINGLE_DECISION_REFERENCE_RATE =
             new BigDecimal("0.005000");
 
     InstitutionDecisionPlan plan(
@@ -115,15 +115,7 @@ class InstitutionPortfolioPlanner {
                 remainingDailyNotionalBefore,
                 decisionNotionalLimit
         );
-        BigDecimal previouslyPlannedBuyAmount = policy.shadow()
-                ? resolvedBudgets.values().stream()
-                        .map(InstitutionDailyBudgetSnapshot::plannedBuyAmount)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add)
-                : BigDecimal.ZERO;
-        applyCashLimit(
-                drafts,
-                nonNegative(cash.subtract(previouslyPlannedBuyAmount))
-        );
+        applyCashLimit(drafts, cash);
         finalizeQuantities(drafts);
 
         BigDecimal plannedThisDecision = drafts.stream()
@@ -169,7 +161,7 @@ class InstitutionPortfolioPlanner {
             Map<String, InstitutionMarketInput> marketInputs,
             Map<String, InstitutionDailyBudgetSnapshot> dailyBudgets
     ) {
-        if (!policy.shadow() && !policy.pilot()) {
+        if (!"LIVE".equals(policy.executionMode())) {
             throw new IllegalStateException(
                     "Institution planner cannot process execution mode " + policy.executionMode()
             );
@@ -435,12 +427,7 @@ class InstitutionPortfolioPlanner {
                     InstitutionPositionSnapshot.EMPTY
             );
             InstitutionDailyBudgetSnapshot budget = budgets.get(symbol);
-            long projectedQuantity = policy.shadow()
-                    ? position.projectedQuantity(
-                            budget.plannedBuyQuantity(),
-                            budget.plannedSellQuantity()
-                    )
-                    : position.projectedQuantity();
+            long projectedQuantity = position.projectedQuantity();
             BigDecimal actualAmount = money(input.currentPrice().multiply(BigDecimal.valueOf(position.actualQuantity())));
             BigDecimal projectedAmount = money(
                     input.currentPrice().multiply(BigDecimal.valueOf(projectedQuantity))
@@ -484,23 +471,19 @@ class InstitutionPortfolioPlanner {
             if (rawQuantity > remainingQuantity) {
                 gates.add(Gate.SYMBOL_PARTICIPATION_LIMIT);
             }
-            if (policy.pilot()) {
-                long singleOrderLimit = Math.max(
-                        1L,
-                        floorToLong(
-                                BigDecimal.valueOf(mandate.referenceDailyVolume())
-                                        .multiply(PILOT_SINGLE_ORDER_REFERENCE_RATE)
-                        )
-                );
-                if (individuallyGatedQuantity > singleOrderLimit) {
-                    individuallyGatedQuantity = singleOrderLimit;
-                    gates.add(Gate.SINGLE_ORDER_LIMIT);
-                }
+            long singleDecisionLimit = Math.max(
+                    1L,
+                    floorToLong(
+                            BigDecimal.valueOf(mandate.referenceDailyVolume())
+                                    .multiply(LIVE_SINGLE_DECISION_REFERENCE_RATE)
+                    )
+            );
+            if (individuallyGatedQuantity > singleDecisionLimit) {
+                individuallyGatedQuantity = singleDecisionLimit;
+                gates.add(Gate.SINGLE_ORDER_LIMIT);
             }
             if (direction.action() == InstitutionDecisionAction.SELL) {
-                long availableSellQuantity = policy.shadow()
-                        ? position.availableSellQuantity(budget.plannedSellQuantity())
-                        : position.availableSellQuantity();
+                long availableSellQuantity = position.availableSellQuantity();
                 if (individuallyGatedQuantity > availableSellQuantity) {
                     individuallyGatedQuantity = availableSellQuantity;
                     gates.add(Gate.SHARE_LIMIT);

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   liquidity_account_id BIGINT NOT NULL,
   source_account_id BIGINT NOT NULL,
   legacy_account_id BIGINT NULL,
-  stage VARCHAR(30) NOT NULL DEFAULT 'SHADOW_READY',
+  stage VARCHAR(30) NOT NULL DEFAULT 'LIVE_ACTIVE',
   reference_daily_volume BIGINT NOT NULL,
   seed_inventory_quantity BIGINT NOT NULL,
   seed_cash_amount DECIMAL(19,2) NOT NULL,
@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   ),
   CONSTRAINT chk_stock_liquidity_transition_stage CHECK (
     CASE stage
-      WHEN 'SHADOW_READY' THEN 1
       WHEN 'LIVE_ACTIVE' THEN 1
       WHEN 'SUSPENDED' THEN 1
       ELSE 0
@@ -60,15 +59,8 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     AND seed_cash_amount > 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
-    (
-      stage = 'SHADOW_READY'
-      AND legacy_disabled_at IS NULL
-      AND activated_at IS NULL
-    )
-    OR (
-      stage IN ('LIVE_ACTIVE', 'SUSPENDED')
-      AND activated_at IS NOT NULL
-    )
+    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
+    AND activated_at IS NOT NULL
   ),
   CONSTRAINT chk_stock_liquidity_transition_audit CHECK (
     transition_key <> ''

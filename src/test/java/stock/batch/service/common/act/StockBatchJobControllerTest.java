@@ -137,7 +137,7 @@ class StockBatchJobControllerTest {
                 .andExpect(jsonPath("$.data[9].jobName").value("listing-auto-market"))
                 .andExpect(jsonPath("$.data[10].jobName").value("liquidity-provider-market"))
                 .andExpect(jsonPath("$.data[11].jobName").value("issue-underwriter-market"))
-                .andExpect(jsonPath("$.data[12].jobName").value("institution-shadow-decision"))
+                .andExpect(jsonPath("$.data[12].jobName").value("institution-market"))
                 .andExpect(jsonPath("$.data[15].jobName").value("portfolio-settlement"))
                 .andExpect(jsonPath("$.data[16].jobName").value("post-close-report-aggregation"))
                 .andExpect(jsonPath("$.data[17].jobName").value("market-open-readiness"))

@@ -52,6 +52,14 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             "chk_stock_auto_participant_funding_shadow",
             "chk_stock_auto_participant_behavior_model"
     );
+    private static final Map<String, Set<String>> FORBIDDEN_CHECK_TOKENS = Map.ofEntries(
+            Map.entry("chk_stock_institution_portfolio_mode", Set.of("shadow", "pilot")),
+            Map.entry("chk_stock_institution_decision_run_mode", Set.of("shadow", "pilot")),
+            Map.entry("chk_stock_liquidity_mandate_mode", Set.of("shadow", "pilot")),
+            Map.entry("chk_stock_liquidity_daily_state_status", Set.of("shadow")),
+            Map.entry("chk_stock_liquidity_transition_stage", Set.of("shadow_ready")),
+            Map.entry("chk_stock_liquidity_transition_activation", Set.of("shadow_ready"))
+    );
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
     private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.ofEntries(
             Map.entry("stock_account", Set.of("participant_category")),
@@ -261,7 +269,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             Map.entry("chk_stock_institution_portfolio_style", Set.of(
                     "balanced_long_term", "value_contrarian", "momentum", "active_short_term"
             )),
-            Map.entry("chk_stock_institution_portfolio_mode", Set.of("shadow", "pilot", "live")),
+            Map.entry("chk_stock_institution_portfolio_mode", Set.of("live")),
             Map.entry("chk_stock_institution_portfolio_threshold", Set.of(
                     "exit_threshold_rate", "entry_threshold_rate"
             )),
@@ -269,6 +277,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     "price_pressure_sensitivity", "momentum_sensitivity",
                     "value_sensitivity", "report_sensitivity"
             )),
+            Map.entry("chk_stock_institution_decision_run_mode", Set.of("live")),
             Map.entry("chk_stock_institution_decision_run_status", Set.of(
                     "claimed", "completed", "failed"
             )),
@@ -285,7 +294,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             Map.entry("chk_stock_institution_order_intent_submission", Set.of(
                     "submitted_order_id", "submitted_price", "submitted_quantity", "submitted_at"
             )),
-            Map.entry("chk_stock_liquidity_mandate_mode", Set.of("shadow", "pilot", "live")),
+            Map.entry("chk_stock_liquidity_mandate_mode", Set.of("live")),
             Map.entry("chk_stock_liquidity_mandate_status", Set.of(
                     "active", "suspended", "expired"
             )),
@@ -328,19 +337,19 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     "blended_liquidity_pressure"
             )),
             Map.entry("chk_stock_liquidity_daily_state_status", Set.of(
-                    "shadow", "quoting", "exempt", "halted", "error"
+                    "quoting", "exempt", "halted", "error"
             )),
             Map.entry("chk_stock_liquidity_daily_state_version", Set.of(
                     "quote_run_count", "policy_version", "version"
             )),
             Map.entry("chk_stock_liquidity_transition_stage", Set.of(
-                    "shadow_ready", "live_active", "suspended"
+                    "live_active", "suspended"
             )),
             Map.entry("chk_stock_liquidity_transition_seed", Set.of(
                     "reference_daily_volume", "seed_inventory_quantity", "seed_cash_amount"
             )),
             Map.entry("chk_stock_liquidity_transition_activation", Set.of(
-                    "stage", "legacy_disabled_at", "activated_at"
+                    "stage", "activated_at"
             )),
             Map.entry("chk_stock_liquidity_transition_audit", Set.of(
                     "transition_key", "requested_by", "change_reason", "policy_version"
@@ -599,6 +608,20 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                 for (String requiredToken : requirement.getValue()) {
                     if (!normalizedClause.contains(normalize(requiredToken))) {
                         missing.add(requirement.getKey() + " CHECK token " + requiredToken);
+                    }
+                }
+            }
+            for (Map.Entry<String, Set<String>> requirement : FORBIDDEN_CHECK_TOKENS.entrySet()) {
+                String checkClause = checkClauses.get(normalize(requirement.getKey()));
+                if (checkClause == null) {
+                    continue;
+                }
+                String normalizedClause = normalize(checkClause);
+                for (String forbiddenToken : requirement.getValue()) {
+                    if (normalizedClause.contains(normalize(forbiddenToken))) {
+                        missing.add(
+                                requirement.getKey() + " CHECK forbidden token " + forbiddenToken
+                        );
                     }
                 }
             }

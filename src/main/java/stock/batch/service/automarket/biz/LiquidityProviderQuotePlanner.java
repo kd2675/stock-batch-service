@@ -20,7 +20,6 @@ class LiquidityProviderQuotePlanner {
 
     private static final String BUY = "BUY";
     private static final String SELL = "SELL";
-    private static final String SHADOW = "SHADOW";
     private static final String QUOTING = "QUOTING";
     private static final String EXEMPT = "EXEMPT";
     private static final String HALTED = "HALTED";
@@ -79,41 +78,32 @@ class LiquidityProviderQuotePlanner {
         }
 
         QuoteTargets targets = quoteTargets(input, pressures);
-        boolean submitOrders = mandate.live();
         List<AutoOrder> cancellations = new ArrayList<>();
-        SideRetention buyRetention;
-        SideRetention sellRetention;
-        if (submitOrders) {
-            buyRetention = retainOneSide(
-                    sideOrders(allOpenOrders, BUY),
-                    BUY,
-                    prices.bidPrice(),
-                    targets.buyQuantity(),
-                    input
-            );
-            sellRetention = retainOneSide(
-                    sideOrders(allOpenOrders, SELL),
-                    SELL,
-                    prices.askPrice(),
-                    targets.sellQuantity(),
-                    input
-            );
-            cancellations.addAll(buyRetention.cancellations());
-            cancellations.addAll(sellRetention.cancellations());
-            if (retainedQuotesCross(buyRetention, sellRetention, prices)) {
-                if (buyRetention.retainedOrder() != null) {
-                    cancellations.add(buyRetention.retainedOrder());
-                    buyRetention = SideRetention.NONE;
-                }
-                if (sellRetention.retainedOrder() != null) {
-                    cancellations.add(sellRetention.retainedOrder());
-                    sellRetention = SideRetention.NONE;
-                }
+        SideRetention buyRetention = retainOneSide(
+                sideOrders(allOpenOrders, BUY),
+                BUY,
+                prices.bidPrice(),
+                targets.buyQuantity(),
+                input
+        );
+        SideRetention sellRetention = retainOneSide(
+                sideOrders(allOpenOrders, SELL),
+                SELL,
+                prices.askPrice(),
+                targets.sellQuantity(),
+                input
+        );
+        cancellations.addAll(buyRetention.cancellations());
+        cancellations.addAll(sellRetention.cancellations());
+        if (retainedQuotesCross(buyRetention, sellRetention, prices)) {
+            if (buyRetention.retainedOrder() != null) {
+                cancellations.add(buyRetention.retainedOrder());
+                buyRetention = SideRetention.NONE;
             }
-        } else {
-            cancellations.addAll(allOpenOrders);
-            buyRetention = SideRetention.NONE;
-            sellRetention = SideRetention.NONE;
+            if (sellRetention.retainedOrder() != null) {
+                cancellations.add(sellRetention.retainedOrder());
+                sellRetention = SideRetention.NONE;
+            }
         }
 
         long retainedBuyQuantity = buyRetention.retainedQuantity();
@@ -229,10 +219,10 @@ class LiquidityProviderQuotePlanner {
         );
 
         return new LiquidityProviderQuotePlan(
-                submitOrders ? QUOTING : SHADOW,
+                QUOTING,
                 gateReason,
                 false,
-                submitOrders,
+                true,
                 cancellations,
                 proposedOrders,
                 mandate.referenceDailyVolume(),
@@ -286,16 +276,16 @@ class LiquidityProviderQuotePlanner {
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
-        if (mandate.live() && input.enabledLegacyLiquidityConfigCount() > 0) {
-            return terminalPlan(
-                    input, HALTED, "LEGACY_LIQUIDITY_ENGINE_ACTIVE", true, pressures,
-                    executionLimit, submissionLimit, unrealizedProfit, netAssets, allOpenOrders
-            );
-        }
-        if (!mandate.live() && !mandate.shadowLike()) {
+        if (!mandate.live()) {
             return terminalPlan(
                     input, HALTED, "INVALID_EXECUTION_MODE", true, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
+            );
+        }
+        if (input.enabledLegacyLiquidityConfigCount() > 0) {
+            return terminalPlan(
+                    input, HALTED, "LEGACY_LIQUIDITY_ENGINE_ACTIVE", true, pressures,
+                    executionLimit, submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
         String roleFailure = input.account().eligibilityFailure(mandate, input.simulationTradeDate());
@@ -764,9 +754,6 @@ class LiquidityProviderQuotePlanner {
             long buyCandidate,
             long sellCandidate
     ) {
-        if (!input.mandate().live()) {
-            return "PILOT".equals(input.mandate().executionMode()) ? "PILOT_ONLY" : "SHADOW_ONLY";
-        }
         if (!proposedOrders.isEmpty()) {
             return "WITHIN_LIMITS";
         }

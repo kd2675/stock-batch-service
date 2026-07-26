@@ -19,21 +19,21 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class InstitutionShadowDecisionServiceTest {
+class InstitutionMarketServiceTest {
 
     private static final LocalDate TRADE_DATE = LocalDate.of(2027, 1, 27);
     private static final LocalDateTime NOW = TRADE_DATE.atTime(10, 0);
 
     @Test
-    void runShadowStep_noActiveMarketConfig_stillDrainsPendingIntents() {
-        InstitutionShadowPortfolioRepository repository =
-                mock(InstitutionShadowPortfolioRepository.class);
-        InstitutionShadowPortfolioProcessor processor =
-                mock(InstitutionShadowPortfolioProcessor.class);
+    void runMarketStep_noActiveMarketConfig_stillDrainsPendingIntents() {
+        InstitutionPortfolioRepository repository =
+                mock(InstitutionPortfolioRepository.class);
+        InstitutionPortfolioProcessor processor =
+                mock(InstitutionPortfolioProcessor.class);
         InstitutionOrderIntentExecutionService intentExecutionService =
                 mock(InstitutionOrderIntentExecutionService.class);
-        InstitutionShadowPortfolioRunMetrics metrics =
-                mock(InstitutionShadowPortfolioRunMetrics.class);
+        InstitutionPortfolioRunMetrics metrics =
+                mock(InstitutionPortfolioRunMetrics.class);
         AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
         AutoMarketDailyRegimeService dailyRegimeService =
                 mock(AutoMarketDailyRegimeService.class);
@@ -49,7 +49,7 @@ class InstitutionShadowDecisionServiceTest {
         when(marketSessionFenceService.hasOpenOrderBookMarket()).thenReturn(true);
         when(repository.findDuePortfolioIds(NOW, 20)).thenReturn(List.of());
         when(autoMarketReader.findEnabledConfigs()).thenReturn(List.of());
-        InstitutionShadowDecisionService service = new InstitutionShadowDecisionService(
+        InstitutionMarketService service = new InstitutionMarketService(
                 repository,
                 processor,
                 intentExecutionService,
@@ -62,7 +62,7 @@ class InstitutionShadowDecisionServiceTest {
                 20
         );
 
-        int completed = service.runShadowStep();
+        int completed = service.runMarketStep();
 
         assertThat(completed).isZero();
         verify(intentExecutionService).runPendingIntents(Map.of(), TRADE_DATE, NOW);

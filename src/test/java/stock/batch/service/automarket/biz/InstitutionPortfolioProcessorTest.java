@@ -21,16 +21,16 @@ import stock.batch.service.batch.automarket.model.AutoMarketPressure;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class InstitutionShadowPortfolioProcessorTest {
+class InstitutionPortfolioProcessorTest {
 
     private JdbcTemplate jdbcTemplate;
     private TransactionTemplate transactionTemplate;
-    private InstitutionShadowPortfolioProcessor processor;
+    private InstitutionPortfolioProcessor processor;
 
     @BeforeEach
     void setUp() {
         DataSource dataSource = new SingleConnectionDataSource(
-                "jdbc:h2:mem:institution_shadow_" + UUID.randomUUID()
+                "jdbc:h2:mem:institution_live_" + UUID.randomUUID()
                         + ";MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false",
                 "sa",
                 "",
@@ -39,9 +39,9 @@ class InstitutionShadowPortfolioProcessorTest {
         new ResourceDatabasePopulator(new ClassPathResource("db/ddl/stock_h2.sql")).execute(dataSource);
         jdbcTemplate = new JdbcTemplate(dataSource);
         transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        InstitutionShadowPortfolioRepository repository =
-                new InstitutionShadowPortfolioRepository(jdbcTemplate);
-        processor = new InstitutionShadowPortfolioProcessor(
+        InstitutionPortfolioRepository repository =
+                new InstitutionPortfolioRepository(jdbcTemplate);
+        processor = new InstitutionPortfolioProcessor(
                 repository,
                 new InstitutionPortfolioPlanner()
         );
@@ -49,13 +49,13 @@ class InstitutionShadowPortfolioProcessorTest {
     }
 
     @Test
-    void process_shadowMode_writesAuditAndBudgetButNeverOrder() {
+    void process_liveMode_writesAuditBudgetAndPendingIntentWithoutDirectOrderWrite() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 27, 9, 0);
-        InstitutionShadowPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
+        InstitutionPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
                 status -> processor.process(700L, now, Map.of("DEMO001", marketInput()))
         );
 
-        assertThat(result).isEqualTo(InstitutionShadowPortfolioProcessor.ProcessResult.COMPLETED);
+        assertThat(result).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.COMPLETED);
         assertThat(jdbcTemplate.queryForObject(
                 "select status from stock_institution_decision_run where portfolio_id = 700",
                 String.class
@@ -73,6 +73,11 @@ class InstitutionShadowPortfolioProcessorTest {
                 Long.class
         )).isEqualTo(20L);
         assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from stock_institution_order_intent "
+                        + "where portfolio_id = 700 and status = 'PENDING'",
+                Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from stock_order where account_id = 700",
                 Integer.class
         )).isZero();
@@ -86,7 +91,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 now,
                 Map.of("DEMO001", marketInput())
         ));
-        InstitutionShadowPortfolioProcessor.ProcessResult second = transactionTemplate.execute(
+        InstitutionPortfolioProcessor.ProcessResult second = transactionTemplate.execute(
                 status -> processor.process(
                         700L,
                         now.plusMinutes(30),
@@ -94,7 +99,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 )
         );
 
-        assertThat(second).isEqualTo(InstitutionShadowPortfolioProcessor.ProcessResult.SKIPPED);
+        assertThat(second).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.SKIPPED);
         assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from stock_institution_decision_run where portfolio_id = 700",
                 Integer.class
@@ -102,13 +107,69 @@ class InstitutionShadowPortfolioProcessorTest {
     }
 
     @Test
+    void process_liveMultiSymbolPortfolio_createsOneIntentPerActionableSymbol() {
+        LocalDateTime now = LocalDateTime.of(2027, 1, 27, 8, 30);
+        jdbcTemplate.update(
+                """
+                insert into stock_institution_symbol_mandate(
+                    id, portfolio_id, symbol, base_symbol_weight,
+                    min_portfolio_allocation_rate, max_portfolio_allocation_rate,
+                    price_pressure_sensitivity, momentum_sensitivity,
+                    value_sensitivity, report_sensitivity,
+                    reference_daily_volume, daily_participation_rate,
+                    enabled, created_at, updated_at
+                ) values (
+                    701, 700, 'DEMO002', 1.000000, 0.000000, 1.000000,
+                    0.100000, 0.100000, 0.100000, 0.100000,
+                    10000, 0.020000, true, ?, ?
+                )
+                """,
+                now,
+                now
+        );
+
+        InstitutionPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
+                status -> processor.process(
+                        700L,
+                        LocalDateTime.of(2027, 1, 27, 9, 0),
+                        Map.of(
+                                "DEMO001",
+                                marketInput(),
+                                "DEMO002",
+                                new InstitutionMarketInput(
+                                        "DEMO002",
+                                        new BigDecimal("200.00"),
+                                        AutoMarketPressure.NEUTRAL,
+                                        AutoMarketPressure.NEUTRAL,
+                                        0.0,
+                                        0.0,
+                                        0.0
+                                )
+                        )
+                )
+        );
+
+        assertThat(result).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.COMPLETED);
+        assertThat(jdbcTemplate.queryForList(
+                """
+                select symbol
+                  from stock_institution_order_intent
+                 where portfolio_id = 700
+                   and status = 'PENDING'
+                 order by symbol
+                """,
+                String.class
+        )).containsExactly("DEMO001", "DEMO002");
+    }
+
+    @Test
     void process_missingMarketConfig_recordsFailedRunWithoutBudgetMutation() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 27, 9, 0);
-        InstitutionShadowPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
+        InstitutionPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
                 status -> processor.process(700L, now, Map.of())
         );
 
-        assertThat(result).isEqualTo(InstitutionShadowPortfolioProcessor.ProcessResult.FAILED);
+        assertThat(result).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.FAILED);
         assertThat(jdbcTemplate.queryForObject(
                 "select status from stock_institution_decision_run where portfolio_id = 700",
                 String.class
@@ -138,7 +199,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 now
         );
 
-        InstitutionShadowPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
+        InstitutionPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
                 status -> processor.process(
                         700L,
                         LocalDateTime.of(2027, 1, 27, 9, 0),
@@ -146,7 +207,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 )
         );
 
-        assertThat(result).isEqualTo(InstitutionShadowPortfolioProcessor.ProcessResult.FAILED);
+        assertThat(result).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.FAILED);
         assertThat(jdbcTemplate.queryForObject(
                 """
                 select error_message
@@ -173,7 +234,7 @@ class InstitutionShadowPortfolioProcessorTest {
                     status, created_at, completed_at
                 ) values (
                     899, ?, date '2027-01-27', 700,
-                    'SHADOW', 2, 899,
+                    'LIVE', 2, 899,
                     'COMPLETED', ?, ?
                 )
                 """,
@@ -209,7 +270,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 now
         );
 
-        InstitutionShadowPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
+        InstitutionPortfolioProcessor.ProcessResult result = transactionTemplate.execute(
                 status -> processor.process(
                         700L,
                         LocalDateTime.of(2027, 1, 27, 9, 0),
@@ -217,7 +278,7 @@ class InstitutionShadowPortfolioProcessorTest {
                 )
         );
 
-        assertThat(result).isEqualTo(InstitutionShadowPortfolioProcessor.ProcessResult.FAILED);
+        assertThat(result).isEqualTo(InstitutionPortfolioProcessor.ProcessResult.FAILED);
         assertThat(jdbcTemplate.queryForObject(
                 """
                 select error_message
@@ -309,7 +370,7 @@ class InstitutionShadowPortfolioProcessorTest {
                     created_at, updated_at
                 ) values (
                     700, 700, 700, 'PENSION', 'Pension', 'BALANCED_LONG_TERM',
-                    'SHADOW', 'ACTIVE', 0.600000, 0.300000, 0.800000, 0.700000,
+                    'LIVE', 'ACTIVE', 0.600000, 0.300000, 0.800000, 0.700000,
                     0.020000, 0.020000, 0.005000, 0.002000,
                     0.010000, 0.002000, 60, null, 1, ?, ?
                 )

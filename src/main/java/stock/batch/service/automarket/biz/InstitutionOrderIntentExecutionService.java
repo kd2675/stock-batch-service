@@ -39,10 +39,10 @@ class InstitutionOrderIntentExecutionService {
             OrderBookSymbolLock orderBookSymbolLock,
             MarketSessionFenceService marketSessionFenceService,
             TransactionTemplate transactionTemplate,
-            @Value("${stock.batch.institution-shadow.intent-limit-per-run:20}") int intentLimitPerRun,
-            @Value("${stock.batch.institution-shadow.deadlock-retry-max-attempts:5}")
+            @Value("${stock.batch.institution-market.intent-limit-per-run:20}") int intentLimitPerRun,
+            @Value("${stock.batch.institution-market.deadlock-retry-max-attempts:5}")
             int deadlockRetryMaxAttempts,
-            @Value("${stock.batch.institution-shadow.deadlock-retry-backoff-ms:50}")
+            @Value("${stock.batch.institution-market.deadlock-retry-backoff-ms:50}")
             long deadlockRetryBackoffMs
     ) {
         this.repository = repository;
@@ -81,7 +81,7 @@ class InstitutionOrderIntentExecutionService {
         );
         if (rejectedStaleIntents > 0) {
             log.warn(
-                    "Rejected stale institution PILOT intents from prior trade dates: count={}, "
+                    "Rejected stale institution LIVE intents from prior trade dates: count={}, "
                             + "activeTradeDate={}",
                     rejectedStaleIntents,
                     simulationTradeDate
@@ -126,7 +126,7 @@ class InstitutionOrderIntentExecutionService {
                             );
                         } catch (CannotAcquireLockException ex) {
                             log.warn(
-                                    "Institution PILOT intent deferred after transient lock retries: "
+                                    "Institution LIVE intent deferred after transient lock retries: "
                                             + "decisionRunId={}, symbol={}, attempts={}, reason={}",
                                     reference.decisionRunId(),
                                     reference.symbol(),
@@ -137,7 +137,7 @@ class InstitutionOrderIntentExecutionService {
                         } catch (RuntimeException ex) {
                             recordFailure(reference, ex.getMessage(), observedAt);
                             log.warn(
-                                    "Institution PILOT order intent failed: decisionRunId={}, "
+                                    "Institution LIVE order intent failed: decisionRunId={}, "
                                             + "symbol={}, reason={}",
                                     reference.decisionRunId(),
                                     reference.symbol(),
@@ -192,7 +192,7 @@ class InstitutionOrderIntentExecutionService {
     ) {
         long backoffMillis = deadlockRetryBackoffMs * attempt;
         log.warn(
-                "Institution PILOT intent deadlock retry: decisionRunId={}, symbol={}, "
+                "Institution LIVE intent deadlock retry: decisionRunId={}, symbol={}, "
                         + "attempt={}, backoffMs={}, reason={}",
                 reference.decisionRunId(),
                 reference.symbol(),
@@ -226,13 +226,18 @@ class InstitutionOrderIntentExecutionService {
                     failedAt
             );
             if (failure.terminal()) {
-                repository.suspendPilotPortfolio(failure.portfolioId(), failedAt);
+                repository.rejectPendingPortfolioIntents(
+                        failure.portfolioId(),
+                        reference,
+                        failedAt
+                );
+                repository.suspendLivePortfolio(failure.portfolioId(), failedAt);
                 int cancelledOrderCount = orderExecutor.expireOrders(
                         repository.findOpenPortfolioAccountOrders(failure.portfolioId()),
                         failedAt
                 );
                 log.error(
-                        "Institution PILOT portfolio suspended after terminal intent failure: "
+                        "Institution LIVE portfolio suspended after terminal intent failure: "
                                 + "decisionRunId={}, symbol={}, attempts={}, cancelledOrders={}",
                         reference.decisionRunId(),
                         reference.symbol(),

@@ -54,13 +54,13 @@ class InstitutionPortfolioPlannerTest {
         InstitutionDecisionItem item = plan.items().getFirst();
         assertThat(item.action()).isEqualTo(InstitutionDecisionAction.BUY);
         assertThat(item.dailyGrossQuantityLimit()).isEqualTo(20L);
-        assertThat(item.gatedQuantity()).isEqualTo(20L);
-        assertThat(item.gatedTradeAmount()).isEqualByComparingTo("2000.00");
-        assertThat(item.gateReason()).contains("SYMBOL_PARTICIPATION_LIMIT");
+        assertThat(item.gatedQuantity()).isEqualTo(5L);
+        assertThat(item.gatedTradeAmount()).isEqualByComparingTo("500.00");
+        assertThat(item.gateReason()).contains("SINGLE_ORDER_LIMIT");
     }
 
     @Test
-    void plan_existingDailyBudget_boundsRepeatedShadowSuggestions() {
+    void plan_existingDailyBudget_boundsRepeatedLiveDecisions() {
         InstitutionPortfolioPolicy policy = policy("0.600000", "0.010000", "0.010000");
         InstitutionSymbolMandate mandate = mandate(
                 "DEMO001",
@@ -100,7 +100,7 @@ class InstitutionPortfolioPlannerTest {
     }
 
     @Test
-    void plan_priorShadowPlanReachesTarget_holdsWithoutRepeatingBuy() {
+    void plan_priorPlanWithoutOpenOrder_doesNotReplaceLiveProjectedPosition() {
         InstitutionDailyBudgetSnapshot priorPlan = new InstitutionDailyBudgetSnapshot(
                 1_000_000L,
                 20_000L,
@@ -125,22 +125,23 @@ class InstitutionPortfolioPlannerTest {
                 BigDecimal.ZERO
         ).items().getFirst();
 
-        assertThat(item.projectedQuantity()).isEqualTo(6_000L);
-        assertThat(item.projectedAllocationRate()).isEqualByComparingTo("0.60000000");
-        assertThat(item.action()).isEqualTo(InstitutionDecisionAction.HOLD);
-        assertThat(item.gatedQuantity()).isZero();
+        assertThat(item.projectedQuantity()).isZero();
+        assertThat(item.projectedAllocationRate()).isEqualByComparingTo("0.00000000");
+        assertThat(item.action()).isEqualTo(InstitutionDecisionAction.BUY);
+        assertThat(item.gatedQuantity()).isEqualTo(4_000L);
+        assertThat(item.gateReason()).contains("PORTFOLIO_DAILY_LIMIT");
     }
 
     @Test
-    void plan_pilotSell_usesLiveReservationsWithoutSubtractingHistoricalPlansTwice() {
-        InstitutionPortfolioPolicy pilotPolicy = new InstitutionPortfolioPolicy(
+    void plan_liveSell_usesReservationsWithoutSubtractingHistoricalPlansTwice() {
+        InstitutionPortfolioPolicy livePolicy = new InstitutionPortfolioPolicy(
                 1L,
                 1L,
                 1L,
-                "PILOT",
-                "Pilot",
+                "LIVE",
+                "Live",
                 "BALANCED_LONG_TERM",
-                "PILOT",
+                "LIVE",
                 new BigDecimal("0.200000"),
                 new BigDecimal("0.000000"),
                 new BigDecimal("1.000000"),
@@ -167,7 +168,7 @@ class InstitutionPortfolioPlannerTest {
         );
 
         InstitutionDecisionItem item = planner.plan(
-                pilotPolicy,
+                livePolicy,
                 List.of(mandate("DEMO001", "1.000000", "0.000000", "1.000000", 100_000L)),
                 Map.of("DEMO001", market("DEMO001", "100.00", AutoMarketPressure.NEUTRAL)),
                 Map.of("DEMO001", new InstitutionPositionSnapshot(100L, 0L, 0L, 0L)),
@@ -192,7 +193,7 @@ class InstitutionPortfolioPlannerTest {
                 "PENSION",
                 "Pension",
                 "BALANCED_LONG_TERM",
-                "SHADOW",
+                "LIVE",
                 new BigDecimal("0.600000"),
                 new BigDecimal("0.500000"),
                 new BigDecimal("0.700000"),
@@ -304,7 +305,7 @@ class InstitutionPortfolioPlannerTest {
                 "PENSION",
                 "Pension",
                 "BALANCED_LONG_TERM",
-                "SHADOW",
+                "LIVE",
                 new BigDecimal(baseStockAllocation),
                 new BigDecimal("0.300000"),
                 new BigDecimal("0.800000"),

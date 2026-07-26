@@ -3,17 +3,17 @@ package stock.batch.service.batch.automarket.job;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-import stock.batch.service.automarket.biz.InstitutionShadowDecisionService;
+import stock.batch.service.automarket.biz.InstitutionMarketService;
 import stock.batch.service.batch.common.support.LightweightBatchTask;
 
 @Component
 @RequiredArgsConstructor
-public class InstitutionShadowDecisionJob implements LightweightBatchTask {
+public class InstitutionMarketJob implements LightweightBatchTask {
 
-    public static final String JOB_NAME = "institution-shadow-decision";
-    private static final String EXECUTION_MODE = "portfolio-shadow";
+    public static final String JOB_NAME = "institution-market";
+    private static final String EXECUTION_MODE = "portfolio-live";
 
-    private final InstitutionShadowDecisionService decisionService;
+    private final InstitutionMarketService marketService;
 
     @Override
     public String taskName() {
@@ -27,6 +27,6 @@ public class InstitutionShadowDecisionJob implements LightweightBatchTask {
 
     @Override
     public int run() {
-        return decisionService.runShadowStep();
+        return marketService.runMarketStep();
     }
 }

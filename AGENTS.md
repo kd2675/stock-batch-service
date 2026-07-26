@@ -31,7 +31,7 @@
 - `/internal/stock-batch/v1/jobs/listing-auto-market/run`
 - `/internal/stock-batch/v1/jobs/liquidity-provider-market/run`
 - `/internal/stock-batch/v1/jobs/issue-underwriter-market/run`
-- `/internal/stock-batch/v1/jobs/institution-shadow/run`
+- `/internal/stock-batch/v1/jobs/institution-market/run`
 - `/internal/stock-batch/v1/jobs/portfolio-settlement/run`
 - `/internal/stock-batch/v1/jobs/market-close/rollover`
 - `/internal/stock-batch/v1/jobs/corporate-actions/run`
