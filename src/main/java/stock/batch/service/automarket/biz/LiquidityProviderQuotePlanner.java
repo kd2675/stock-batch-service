@@ -23,6 +23,7 @@ class LiquidityProviderQuotePlanner {
     private static final String QUOTING = "QUOTING";
     private static final String EXEMPT = "EXEMPT";
     private static final String HALTED = "HALTED";
+    private static final String ERROR = "ERROR";
 
     LiquidityProviderQuotePlan plan(LiquidityProviderQuoteInput input) {
         LiquidityProviderMandate mandate = input.mandate();
@@ -65,9 +66,9 @@ class LiquidityProviderQuotePlanner {
         if (prices == null) {
             return terminalPlan(
                     input,
-                    HALTED,
+                    ERROR,
                     "INVALID_QUOTE_PRICE",
-                    true,
+                    false,
                     pressures,
                     executionLimit,
                     submissionLimit,
@@ -296,8 +297,13 @@ class LiquidityProviderQuotePlanner {
             );
         }
         if (input.dailyState().exists() && input.dailyState().limitBreached()) {
+            String previousGateReason = input.dailyState().gateReason();
+            String persistentGateReason = previousGateReason == null
+                    || previousGateReason.isBlank()
+                    ? "PREVIOUS_HARD_LIMIT_BREACH"
+                    : previousGateReason;
             return terminalPlan(
-                    input, HALTED, "PREVIOUS_HARD_LIMIT_BREACH", true, pressures, executionLimit,
+                    input, HALTED, persistentGateReason, true, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
@@ -326,13 +332,13 @@ class LiquidityProviderQuotePlanner {
         }
         if (input.externalBook().crossed()) {
             return terminalPlan(
-                    input, HALTED, "EXTERNAL_BOOK_CROSSED", true, pressures, executionLimit,
+                    input, EXEMPT, "EXTERNAL_BOOK_CROSSED", false, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
         if (!validMarketPrice(input.marketConfig().currentPrice())) {
             return terminalPlan(
-                    input, HALTED, "INVALID_CURRENT_PRICE", true, pressures, executionLimit,
+                    input, ERROR, "INVALID_CURRENT_PRICE", false, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
@@ -347,13 +353,13 @@ class LiquidityProviderQuotePlanner {
                 .reduce(0L, this::saturatingAdd);
         if (input.executions().grossQuantity() >= executionLimit) {
             return terminalPlan(
-                    input, HALTED, "EXECUTION_LIMIT_REACHED", true, pressures, executionLimit,
+                    input, EXEMPT, "EXECUTION_LIMIT_REACHED", false, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }
         if (saturatingAdd(input.executions().grossQuantity(), openQuantity) > executionLimit) {
             return terminalPlan(
-                    input, HALTED, "OPEN_EXPOSURE_OVER_EXECUTION_LIMIT", true, pressures, executionLimit,
+                    input, EXEMPT, "OPEN_EXPOSURE_OVER_EXECUTION_LIMIT", false, pressures, executionLimit,
                     submissionLimit, unrealizedProfit, netAssets, allOpenOrders
             );
         }

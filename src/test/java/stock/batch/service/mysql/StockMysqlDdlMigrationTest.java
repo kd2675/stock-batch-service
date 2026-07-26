@@ -795,6 +795,275 @@ class StockMysqlDdlMigrationTest {
     }
 
     @Test
+    void legacyUnderwritingHistoryBackfill_reappliesWithoutChangingAssetsOrHotLedgers()
+            throws IOException {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                MYSQL.getJdbcUrl(),
+                MYSQL.getUsername(),
+                MYSQL.getPassword()
+        );
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+        resetToCanonicalSchema(dataSource, jdbcTemplate);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 7, 1, 9, 0);
+        LocalDate effectiveDate = LocalDate.of(2027, 1, 30);
+        LocalDateTime retiredAt = LocalDateTime.of(2027, 1, 31, 13, 7);
+
+        jdbcTemplate.update(
+                """
+                insert into stock_simulation_clock(
+                    clock_id, base_simulation_date,
+                    real_seconds_per_simulation_day,
+                    accumulated_real_seconds, running,
+                    last_started_at, last_heartbeat_at, timezone,
+                    created_at, updated_at
+                ) values (
+                    'DEFAULT', '2026-07-03', 7200, 0, false,
+                    null, ?, 'Asia/Seoul', ?, ?
+                )
+                """,
+                retiredAt,
+                createdAt,
+                retiredAt
+        );
+        long issueUnderwriterParticipantId = jdbcTemplate.queryForObject(
+                """
+                select id
+                  from stock_market_participant
+                 where participant_code = 'DEFAULT_ISSUE_UNDERWRITER'
+                """,
+                Long.class
+        );
+        long liquidityParticipantId = jdbcTemplate.queryForObject(
+                """
+                select id
+                  from stock_market_participant
+                 where participant_code = 'DEFAULT_LIQUIDITY_PROVIDER'
+                """,
+                Long.class
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(
+                    symbol, name, market, initial_price,
+                    issued_shares, tradable_shares, tick_size,
+                    price_limit_rate, enabled, created_at, updated_at
+                ) values (
+                    'LEGACY001', '레거시 상장 종목', 'ORDERBOOK', 1000,
+                    1000, 1000, 1, 30, true, ?, ?
+                )
+                """,
+                createdAt,
+                createdAt
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_account(
+                    id, user_key, account_code, status,
+                    participant_category, self_trade_group_id,
+                    cash_balance, created_at, updated_at
+                ) values
+                    (201, 'stock-listing-legacy001', null, 'CLOSED',
+                     'LISTING_UNDERWRITER', null, 0, ?, ?),
+                    (202, 'stock-liquidity-legacy001', 'LP-LEGACY001', 'ACTIVE',
+                     'LIQUIDITY_PROVIDER', 'LIQUIDITY_PROVIDER:DEFAULT',
+                     100000, ?, ?)
+                """,
+                createdAt,
+                retiredAt,
+                createdAt,
+                retiredAt
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity,
+                    average_price, updated_at
+                ) values
+                    (201, 'LEGACY001', 0, 0, 1000, ?),
+                    (202, 'LEGACY001', 1000, 0, 1000, ?)
+                """,
+                retiredAt,
+                retiredAt
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_liquidity_mandate(
+                    id, participant_id, account_id, symbol, mandate_code,
+                    execution_mode, status, contract_start_date,
+                    max_order_quantity, reference_daily_volume,
+                    target_inventory_quantity, inventory_band_quantity,
+                    daily_loss_limit_amount, next_quote_at, policy_version,
+                    created_at, updated_at
+                ) values (
+                    301, ?, 202, 'LEGACY001', 'LP-SCALED:LEGACY001',
+                    'LIVE', 'SUSPENDED', ?, 10, 1000,
+                    1000, 100, 10000, ?, 1, ?, ?
+                )
+                """,
+                liquidityParticipantId,
+                effectiveDate,
+                retiredAt,
+                createdAt,
+                retiredAt
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_liquidity_transition(
+                    transition_key, symbol, mandate_id, participant_id,
+                    liquidity_account_id, source_account_id, legacy_account_id,
+                    stage, reference_daily_volume,
+                    seed_inventory_quantity, seed_cash_amount,
+                    transferred_inventory_quantity, transferred_cash_amount,
+                    effective_business_date, legacy_disabled_at,
+                    legacy_retired_at, activated_at,
+                    requested_by, change_reason, policy_version,
+                    created_at, updated_at
+                ) values (
+                    'LP-TRANSITION:LEGACY001', 'LEGACY001', 301, ?,
+                    202, 201, 201, 'SUSPENDED', 1000,
+                    10, 10000, 1000, 100000,
+                    ?, ?, ?, ?,
+                    'migration-test', 'retired legacy liquidity', 1,
+                    ?, ?
+                )
+                """,
+                liquidityParticipantId,
+                effectiveDate,
+                retiredAt.minusDays(1),
+                retiredAt,
+                retiredAt.minusDays(1),
+                createdAt,
+                retiredAt
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order(
+                    id, client_order_id, account_id, symbol, market_type,
+                    side, order_type, status, limit_price, quantity,
+                    filled_quantity, average_fill_price, reserved_cash,
+                    created_at, updated_at
+                ) values (
+                    401, 'legacy-history-order', 201, 'LEGACY001',
+                    'ORDER_BOOK', 'SELL', 'LIMIT', 'FILLED', 1000, 1,
+                    1, 1000, 0, ?, ?
+                )
+                """,
+                createdAt.plusMinutes(1),
+                createdAt.plusMinutes(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_execution(
+                    id, order_id, account_id, symbol, side, quantity,
+                    price, gross_amount, fee_amount, tax_amount,
+                    net_amount, source, executed_at
+                ) values (
+                    501, 401, 201, 'LEGACY001', 'SELL', 1,
+                    1000, 1000, 0, 0, 1000,
+                    'INTERNAL_ORDER_BOOK', ?
+                )
+                """,
+                createdAt.plusMinutes(1)
+        );
+
+        Path migration = ddlPath(
+                "stock_legacy_underwriting_history_backfill.sql"
+        );
+        executeDelimiterScript(jdbcTemplate, migration);
+        executeDelimiterScript(jdbcTemplate, migration);
+
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select account_code, status, participant_category,
+                       self_trade_group_id, cash_balance
+                  from stock_account
+                 where id = 201
+                """
+        )).containsEntry("account_code", "UW-LEGACY001")
+                .containsEntry("status", "CLOSED")
+                .containsEntry("participant_category", "ISSUE_UNDERWRITER")
+                .containsEntry(
+                        "self_trade_group_id",
+                        "ISSUE_UNDERWRITER:DEFAULT"
+                )
+                .containsEntry("cash_balance", new BigDecimal("0.00"));
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select participant_id, account_role, desk_code,
+                       cast(effective_from as char) as effective_from,
+                       cast(effective_to as char) as effective_to,
+                       status
+                  from stock_market_participant_account
+                 where account_id = 201
+                """
+        )).containsEntry("participant_id", issueUnderwriterParticipantId)
+                .containsEntry("account_role", "ISSUE_UNDERWRITER")
+                .containsEntry("desk_code", "LEGACY001")
+                .containsEntry("effective_from", "2026-07-01")
+                .containsEntry("effective_to", "2027-01-30")
+                .containsEntry("status", "CLOSED");
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select contract_code, participant_id, account_id,
+                       total_issue_quantity, tradable_allocation_quantity,
+                       locked_allocation_quantity, underwritten_quantity,
+                       status
+                  from stock_underwriting_contract
+                 where symbol = 'LEGACY001'
+                """
+        )).containsEntry("contract_code", "INITIAL-ISSUE:LEGACY001")
+                .containsEntry("participant_id", issueUnderwriterParticipantId)
+                .containsEntry("account_id", 201L)
+                .containsEntry("total_issue_quantity", 1000L)
+                .containsEntry("tradable_allocation_quantity", 1000L)
+                .containsEntry("locked_allocation_quantity", 0L)
+                .containsEntry("underwritten_quantity", 1000L)
+                .containsEntry("status", "COMPLETED");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from stock_security_allocation_ledger
+                 where idempotency_key =
+                       'HISTORICAL-INITIAL-ISSUE:LEGACY001:TRADABLE'
+                   and quantity = 1000
+                   and allocation_reason = 'INITIAL_FLOAT_UNDERWRITER'
+                """,
+                Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from stock_market_policy_version
+                 where policy_scope = 'UNDERWRITING_CONTRACT'
+                   and scope_key = 'INITIAL-ISSUE:LEGACY001'
+                   and version_no = 1
+                   and status = 'RETIRED'
+                """,
+                Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "select sum(quantity) from stock_holding where symbol = 'LEGACY001'",
+                Long.class
+        )).isEqualTo(1000L);
+        assertThat(jdbcTemplate.queryForObject(
+                "select cash_balance from stock_account where id = 202",
+                BigDecimal.class
+        )).isEqualByComparingTo("100000.00");
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from stock_order where id = 401",
+                Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from stock_execution where id = 501",
+                Integer.class
+        )).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from stock_underwriting_contract",
+                Integer.class
+        )).isEqualTo(1);
+    }
+
+    @Test
     void accountParticipantCategoryAlter_backfillsThreeRolesAndReappliesWithoutHotLedgerChanges()
             throws IOException {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(

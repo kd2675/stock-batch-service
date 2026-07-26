@@ -410,7 +410,8 @@ class LiquidityProviderRepository {
                        submitted_buy_amount, submitted_sell_amount,
                        cancelled_buy_quantity, cancelled_sell_quantity,
                        opening_net_asset_value,
-                       quote_run_count, limit_breached, policy_version, version
+                       quote_run_count, gate_reason, limit_breached,
+                       policy_version, version
                   from stock_liquidity_daily_state
                  where simulation_trade_date = :simulationTradeDate
                    and mandate_id = :mandateId
@@ -434,6 +435,7 @@ class LiquidityProviderRepository {
                         rs.getLong("cancelled_sell_quantity"),
                         money(rs.getBigDecimal("opening_net_asset_value")),
                         rs.getLong("quote_run_count"),
+                        rs.getString("gate_reason"),
                         rs.getBoolean("limit_breached"),
                         rs.getLong("policy_version"),
                         rs.getLong("version")

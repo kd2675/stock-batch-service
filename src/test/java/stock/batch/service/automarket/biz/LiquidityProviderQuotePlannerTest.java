@@ -174,7 +174,7 @@ class LiquidityProviderQuotePlannerTest {
     }
 
     @Test
-    void plan_openOrdersCountAsWorstCaseExecutionAndHardHaltBeforeCapCanBeExceeded() {
+    void plan_openOrdersCountAsWorstCaseExecution_pausesAndCancelsBeforeCapCanBeExceeded() {
         AutoOrder buy = openOrder(
                 100L,
                 "BUY",
@@ -203,11 +203,89 @@ class LiquidityProviderQuotePlannerTest {
                 true
         ));
 
-        assertThat(plan.stateStatus()).isEqualTo("HALTED");
+        assertThat(plan.stateStatus()).isEqualTo("EXEMPT");
         assertThat(plan.gateReason()).isEqualTo("OPEN_EXPOSURE_OVER_EXECUTION_LIMIT");
-        assertThat(plan.limitBreached()).isTrue();
+        assertThat(plan.limitBreached()).isFalse();
         assertThat(plan.cancellationOrders()).containsExactly(buy);
         assertThat(plan.executableOrders()).isEmpty();
+    }
+
+    @Test
+    void plan_crossedExternalBook_waitsForNextCycleWithoutPoisoningTradingDay() {
+        AutoOrder existing = openOrder(
+                100L,
+                "BUY",
+                new BigDecimal("9900.00"),
+                50L,
+                NOW.minusSeconds(60)
+        );
+        LiquidityProviderAccountSnapshot account = account(
+                1_000L,
+                BigDecimal.valueOf(100L)
+        );
+        LiquidityProviderQuotePlan crossed = planner.plan(input(
+                mandate("LIVE"),
+                account,
+                LiquidityProviderExecutionSnapshot.EMPTY,
+                establishedDailyState(account, List.of(existing)),
+                new LiquidityProviderExternalBook(
+                        new BigDecimal("10100.00"),
+                        new BigDecimal("10000.00"),
+                        10_000L,
+                        10_000L
+                ),
+                List.of(existing),
+                AutoMarketPressure.NEUTRAL,
+                AutoMarketPressure.NEUTRAL,
+                true
+        ));
+
+        assertThat(crossed.stateStatus()).isEqualTo("EXEMPT");
+        assertThat(crossed.gateReason()).isEqualTo("EXTERNAL_BOOK_CROSSED");
+        assertThat(crossed.limitBreached()).isFalse();
+        assertThat(crossed.cancellationOrders()).containsExactly(existing);
+
+        LiquidityProviderQuotePlan recovered = planner.plan(input(
+                mandate("LIVE"),
+                account,
+                LiquidityProviderExecutionSnapshot.EMPTY,
+                dailyState("20000000.00", false, 1L, "EXTERNAL_BOOK_CROSSED"),
+                deepExternalBook(),
+                List.of(),
+                AutoMarketPressure.NEUTRAL,
+                AutoMarketPressure.NEUTRAL,
+                true
+        ));
+
+        assertThat(recovered.stateStatus()).isEqualTo("QUOTING");
+        assertThat(recovered.executableOrders()).hasSize(2);
+    }
+
+    @Test
+    void plan_executionLimitReached_waitsWithoutMarkingHardBreach() {
+        LiquidityProviderExecutionSnapshot executions = new LiquidityProviderExecutionSnapshot(
+                1_000L,
+                0L,
+                new BigDecimal("10000000.00"),
+                BigDecimal.ZERO.setScale(2),
+                BigDecimal.ZERO.setScale(2)
+        );
+
+        LiquidityProviderQuotePlan plan = planner.plan(input(
+                mandate("LIVE"),
+                account(1_000L, BigDecimal.valueOf(100L)),
+                executions,
+                dailyState("20000000.00", false, 1L),
+                deepExternalBook(),
+                List.of(),
+                AutoMarketPressure.NEUTRAL,
+                AutoMarketPressure.NEUTRAL,
+                true
+        ));
+
+        assertThat(plan.stateStatus()).isEqualTo("EXEMPT");
+        assertThat(plan.gateReason()).isEqualTo("EXECUTION_LIMIT_REACHED");
+        assertThat(plan.limitBreached()).isFalse();
     }
 
     @Test
@@ -401,7 +479,7 @@ class LiquidityProviderQuotePlannerTest {
                 mandate("LIVE"),
                 account(1_000L, BigDecimal.valueOf(100L)),
                 LiquidityProviderExecutionSnapshot.EMPTY,
-                dailyState("22000000.00", true, 1L),
+                dailyState("22000000.00", true, 1L, "LOSS_LIMIT_REACHED"),
                 deepExternalBook(),
                 List.of(),
                 AutoMarketPressure.NEUTRAL,
@@ -410,7 +488,7 @@ class LiquidityProviderQuotePlannerTest {
         ));
 
         assertThat(plan.stateStatus()).isEqualTo("HALTED");
-        assertThat(plan.gateReason()).isEqualTo("PREVIOUS_HARD_LIMIT_BREACH");
+        assertThat(plan.gateReason()).isEqualTo("LOSS_LIMIT_REACHED");
         assertThat(plan.limitBreached()).isTrue();
     }
 
@@ -623,6 +701,15 @@ class LiquidityProviderQuotePlannerTest {
             boolean limitBreached,
             long policyVersion
     ) {
+        return dailyState(amount, limitBreached, policyVersion, null);
+    }
+
+    private LiquidityProviderDailyState dailyState(
+            String amount,
+            boolean limitBreached,
+            long policyVersion,
+            String gateReason
+    ) {
         return new LiquidityProviderDailyState(
                 true,
                 TRADE_DATE,
@@ -638,6 +725,7 @@ class LiquidityProviderQuotePlannerTest {
                 0L,
                 new BigDecimal(amount),
                 1L,
+                gateReason,
                 limitBreached,
                 policyVersion,
                 0L
@@ -689,6 +777,7 @@ class LiquidityProviderQuotePlannerTest {
                 0L,
                 openingNetAssetValue,
                 1L,
+                "WITHIN_LIMITS",
                 false,
                 1L,
                 0L

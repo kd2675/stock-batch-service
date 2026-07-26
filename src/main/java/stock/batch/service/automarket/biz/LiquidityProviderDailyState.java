@@ -18,6 +18,7 @@ record LiquidityProviderDailyState(
         long cancelledSellQuantity,
         BigDecimal openingNetAssetValue,
         long quoteRunCount,
+        String gateReason,
         boolean limitBreached,
         long policyVersion,
         long version
@@ -39,6 +40,7 @@ record LiquidityProviderDailyState(
                 0L,
                 BigDecimal.ZERO.setScale(2),
                 0L,
+                null,
                 false,
                 0L,
                 0L

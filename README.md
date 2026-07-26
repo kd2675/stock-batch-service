@@ -112,7 +112,7 @@ scripts/stock-gateway-h2-smoke.sh
 - Batch metadata Hikari 풀은 local/dev 기본 12개이며 prod는 `STOCK_BATCH_DB_URL`, `STOCK_BATCH_DB_USERNAME`, `STOCK_BATCH_DB_PASSWORD`, `STOCK_BATCH_DB_MAX_POOL_SIZE` 계열 환경 변수로 조정합니다.
 - 배치 업무 SQL은 `stock.batch.jdbc.query-timeout-seconds`로 statement query timeout을 적용합니다. 기본값은 30초이며 `STOCK_BATCH_JDBC_QUERY_TIMEOUT_SECONDS`로 조정합니다.
 - DDL은 schema와 제약만 생성합니다. 기본 종목, 최초 가격, 자동 참여자는 seed하지 않으며 관리자 API 또는 smoke/test 데이터에서 명시적으로 등록합니다.
-- 축소시장 역할 재구성 ALTER의 기준 파일과 적용 순서는 stock-back README를 따릅니다. batch에 둔 역할 ALTER 사본은 배포 전에 canonical 사본과 byte 단위로 같아야 합니다. 기존 자동유동성 계좌의 전량 이전과 레거시 테이블 삭제는 운영 원장 소유자인 stock-back의 `stock_legacy_liquidity_retirement_alter.sql`만 적용하며 batch 사본을 두지 않습니다. 역할 스키마 readiness와 레거시 테이블 부재 검사가 모두 통과하기 전에는 기관 LIVE, LP LIVE, 인수기관 공급 job을 켜지 않습니다.
+- 축소시장 역할 재구성 ALTER의 기준 파일과 적용 순서는 stock-back README를 따릅니다. batch에 둔 역할 ALTER 사본은 배포 전에 canonical 사본과 byte 단위로 같아야 합니다. 기존 자동유동성 계좌의 전량 이전·레거시 테이블 삭제와 완료된 과거 인수 이력 복원은 운영 원장 소유자인 stock-back의 `stock_legacy_liquidity_retirement_alter.sql`, `stock_legacy_underwriting_history_backfill.sql`만 순서대로 적용하며 batch 사본을 두지 않습니다. 두 파일 모두 서비스와 시뮬레이션 시계가 정지된 유지보수 창에서 실행합니다. 역할 스키마 readiness와 레거시 테이블 부재 검사가 모두 통과하기 전에는 기관 LIVE, LP LIVE, 인수기관 공급 job을 켜지 않습니다.
 - EOD 정방향 ALTER는 stock-back canonical 사본과 byte 단위로 맞추고, stock-back과 stock-batch가 모두 종료된 유지보수 창에서만 실행합니다.
 - 구버전 애플리케이션 호환용 rollback ALTER는 제공하지 않습니다. 적용 오류는 마지막 성공 지점을 확인한 뒤 멱등 정방향 ALTER로 보정하며, 정확한 이전 스키마와 데이터가 필요할 때만 적용 전 schema·영향 테이블 dump를 복원합니다.
 - Redis key: `stock:price:{symbol}`. 값은 현재 단일 가격 문자열이며 `stock-back-service` 시장 가격 API가 우선 조회합니다. TTL 기본값은 60초이며 `STOCK_PRICE_CACHE_TTL_SECONDS`로 조정합니다.

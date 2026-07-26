@@ -169,6 +169,37 @@ class LiquidityProviderQuoteProcessorIntegrationTest {
     }
 
     @Test
+    void process_previousHardStop_preservesOriginalGateReasonAcrossQuoteRuns() {
+        seedMandate("LIVE");
+        seedExternalDepth("OTHER:ONE", 10_000L);
+        process(NOW);
+        jdbcTemplate.update(
+                """
+                update stock_liquidity_daily_state
+                   set state_status = 'HALTED',
+                       gate_reason = 'LOSS_LIMIT_REACHED',
+                       limit_breached = true
+                 where simulation_trade_date = date '2027-01-27'
+                   and mandate_id = 1
+                """
+        );
+
+        LiquidityProviderQuoteProcessor.ProcessResult result = process(NOW.plusSeconds(30));
+
+        assertThat(result.generatedOrderCount()).isZero();
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select state_status, gate_reason, limit_breached
+                  from stock_liquidity_daily_state
+                 where simulation_trade_date = date '2027-01-27'
+                   and mandate_id = 1
+                """
+        )).containsEntry("state_status", "HALTED")
+                .containsEntry("gate_reason", "LOSS_LIMIT_REACHED")
+                .containsEntry("limit_breached", true);
+    }
+
+    @Test
     void process_suspendedMandateCancelsAndReleasesEveryLiveQuote() {
         seedMandate("LIVE");
         seedExternalDepth("OTHER:ONE", 10_000L);
