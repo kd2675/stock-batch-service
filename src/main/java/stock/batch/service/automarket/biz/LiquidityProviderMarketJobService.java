@@ -40,6 +40,8 @@ public class LiquidityProviderMarketJobService {
     private final AutoMarketDailyRegimeService dailyRegimeService;
     private final LiquidityProviderRepository repository;
     private final LiquidityProviderQuoteProcessor quoteProcessor;
+    private final LiquidityProviderScheduledPolicyActivationService
+            scheduledPolicyActivationService;
     private final SimulationClockService simulationClockService;
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final TransactionTemplate transactionTemplate;
@@ -55,6 +57,8 @@ public class LiquidityProviderMarketJobService {
 
     @Value("${stock.batch.liquidity-provider-market.mandate-limit-per-run:100}")
     private int mandateLimitPerRun = 100;
+
+    private volatile LocalDate policyActivationCheckedDate;
 
     @PostConstruct
     void validateConfiguration() {
@@ -90,6 +94,7 @@ public class LiquidityProviderMarketJobService {
         }
         LocalDateTime now = clock.simulationDateTime();
         LocalDate simulationTradeDate = now.toLocalDate();
+        activateScheduledPoliciesOncePerBusinessDate(simulationTradeDate, now);
         Map<String, AutoMarketConfig> activeConfigs = activeConfigsBySymbol(
                 simulationTradeDate,
                 now
@@ -137,6 +142,17 @@ public class LiquidityProviderMarketJobService {
                 elapsedMillis(startedNanos)
         );
         return totals.processedMandates();
+    }
+
+    private synchronized void activateScheduledPoliciesOncePerBusinessDate(
+            LocalDate simulationTradeDate,
+            LocalDateTime now
+    ) {
+        if (simulationTradeDate.equals(policyActivationCheckedDate)) {
+            return;
+        }
+        scheduledPolicyActivationService.activateDuePolicies(simulationTradeDate, now);
+        policyActivationCheckedDate = simulationTradeDate;
     }
 
     private Map<String, AutoMarketConfig> activeConfigsBySymbol(
