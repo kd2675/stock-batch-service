@@ -2,6 +2,7 @@ package stock.batch.service.automarket.biz;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -26,6 +27,7 @@ class InstitutionPortfolioProcessorTest {
     private JdbcTemplate jdbcTemplate;
     private TransactionTemplate transactionTemplate;
     private InstitutionPortfolioProcessor processor;
+    private InstitutionPortfolioRepository repository;
 
     @BeforeEach
     void setUp() {
@@ -39,13 +41,29 @@ class InstitutionPortfolioProcessorTest {
         new ResourceDatabasePopulator(new ClassPathResource("db/ddl/stock_h2.sql")).execute(dataSource);
         jdbcTemplate = new JdbcTemplate(dataSource);
         transactionTemplate = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        InstitutionPortfolioRepository repository =
-                new InstitutionPortfolioRepository(jdbcTemplate);
+        repository = new InstitutionPortfolioRepository(jdbcTemplate);
         processor = new InstitutionPortfolioProcessor(
                 repository,
                 new InstitutionPortfolioPlanner()
         );
         seedPortfolio();
+    }
+
+    @Test
+    void findDuePortfolioIds_nextOpeningBoundary_excludesBeforeAndIncludesAtOpening() {
+        LocalDateTime nextOpening = LocalDateTime.of(2027, 1, 28, 6, 0);
+        jdbcTemplate.update(
+                "update stock_institution_portfolio set next_decision_at = ? where id = 700",
+                nextOpening
+        );
+
+        assertThat(List.of(
+                repository.findDuePortfolioIds(nextOpening.minusNanos(1), 20),
+                repository.findDuePortfolioIds(nextOpening, 20)
+        )).containsExactly(
+                List.of(),
+                List.of(700L)
+        );
     }
 
     @Test
