@@ -266,6 +266,43 @@ class InstitutionPortfolioPlannerTest {
     }
 
     @Test
+    void plan_styleSpecificTurnoverLimits_applyDifferentDecisionAmounts() {
+        InstitutionSymbolMandate mandate =
+                mandate("DEMO001", "1.000000", "0.000000", "1.000000", 1_000_000L);
+        InstitutionMarketInput market =
+                market("DEMO001", "100.00", AutoMarketPressure.NEUTRAL);
+
+        BigDecimal balancedAmount = planner.plan(
+                stylePolicy("BALANCED_LONG_TERM", "0.005000", "0.001000", 120),
+                List.of(mandate),
+                Map.of("DEMO001", market),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                new BigDecimal("1000000.00"),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO
+        ).items().getFirst().gatedTradeAmount();
+        BigDecimal activeAmount = planner.plan(
+                stylePolicy("ACTIVE_SHORT_TERM", "0.020000", "0.004000", 30),
+                List.of(mandate),
+                Map.of("DEMO001", market),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                new BigDecimal("1000000.00"),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO
+        ).items().getFirst().gatedTradeAmount();
+
+        assertThat(List.of(balancedAmount, activeAmount))
+                .containsExactly(
+                        new BigDecimal("1000.00"),
+                        new BigDecimal("4000.00")
+                );
+    }
+
+    @Test
     void plan_policyVersionChangesAfterBudgetCreation_rejectsDecision() {
         InstitutionDailyBudgetSnapshot oldBudget = new InstitutionDailyBudgetSnapshot(
                 1_000L,
@@ -317,6 +354,35 @@ class InstitutionPortfolioPlannerTest {
                 new BigDecimal(dailyTurnover),
                 new BigDecimal(decisionTurnover),
                 60,
+                1L
+        );
+    }
+
+    private InstitutionPortfolioPolicy stylePolicy(
+            String investmentStyle,
+            String dailyTurnover,
+            String decisionTurnover,
+            int decisionIntervalMinutes
+    ) {
+        return new InstitutionPortfolioPolicy(
+                1L,
+                1L,
+                1L,
+                "PENSION",
+                "Pension",
+                investmentStyle,
+                "LIVE",
+                new BigDecimal("0.600000"),
+                new BigDecimal("0.300000"),
+                new BigDecimal("0.800000"),
+                new BigDecimal("0.700000"),
+                new BigDecimal("0.020000"),
+                new BigDecimal("0.020000"),
+                new BigDecimal("0.005000"),
+                new BigDecimal("0.002000"),
+                new BigDecimal(dailyTurnover),
+                new BigDecimal(decisionTurnover),
+                decisionIntervalMinutes,
                 1L
         );
     }

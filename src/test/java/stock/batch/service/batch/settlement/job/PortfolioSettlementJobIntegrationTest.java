@@ -349,10 +349,10 @@ class PortfolioSettlementJobIntegrationTest {
     }
 
     @Test
-    void settleToday_listingSupplyAccount_isExcludedFromSnapshots() {
-        insertAccount("stock-listing-zq001", "1.00", "1.00");
+    void settleToday_issueUnderwriterAccount_isExcludedFromSnapshots() {
+        insertAccount("stock-underwriter-zq001", "1.00", "1.00");
         jdbcTemplate.update(
-                "update stock_account set participant_category = 'LISTING_UNDERWRITER' where user_key = 'stock-listing-zq001'"
+                "update stock_account set participant_category = 'ISSUE_UNDERWRITER' where user_key = 'stock-underwriter-zq001'"
         );
 
         int settledCount = freezeAndSettle();

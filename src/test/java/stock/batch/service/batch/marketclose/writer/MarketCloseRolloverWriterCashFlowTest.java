@@ -186,15 +186,13 @@ class MarketCloseRolloverWriterCashFlowTest {
         insertAccount(4L, "user-d", "4000.00");
         insertAccount(5L, "user-e", "5000.00");
         insertAccount(6L, "user-f", "6000.00");
-        insertAccount(7L, "user-g", "7000.00");
         String[] categories = {
                 "MANUAL_PARTICIPANT",
                 "AUTO_PARTICIPANT",
                 "INSTITUTIONAL_INVESTOR",
                 "LIQUIDITY_PROVIDER",
                 "ISSUE_UNDERWRITER",
-                "SYSTEM_CUSTODY",
-                "LISTING_UNDERWRITER"
+                "SYSTEM_CUSTODY"
         };
         for (int index = 0; index < categories.length; index++) {
             jdbcTemplate.update(
@@ -211,7 +209,7 @@ class MarketCloseRolloverWriterCashFlowTest {
                 null,
                 0L,
                 0L,
-                List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L)
+                List.of(1L, 2L, 3L, 4L, 5L, 6L)
         );
 
         assertThat(jdbcTemplate.queryForList(
@@ -229,8 +227,7 @@ class MarketCloseRolloverWriterCashFlowTest {
                 org.assertj.core.groups.Tuple.tuple("INSTITUTIONAL_INVESTOR", true),
                 org.assertj.core.groups.Tuple.tuple("LIQUIDITY_PROVIDER", false),
                 org.assertj.core.groups.Tuple.tuple("ISSUE_UNDERWRITER", false),
-                org.assertj.core.groups.Tuple.tuple("SYSTEM_CUSTODY", false),
-                org.assertj.core.groups.Tuple.tuple("LISTING_UNDERWRITER", false)
+                org.assertj.core.groups.Tuple.tuple("SYSTEM_CUSTODY", false)
         );
     }
 

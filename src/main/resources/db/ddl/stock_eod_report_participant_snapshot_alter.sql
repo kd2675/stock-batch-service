@@ -24,7 +24,7 @@ DEALLOCATE PREPARE stock_eod_report_participant_statement;
 -- always write the category atomically with the account snapshot.
 UPDATE stock_close_account_snapshot snapshot
    SET participant_category = CASE
-         WHEN snapshot.user_key LIKE 'stock-listing-%' THEN 'LISTING_UNDERWRITER'
+         WHEN snapshot.user_key LIKE 'stock-listing-%' THEN 'ISSUE_UNDERWRITER'
          WHEN EXISTS (
               SELECT 1
                 FROM stock_auto_participant participant
@@ -53,7 +53,7 @@ DEALLOCATE PREPARE stock_eod_report_participant_statement;
 SET @stock_eod_report_participant_sql = (
   SELECT CASE
            WHEN COUNT(*) = 0 THEN
-             'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (CASE `participant_category` WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''LISTING_UNDERWRITER'' THEN 1 ELSE 0 END = 1)'
+             'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (CASE `participant_category` WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 ELSE 0 END = 1)'
            ELSE 'SELECT 1'
          END
     FROM information_schema.table_constraints

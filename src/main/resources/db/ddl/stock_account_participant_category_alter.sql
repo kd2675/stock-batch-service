@@ -19,7 +19,7 @@ DEALLOCATE PREPARE stock_account_participant_category_statement;
 
 UPDATE stock_account account
    SET participant_category = CASE
-         WHEN account.user_key LIKE 'stock-listing-%' THEN 'LISTING_UNDERWRITER'
+         WHEN account.user_key LIKE 'stock-listing-%' THEN 'ISSUE_UNDERWRITER'
          WHEN EXISTS (
               SELECT 1
                 FROM stock_auto_participant participant
@@ -48,7 +48,7 @@ DEALLOCATE PREPARE stock_account_participant_category_statement;
 SET @stock_account_participant_category_sql = (
   SELECT CASE
            WHEN COUNT(*) = 0 THEN
-             'ALTER TABLE stock_account ADD CONSTRAINT chk_stock_account_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''LISTING_UNDERWRITER'' THEN 1 ELSE 0 END = 1)'
+             'ALTER TABLE stock_account ADD CONSTRAINT chk_stock_account_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 ELSE 0 END = 1)'
            ELSE 'SELECT 1'
          END
     FROM information_schema.table_constraints

@@ -67,6 +67,7 @@ class StockMysqlDdlMigrationTest {
             "stock_underwriter_scaled_supply_alter.sql",
             "stock_liquidity_transition_alter.sql",
             "stock_liquidity_live_only_alter.sql",
+            "stock_obsolete_participant_role_cleanup_alter.sql",
             "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"
     );
@@ -862,8 +863,8 @@ class StockMysqlDdlMigrationTest {
                     participant_category, self_trade_group_id,
                     cash_balance, created_at, updated_at
                 ) values
-                    (201, 'stock-listing-legacy001', null, 'CLOSED',
-                     'LISTING_UNDERWRITER', null, 0, ?, ?),
+                    (201, 'stock-underwriter-history001', null, 'CLOSED',
+                     'ISSUE_UNDERWRITER', null, 0, ?, ?),
                     (202, 'stock-liquidity-legacy001', 'LP-LEGACY001', 'ACTIVE',
                      'LIQUIDITY_PROVIDER', 'LIQUIDITY_PROVIDER:DEFAULT',
                      100000, ?, ?)
@@ -1110,7 +1111,7 @@ class StockMysqlDdlMigrationTest {
         assertThat(jdbcTemplate.queryForObject(
                 "select participant_category from stock_account where id = 9903",
                 String.class
-        )).isEqualTo("LISTING_UNDERWRITER");
+        )).isEqualTo("ISSUE_UNDERWRITER");
         assertThat(indexNamedCount(
                 jdbcTemplate,
                 "stock_account",
@@ -1764,7 +1765,7 @@ class StockMysqlDdlMigrationTest {
                   from stock_close_account_snapshot
                  where close_cycle_id = 8001
                    and account_id = 8001
-                   and participant_category = 'LISTING_UNDERWRITER'
+                   and participant_category = 'ISSUE_UNDERWRITER'
                 """
         )).isEqualTo(1);
         assertThat(columnCount(jdbcTemplate, "stock_batch_job_signal", "claim_token")).isEqualTo(1);

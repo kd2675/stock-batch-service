@@ -1123,7 +1123,7 @@ schedule lease claim도 후보 참여자 수만큼 원격 UPDATE를 반복하지
 - 장마감 이외 fence exclusive-lock 대기 0건
 - 주문·체결 TPS가 기준 부하 대비 95% 미만으로 하락하면 cut-over 금지
 
-종목별 LP는 `stock_liquidity_mandate` 한 건과 전용 계좌·일일 상태를 읽고, 외부 호가 깊이·재고 밴드·일일 제출/체결/손실 한도를 모두 적용합니다. 한 종목 transaction은 Redis symbol lock 안에서 bounded 후보와 주문 batch만 처리합니다. 레거시 상장주관사 자동 유동성 job과 설정 테이블은 제거됐으며, 과거 origin·종료 계좌·체결만 감사 이력으로 보존합니다.
+종목별 LP는 `stock_liquidity_mandate` 한 건과 전용 계좌·일일 상태를 읽고, 외부 호가 깊이·재고 밴드·일일 제출/체결/손실 한도를 모두 적용합니다. 한 종목 transaction은 Redis symbol lock 안에서 bounded 후보와 주문 batch만 처리합니다. 레거시 자동 유동성 job과 설정 테이블은 제거됐으며, 과거 origin·종료 계좌·체결만 감사 이력으로 보존합니다.
 
 LP 승인 지표는 다음과 같습니다.
 

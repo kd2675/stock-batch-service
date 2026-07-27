@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.sql.DataSource;
@@ -36,12 +38,15 @@ import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 @Slf4j
 public class StockSchemaReadinessValidator implements SmartInitializingSingleton {
 
+    private static final Pattern CHECK_LITERAL_PATTERN =
+            Pattern.compile("'((?:''|[^'])*)'");
     private static final Set<String> AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS =
             Arrays.stream(AutoParticipantProfileType.values())
                     .map(profileType -> profileType.name().toLowerCase(Locale.ROOT))
                     .collect(Collectors.toUnmodifiableSet());
     private static final Map<String, Set<String>> FORBIDDEN_LEGACY_COLUMNS = Map.of(
-            "stock_auto_participant", Set.of("behavior_evaluation_mode", "behavior_model_version")
+            "stock_auto_participant", Set.of("behavior_evaluation_mode", "behavior_model_version"),
+            "stock_auto_participant_share_return", Set.of("underwriter_account_id")
     );
     private static final Set<String> FORBIDDEN_LEGACY_TABLES = Set.of(
             "stock_auto_profile_decision_day_summary",
@@ -219,7 +224,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
     );
     private static final Map<String, Set<String>> REQUIRED_CHECK_TOKENS = Map.ofEntries(
             Map.entry("chk_stock_account_participant_category", Set.of(
-                    "manual_participant", "auto_participant", "listing_underwriter",
+                    "manual_participant", "auto_participant",
                     "institutional_investor", "liquidity_provider", "issue_underwriter", "system_custody"
             )),
             Map.entry("chk_stock_account_self_trade_group", Set.of("self_trade_group_id")),
@@ -394,6 +399,30 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             )),
             Map.entry("chk_stock_post_close_cycle_eod_contract", Set.of("eod_contract_version")),
             Map.entry("chk_stock_post_close_phase_attempt_eod_contract", Set.of("eod_contract_version"))
+    );
+    private static final Map<String, Set<String>> REQUIRED_EXACT_CHECK_LITERALS = Map.ofEntries(
+            Map.entry("chk_stock_account_participant_category", Set.of(
+                    "manual_participant", "auto_participant", "institutional_investor",
+                    "liquidity_provider", "issue_underwriter", "system_custody"
+            )),
+            Map.entry("chk_stock_close_account_snapshot_participant_category", Set.of(
+                    "manual_participant", "auto_participant", "institutional_investor",
+                    "liquidity_provider", "issue_underwriter", "system_custody"
+            )),
+            Map.entry("chk_stock_execution_daily_account_category", Set.of(
+                    "manual_participant", "auto_participant", "institutional_investor",
+                    "liquidity_provider", "issue_underwriter", "system_custody"
+            )),
+            Map.entry("chk_stock_order_origin_type", Set.of(
+                    "manual_participant", "auto_participant", "institutional_investor",
+                    "liquidity_provider", "issue_underwriter"
+            )),
+            Map.entry("chk_stock_auto_share_return_receiver_role", Set.of(
+                    "issue_underwriter", "system_custody"
+            )),
+            Map.entry("chk_stock_auto_share_return_reason", Set.of(
+                    "issue_underwriter_return", "auto_participant_withdrawal_custody"
+            ))
     );
     private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.ofEntries(
             Map.entry("stock_account_cash_flow", Set.of(
@@ -613,6 +642,17 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     }
                 }
             }
+            for (Map.Entry<String, Set<String>> requirement : REQUIRED_EXACT_CHECK_LITERALS.entrySet()) {
+                String checkClause = checkClauses.get(normalize(requirement.getKey()));
+                if (checkClause == null) {
+                    missing.add(requirement.getKey() + " CHECK constraint");
+                    continue;
+                }
+                Set<String> actualLiterals = extractCheckLiterals(checkClause);
+                if (!actualLiterals.equals(requirement.getValue())) {
+                    missing.add(requirement.getKey() + " exact allowed values");
+                }
+            }
             for (Map.Entry<String, Set<String>> requirement : FORBIDDEN_CHECK_TOKENS.entrySet()) {
                 String checkClause = checkClauses.get(normalize(requirement.getKey()));
                 if (checkClause == null) {
@@ -729,6 +769,15 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             }
         }
         return clauses;
+    }
+
+    private Set<String> extractCheckLiterals(String checkClause) {
+        Set<String> literals = new LinkedHashSet<>();
+        Matcher matcher = CHECK_LITERAL_PATTERN.matcher(checkClause);
+        while (matcher.find()) {
+            literals.add(normalize(matcher.group(1).replace("''", "'")));
+        }
+        return literals;
     }
 
     private String normalize(String value) {

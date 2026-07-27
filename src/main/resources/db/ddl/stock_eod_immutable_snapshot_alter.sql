@@ -171,7 +171,6 @@ CREATE TABLE IF NOT EXISTS stock_close_account_snapshot (
     CASE `participant_category`
       WHEN 'MANUAL_PARTICIPANT' THEN 1
       WHEN 'AUTO_PARTICIPANT' THEN 1
-      WHEN 'LISTING_UNDERWRITER' THEN 1
       ELSE 0
     END = 1
   )

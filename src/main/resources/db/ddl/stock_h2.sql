@@ -112,7 +112,6 @@ CREATE TABLE IF NOT EXISTS stock_account (
     CASE `participant_category`
       WHEN 'MANUAL_PARTICIPANT' THEN 1
       WHEN 'AUTO_PARTICIPANT' THEN 1
-      WHEN 'LISTING_UNDERWRITER' THEN 1
       WHEN 'INSTITUTIONAL_INVESTOR' THEN 1
       WHEN 'LIQUIDITY_PROVIDER' THEN 1
       WHEN 'ISSUE_UNDERWRITER' THEN 1
@@ -593,7 +592,7 @@ CREATE TABLE IF NOT EXISTS stock_order (
   CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
   CONSTRAINT chk_stock_order_origin_type CHECK (
     origin_type IS NULL OR origin_type IN (
-      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT', 'LISTING_AUTO_LEGACY',
+      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT',
       'INSTITUTIONAL_INVESTOR', 'LIQUIDITY_PROVIDER', 'ISSUE_UNDERWRITER'
     )
   ),
@@ -981,7 +980,7 @@ CREATE TABLE IF NOT EXISTS stock_close_account_snapshot (
   ),
   CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (
     participant_category IN (
-      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT', 'LISTING_UNDERWRITER',
+      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT',
       'INSTITUTIONAL_INVESTOR', 'LIQUIDITY_PROVIDER',
       'ISSUE_UNDERWRITER', 'SYSTEM_CUSTODY'
     )
@@ -1167,7 +1166,7 @@ CREATE TABLE IF NOT EXISTS stock_execution_daily_account_snapshot (
   CONSTRAINT uk_stock_execution_daily_account_run_symbol_account UNIQUE (close_run_id, symbol, account_id),
   CONSTRAINT chk_stock_execution_daily_account_category CHECK (
     participant_category IN (
-      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT', 'LISTING_UNDERWRITER',
+      'MANUAL_PARTICIPANT', 'AUTO_PARTICIPANT',
       'INSTITUTIONAL_INVESTOR', 'LIQUIDITY_PROVIDER',
       'ISSUE_UNDERWRITER', 'SYSTEM_CUSTODY'
     )
@@ -1299,7 +1298,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_withdrawal_created ON stoc
 CREATE TABLE IF NOT EXISTS stock_auto_participant_share_return (
   withdrawal_id BIGINT NOT NULL,
   symbol VARCHAR(20) NOT NULL,
-  underwriter_account_id BIGINT NOT NULL,
   receiver_account_id BIGINT NOT NULL,
   receiver_role VARCHAR(40) NOT NULL,
   transfer_reason VARCHAR(50) NOT NULL,
@@ -1310,17 +1308,16 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_share_return (
   CONSTRAINT chk_stock_auto_share_return_quantity CHECK (quantity > 0),
   CONSTRAINT chk_stock_auto_share_return_average_price CHECK (source_average_price >= 0),
   CONSTRAINT chk_stock_auto_share_return_receiver_role CHECK (
-    receiver_role IN ('LISTING_UNDERWRITER', 'SYSTEM_CUSTODY')
+    receiver_role IN ('ISSUE_UNDERWRITER', 'SYSTEM_CUSTODY')
   ),
   CONSTRAINT chk_stock_auto_share_return_reason CHECK (
     transfer_reason IN (
-      'LEGACY_UNDERWRITER_RETURN',
+      'ISSUE_UNDERWRITER_RETURN',
       'AUTO_PARTICIPANT_WITHDRAWAL_CUSTODY'
     )
   )
 );
 
-CREATE INDEX IF NOT EXISTS idx_stock_auto_share_return_underwriter ON stock_auto_participant_share_return(underwriter_account_id, symbol, withdrawal_id);
 CREATE INDEX IF NOT EXISTS idx_stock_auto_share_return_receiver ON stock_auto_participant_share_return(receiver_account_id, symbol, withdrawal_id);
 
 INSERT INTO stock_market_participant(

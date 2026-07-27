@@ -92,7 +92,7 @@ native Job 경계는 다음과 같다.
 
 원시 시뮬레이션 시간이 REGULAR로 넘어갔더라도 이전 freeze·정산이 남아 실제 시장이 `CLOSED`이면 prefix 복구를 계속한다. 이는 거래 가능한 장과 무거운 EOD를 겹치는 예외가 아니다. 실제 시장 `OPEN` 여부를 launcher 전에 다시 검사해 하나라도 열려 있으면 즉시 연기하고, 정상 정규장의 10초 판정은 cycle/business-state 제어 인덱스만 읽으며 주문·체결 원장을 조회하거나 DB write transaction을 만들지 않는다.
 
-주문 체결, 자동 주문 생성, 주문 만료, 상장주관사 유동성 공급, 프로필 큐 정합화 등 초단위 micro 작업은 `LightweightBatchTask` 경계로 실행한다. 이 작업들은 재시작 checkpoint보다 낮은 지연과 작은 metadata가 중요하므로 `BATCH_*` row를 만들지 않고 Micrometer와 업무 원장을 관측 기준으로 사용한다.
+주문 체결, 자동 주문 생성, 주문 만료, 발행 인수기관 재고 공급, 프로필 큐 정합화 등 초단위 micro 작업은 `LightweightBatchTask` 경계로 실행한다. 이 작업들은 재시작 checkpoint보다 낮은 지연과 작은 metadata가 중요하므로 `BATCH_*` row를 만들지 않고 Micrometer와 업무 원장을 관측 기준으로 사용한다.
 
 프로세스 crash로 `STARTING`/`STARTED`/`STOPPING` execution이 남은 경우에는 다음 실행 시 해당 job의 business lock을 먼저 획득한다. lock 소유권이 확인된 뒤에만 그 job의 open execution과 open step을 `FAILED`로 닫고 같은 identifying parameter로 재시작한다. 이 순서는 다중 노드에서 아직 실행 중인 다른 job을 시작 시각만 보고 종료시키는 전역 metadata sweep을 피한다.
 

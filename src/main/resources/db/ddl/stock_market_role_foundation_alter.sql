@@ -82,7 +82,7 @@ DEALLOCATE PREPARE stock_market_role_statement;
 
 SET @stock_market_role_sql = IF(
     @stock_account_category_check_ready = 0,
-    'ALTER TABLE stock_account ADD CONSTRAINT chk_stock_account_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''LISTING_UNDERWRITER'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
+    'ALTER TABLE stock_account ADD CONSTRAINT chk_stock_account_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
     'SELECT 1'
 );
 PREPARE stock_market_role_statement FROM @stock_market_role_sql;
@@ -135,7 +135,7 @@ DEALLOCATE PREPARE stock_market_role_statement;
 
 SET @stock_market_role_sql = IF(
     @stock_close_snapshot_category_check_ready = 0,
-    'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''LISTING_UNDERWRITER'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
+    'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_participant_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
     'SELECT 1'
 );
 PREPARE stock_market_role_statement FROM @stock_market_role_sql;
@@ -173,7 +173,7 @@ DEALLOCATE PREPARE stock_market_role_statement;
 
 SET @stock_market_role_sql = IF(
     @stock_execution_snapshot_category_check_ready = 0,
-    'ALTER TABLE stock_execution_daily_account_snapshot ADD CONSTRAINT chk_stock_execution_daily_account_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''LISTING_UNDERWRITER'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
+    'ALTER TABLE stock_execution_daily_account_snapshot ADD CONSTRAINT chk_stock_execution_daily_account_category CHECK (CASE participant_category WHEN ''MANUAL_PARTICIPANT'' THEN 1 WHEN ''AUTO_PARTICIPANT'' THEN 1 WHEN ''INSTITUTIONAL_INVESTOR'' THEN 1 WHEN ''LIQUIDITY_PROVIDER'' THEN 1 WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
     'SELECT 1'
 );
 PREPARE stock_market_role_statement FROM @stock_market_role_sql;

@@ -1,5 +1,5 @@
 -- Adds role-separated initial issuance, underwriting, and security-allocation audit.
--- Existing instruments and legacy listing-underwriter accounts are not rewritten.
+-- Existing instruments and obsolete automatic-liquidity accounts are not rewritten.
 
 USE STOCK_SERVICE;
 

@@ -1,5 +1,5 @@
--- Separates withdrawn automatic-participant shares from listing-underwriter inventory.
--- The legacy underwriter_account_id remains populated for old readers during the transition.
+-- Separates withdrawn automatic-participant shares into role-aware receiver audit fields.
+-- A later cleanup removes the compatibility receiver column after data conversion.
 
 USE STOCK_SERVICE;
 
@@ -48,13 +48,20 @@ PREPARE stock_custody_statement FROM @stock_custody_sql;
 EXECUTE stock_custody_statement;
 DEALLOCATE PREPARE stock_custody_statement;
 
-UPDATE stock_auto_participant_share_return
-   SET receiver_account_id = underwriter_account_id,
-       receiver_role = 'LISTING_UNDERWRITER',
-       transfer_reason = 'LEGACY_UNDERWRITER_RETURN'
- WHERE receiver_account_id IS NULL
-    OR receiver_role IS NULL
-    OR transfer_reason IS NULL;
+SET @stock_custody_sql = (
+    SELECT IF(
+        COUNT(*) = 1,
+        'UPDATE stock_auto_participant_share_return SET receiver_account_id = underwriter_account_id, receiver_role = ''ISSUE_UNDERWRITER'', transfer_reason = ''ISSUE_UNDERWRITER_RETURN'' WHERE receiver_account_id IS NULL OR receiver_role IS NULL OR transfer_reason IS NULL',
+        'SELECT 1'
+    )
+      FROM information_schema.columns
+     WHERE table_schema = DATABASE()
+       AND table_name = 'stock_auto_participant_share_return'
+       AND column_name = 'underwriter_account_id'
+);
+PREPARE stock_custody_statement FROM @stock_custody_sql;
+EXECUTE stock_custody_statement;
+DEALLOCATE PREPARE stock_custody_statement;
 
 SET @stock_custody_sql = (
     SELECT IF(
@@ -122,7 +129,7 @@ DEALLOCATE PREPARE stock_custody_statement;
 SET @stock_custody_sql = (
     SELECT IF(
         COUNT(*) = 0,
-        'ALTER TABLE stock_auto_participant_share_return ADD CONSTRAINT chk_stock_auto_share_return_receiver_role CHECK (CASE receiver_role WHEN ''LISTING_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
+        'ALTER TABLE stock_auto_participant_share_return ADD CONSTRAINT chk_stock_auto_share_return_receiver_role CHECK (CASE receiver_role WHEN ''ISSUE_UNDERWRITER'' THEN 1 WHEN ''SYSTEM_CUSTODY'' THEN 1 ELSE 0 END = 1)',
         'SELECT 1'
     )
       FROM information_schema.table_constraints
@@ -137,7 +144,7 @@ DEALLOCATE PREPARE stock_custody_statement;
 SET @stock_custody_sql = (
     SELECT IF(
         COUNT(*) = 0,
-        'ALTER TABLE stock_auto_participant_share_return ADD CONSTRAINT chk_stock_auto_share_return_reason CHECK (CASE transfer_reason WHEN ''LEGACY_UNDERWRITER_RETURN'' THEN 1 WHEN ''AUTO_PARTICIPANT_WITHDRAWAL_CUSTODY'' THEN 1 ELSE 0 END = 1)',
+        'ALTER TABLE stock_auto_participant_share_return ADD CONSTRAINT chk_stock_auto_share_return_reason CHECK (CASE transfer_reason WHEN ''ISSUE_UNDERWRITER_RETURN'' THEN 1 WHEN ''AUTO_PARTICIPANT_WITHDRAWAL_CUSTODY'' THEN 1 ELSE 0 END = 1)',
         'SELECT 1'
     )
       FROM information_schema.table_constraints
