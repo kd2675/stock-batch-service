@@ -161,10 +161,54 @@ class PostCloseReportAggregationServiceTest {
     }
 
     @Test
+    void rebuildAutoParticipantPositionStateChunk_exactAccountCohort_returnsDurableKeysetContinuation() {
+        PostCloseCycleService cycleService = mock(PostCloseCycleService.class);
+        MarketSessionFenceService fenceService = mock(MarketSessionFenceService.class);
+        MarketCloseRolloverWriter writer = mock(MarketCloseRolloverWriter.class);
+        PostCloseReportAggregationUnitService unitService = mock(PostCloseReportAggregationUnitService.class);
+        PostCloseReportAggregationService service = new PostCloseReportAggregationService(
+                cycleService,
+                fenceService,
+                writer,
+                unitService
+        );
+        List<Long> accountIds = IntStream.rangeClosed(101, 150)
+                .mapToObj(accountId -> (long) accountId)
+                .toList();
+        LocalDateTime rebuiltAt = LocalDateTime.of(2026, 7, 16, 0, 10);
+        when(fenceService.hasOpenMarket()).thenReturn(false);
+        when(cycleService.findById(10L)).thenReturn(Optional.of(overnightCashAppliedCycle()));
+        when(writer.findAutoParticipantAccountChunk(10L, 100L, 50)).thenReturn(accountIds);
+        when(unitService.rebuildAutoParticipantPositionStateChunk(
+                10L,
+                99L,
+                LocalDate.of(2026, 7, 15),
+                rebuiltAt,
+                accountIds
+        )).thenReturn(125);
+
+        var result = service.rebuildAutoParticipantPositionStateChunk(10L, rebuiltAt, 100L);
+
+        assertThat(result).isEqualTo(new PostCloseReportAggregationService.PositionStateChunk(
+                125,
+                150L,
+                false
+        ));
+        verify(writer).findAutoParticipantAccountChunk(10L, 100L, 50);
+    }
+
+    @Test
     void validateSymbolChunkSize_aboveVolumeLimit_rejectsConfiguration() {
         assertThatThrownBy(() -> PostCloseReportAggregationService.validateSymbolChunkSize(201))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("must be between 1 and 200");
+    }
+
+    @Test
+    void validatePositionStateAccountChunkSize_aboveVolumeLimit_rejectsConfiguration() {
+        assertThatThrownBy(() -> PostCloseReportAggregationService.validatePositionStateAccountChunkSize(101))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must be between 1 and 100");
     }
 
     @Test

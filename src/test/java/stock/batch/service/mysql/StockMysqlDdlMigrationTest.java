@@ -1400,7 +1400,8 @@ class StockMysqlDdlMigrationTest {
     }
 
     @Test
-    void postCloseReportQueries_mysqlIndexHintGrammar_executesAgainstCanonicalSchema() throws IOException {
+    void postCloseReportAndPositionStateQueries_mysqlGrammar_executesAgainstCanonicalSchema()
+            throws IOException {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(
                 MYSQL.getJdbcUrl(),
                 MYSQL.getUsername(),
@@ -1439,6 +1440,84 @@ class StockMysqlDdlMigrationTest {
                         rangeEnd
                 )
         )).containsExactly(0, 0, 0);
+
+        jdbcTemplate.update(
+                """
+                insert into stock_close_account_snapshot(
+                    close_cycle_id, close_run_id, account_id, user_key, account_status,
+                    participant_category, participant_profile_type, settlement_target,
+                    pre_cancel_cash, post_cancel_cash, snapshot_at, created_at
+                ) values (
+                    1, 1, 9101, 'auto-9101', 'ACTIVE',
+                    'AUTO_PARTICIPANT', 'LONG_TERM_HOLDER', true,
+                    0.00, 0.00, ?, ?
+                )
+                """,
+                rangeEnd,
+                rangeEnd
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_holding_snapshot(
+                    close_cycle_id, close_run_id, account_id, symbol, quantity,
+                    average_price, evaluation_price, snapshot_at
+                ) values (1, 1, 9101, 'POSITION1', 10, 100.00, 95.00, ?)
+                """,
+                rangeEnd
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_position_state(
+                    account_id, symbol, position_opened_business_date, holding_trading_days,
+                    average_down_rounds, peak_close_price, last_seen_business_date, updated_at
+                ) values (9101, 'POSITION1', ?, 2, 0, 120.00, ?, ?)
+                """,
+                businessDate.minusDays(1),
+                businessDate.minusDays(1),
+                rangeStart
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_execution(
+                    order_id, account_id, symbol, side, quantity, price, gross_amount,
+                    fee_amount, tax_amount, net_amount, source, executed_at
+                ) values
+                    (9901, 9101, 'POSITION1', 'SELL', 10, 100.00, 1000.00,
+                     0.00, 0.00, 1000.00, 'INTERNAL_ORDER_BOOK', ?),
+                    (9902, 9101, 'POSITION1', 'BUY', 10, 95.00, 950.00,
+                     0.00, 0.00, 950.00, 'INTERNAL_ORDER_BOOK', ?)
+                """,
+                businessDate.atTime(9, 0),
+                businessDate.atTime(10, 0)
+        );
+
+        List<Long> accountIds = writer.findAutoParticipantAccountChunk(1L, 0L, 50);
+        assertThat(accountIds).containsExactly(9101L);
+        assertThat(writer.rebuildAutoParticipantPositionStateChunk(
+                1L,
+                1L,
+                businessDate,
+                rangeEnd,
+                accountIds
+        )).isPositive();
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select position_opened_business_date, holding_trading_days, peak_close_price
+                  from stock_auto_participant_position_state
+                 where account_id = 9101
+                   and symbol = 'POSITION1'
+                """
+        )).containsEntry("holding_trading_days", 1)
+                .containsEntry("peak_close_price", new BigDecimal("95.00"));
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select position_opened_business_date
+                  from stock_auto_participant_position_state
+                 where account_id = 9101
+                   and symbol = 'POSITION1'
+                """,
+                LocalDate.class
+        )).isEqualTo(businessDate);
     }
 
     @Test

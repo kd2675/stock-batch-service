@@ -2,6 +2,7 @@ package stock.batch.service.marketclose.biz;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.CannotAcquireLockException;
@@ -128,17 +129,19 @@ class PostCloseReportAggregationUnitService {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public int rebuildAutoParticipantPositionState(
+    public int rebuildAutoParticipantPositionStateChunk(
             long closeCycleId,
             long closeRunId,
             LocalDate businessDate,
-            LocalDateTime rebuiltAt
+            LocalDateTime rebuiltAt,
+            List<Long> accountIds
     ) {
-        return writer.rebuildAutoParticipantPositionState(
+        return writer.rebuildAutoParticipantPositionStateChunk(
                 closeCycleId,
                 closeRunId,
                 businessDate,
-                rebuiltAt
+                rebuiltAt,
+                accountIds
         );
     }
 

@@ -28,7 +28,7 @@ class StockBatchSchedulerConfigurationContractTest {
     private static final Pattern DEFAULT_NUMBER_PLACEHOLDER = Pattern.compile("\\$\\{[^:}]+:(\\d+)}");
     private static final List<String> REQUIRED_MYSQL_JDBC_OPTIONS = List.of(
             "connectTimeout=5000",
-            "socketTimeout=30000",
+            "socketTimeout=60000",
             "tcpKeepAlive=true"
     );
 
@@ -45,6 +45,7 @@ class StockBatchSchedulerConfigurationContractTest {
                         "STOCK_BATCH_POST_CLOSE_RETRY_MAX_SECONDS=900",
                         "STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT=25",
                         "STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE=25",
+                        "STOCK_BATCH_POST_CLOSE_POSITION_STATE_ACCOUNT_CHUNK_SIZE=50",
                         "STOCK_BATCH_SIGNAL_HEARTBEAT_INTERVAL_SECONDS=30",
                         "STOCK_BATCH_SETTLEMENT_CHUNK_SIZE=200"
                 )
@@ -141,6 +142,9 @@ class StockBatchSchedulerConfigurationContractTest {
                 .isEqualTo("${STOCK_BATCH_CORPORATE_ACTION_ACTION_BATCH_LIMIT:25}");
         assertThat(applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size"))
                 .isEqualTo("${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE:25}");
+        assertThat(applicationProperties.getProperty(
+                "stock.batch.post-close.report-aggregation.position-state-account-chunk-size"
+        )).isEqualTo("${STOCK_BATCH_POST_CLOSE_POSITION_STATE_ACCOUNT_CHUNK_SIZE:50}");
         assertThat(applicationProperties.getProperty("stock.batch.post-close.report-aggregation.funding-budget-chunk-size"))
                 .isEqualTo("${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_FUNDING_BUDGET_CHUNK_SIZE:500}");
         assertThat(defaultNumber(applicationProperties.getProperty("stock.batch.corporate-action.action-batch-limit")))
@@ -148,6 +152,9 @@ class StockBatchSchedulerConfigurationContractTest {
         assertThat(defaultNumber(
                 applicationProperties.getProperty("stock.batch.post-close.report-aggregation.symbol-chunk-size")
         )).isEqualTo(25);
+        assertThat(defaultNumber(applicationProperties.getProperty(
+                "stock.batch.post-close.report-aggregation.position-state-account-chunk-size"
+        ))).isEqualTo(50);
         assertThat(defaultNumber(
                 applicationProperties.getProperty("stock.batch.post-close.report-aggregation.funding-budget-chunk-size")
         )).isEqualTo(500);

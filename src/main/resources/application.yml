@@ -92,7 +92,7 @@ stock:
         initialize: ${STOCK_BATCH_SCHEMA_INITIALIZE:false}
         location: classpath:db/schema/batch-metadata-mysql.sql
       datasource:
-        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true
+        url: jdbc:mysql://kimd0.iptime.org:23306/STOCK_BATCH_METADATA?zeroDateTimeBehavior=convertToNull&useLegacyDatetimeCode=false&serverTimezone=Asia/Seoul&noAccessToProcedureBodies=true&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=60000&tcpKeepAlive=true
         username: root
         password: 1234
         driver-class-name: com.mysql.cj.jdbc.Driver
@@ -281,6 +281,7 @@ stock:
       report-aggregation:
         enabled: ${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_ENABLED:true}
         symbol-chunk-size: ${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_SYMBOL_CHUNK_SIZE:25}
+        position-state-account-chunk-size: ${STOCK_BATCH_POST_CLOSE_POSITION_STATE_ACCOUNT_CHUNK_SIZE:50}
         funding-budget-chunk-size: ${STOCK_BATCH_POST_CLOSE_REPORT_AGGREGATION_FUNDING_BUDGET_CHUNK_SIZE:500}
       readiness:
         enabled: ${STOCK_BATCH_POST_CLOSE_READINESS_ENABLED:true}

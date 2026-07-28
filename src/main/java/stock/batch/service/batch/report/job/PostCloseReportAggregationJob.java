@@ -31,6 +31,7 @@ public class PostCloseReportAggregationJob {
     public static final String FUNDING_BUDGET_STEP_NAME = "validate-auto-participant-funding-budget-step";
     static final String SYMBOL_AFTER_CONTEXT_KEY = "postCloseReportSymbolAfter";
     static final String ACCOUNT_AFTER_CONTEXT_KEY = "postCloseReportAccountAfter";
+    static final String POSITION_STATE_AFTER_CONTEXT_KEY = "postClosePositionStateAfterAccountId";
     static final String FUNDING_BUDGET_EXPIRY_AFTER_CONTEXT_KEY = "postCloseFundingBudgetExpiryAfterId";
     static final String FUNDING_BUDGET_AFTER_CONTEXT_KEY = "postCloseFundingBudgetAfterId";
 
@@ -139,13 +140,19 @@ public class PostCloseReportAggregationJob {
             PostCloseReportAggregationService aggregationService
     ) {
         Tasklet tasklet = (contribution, chunkContext) -> {
-            var jobParameters = contribution.getStepExecution().getJobParameters();
+            var stepExecution = contribution.getStepExecution();
+            var jobParameters = stepExecution.getJobParameters();
             long closeCycleId = jobParameters.getLong(StockBatchJobParameters.CYCLE_ID);
             LocalDateTime rebuiltAt = jobParameters.getLocalDateTime(StockBatchJobParameters.SNAPSHOT_AT);
-            contribution.incrementWriteCount(
-                    aggregationService.rebuildAutoParticipantPositionState(closeCycleId, rebuiltAt)
+            var executionContext = stepExecution.getExecutionContext();
+            var result = aggregationService.rebuildAutoParticipantPositionStateChunk(
+                    closeCycleId,
+                    rebuiltAt,
+                    executionContext.getLong(POSITION_STATE_AFTER_CONTEXT_KEY, 0L)
             );
-            return RepeatStatus.FINISHED;
+            contribution.incrementWriteCount(result.processedCount());
+            executionContext.putLong(POSITION_STATE_AFTER_CONTEXT_KEY, result.lastAccountId());
+            return RepeatStatus.continueIf(!result.finished());
         };
         return new StepBuilder(POSITION_STATE_STEP_NAME, jobRepository)
                 .tasklet(tasklet, transactionManager)

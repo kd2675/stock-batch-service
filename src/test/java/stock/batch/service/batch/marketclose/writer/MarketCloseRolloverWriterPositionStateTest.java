@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -106,7 +107,7 @@ class MarketCloseRolloverWriterPositionStateTest {
         insertFrozenPosition(1L, 11L, day1, new BigDecimal("100.00"), new BigDecimal("105.00"), 0L);
         insertClosedTradingDay(day1, "100.00");
 
-        writer.rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
 
         assertState(day1, 1, 0, null, "105.00", day1);
 
@@ -114,15 +115,20 @@ class MarketCloseRolloverWriterPositionStateTest {
         markAverageDownDecision(day2);
         insertFrozenPosition(2L, 12L, day2, new BigDecimal("110.00"), new BigDecimal("120.00"), 5L);
         insertClosedTradingDay(day2, "-20.00");
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 21));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 21));
 
         assertState(day1, 2, 1, day2, "120.00", 1, 2, day2);
 
         jdbcTemplate.update(
                 "insert into stock_close_account_snapshot(close_cycle_id, account_id, user_key, participant_category, participant_profile_type) values (3, 10, 'auto-10', 'AUTO_PARTICIPANT', 'AVERAGE_DOWN_BUYER')"
         );
-        writer.rebuildAutoParticipantPositionState(3L, 13L, day2.plusDays(1), day2.plusDays(1).atTime(18, 20));
+        rebuildAutoParticipantPositionState(
+                3L,
+                13L,
+                day2.plusDays(1),
+                day2.plusDays(1).atTime(18, 20)
+        );
 
         Integer remaining = jdbcTemplate.queryForObject(
                 "select count(*) from stock_auto_participant_position_state",
@@ -147,8 +153,8 @@ class MarketCloseRolloverWriterPositionStateTest {
         insertFrozenPosition(1L, 11L, businessDate, new BigDecimal("110.00"), new BigDecimal("90.00"), 5L);
         insertClosedTradingDay(businessDate, "-20.00");
 
-        writer.rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 20));
-        writer.rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 21));
+        rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 21));
 
         assertState(businessDate, 1, 1, businessDate, "110.00", 0, 1, businessDate);
     }
@@ -158,13 +164,13 @@ class MarketCloseRolloverWriterPositionStateTest {
         LocalDate day1 = LocalDate.of(2027, 1, 18);
         insertFrozenPosition(1L, 11L, day1, new BigDecimal("100.00"), new BigDecimal("105.00"), 0L);
         insertClosedTradingDay(day1, "10.00");
-        writer.rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
 
         LocalDate day2 = day1.plusDays(1);
         insertFrozenPosition(2L, 12L, day2, new BigDecimal("110.00"), new BigDecimal("90.00"), 5L);
         insertClosedTradingDay(day2, "-20.00");
 
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
 
         assertState(day1, 2, 0, null, "105.00", 1, 2, day2);
     }
@@ -185,7 +191,7 @@ class MarketCloseRolloverWriterPositionStateTest {
                 "insert into stock_close_account_snapshot(close_cycle_id, account_id, user_key, participant_category, participant_profile_type) values (1, 10, 'auto-10', 'AUTO_PARTICIPANT', 'LONG_TERM_HOLDER')"
         );
 
-        writer.rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 20));
 
         Integer remaining = jdbcTemplate.queryForObject(
                 "select count(*) from stock_auto_participant_position_state",
@@ -199,7 +205,7 @@ class MarketCloseRolloverWriterPositionStateTest {
         LocalDate day1 = LocalDate.of(2027, 1, 18);
         insertFrozenPosition(1L, 11L, day1, new BigDecimal("100.00"), new BigDecimal("120.00"), 0L);
         insertClosedTradingDay(day1, "10.00");
-        writer.rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
 
         LocalDate day2 = day1.plusDays(1);
         insertFrozenPosition(2L, 12L, day2, new BigDecimal("90.00"), new BigDecimal("95.00"), 10L);
@@ -207,8 +213,8 @@ class MarketCloseRolloverWriterPositionStateTest {
         insertExecution("SELL", 10L, day2.atTime(9, 0));
         insertExecution("BUY", 10L, day2.atTime(10, 0));
 
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 21));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 21));
 
         assertState(day2, 1, 0, null, "95.00", 1, 2, day2);
     }
@@ -218,7 +224,7 @@ class MarketCloseRolloverWriterPositionStateTest {
         LocalDate day1 = LocalDate.of(2027, 1, 18);
         insertFrozenPosition(1L, 11L, day1, new BigDecimal("100.00"), new BigDecimal("120.00"), 0L);
         insertClosedTradingDay(day1, "10.00");
-        writer.rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
+        rebuildAutoParticipantPositionState(1L, 11L, day1, day1.atTime(18, 20));
 
         LocalDate day2 = day1.plusDays(1);
         insertFrozenPosition(2L, 12L, day2, new BigDecimal("105.00"), new BigDecimal("110.00"), 10L);
@@ -226,9 +232,59 @@ class MarketCloseRolloverWriterPositionStateTest {
         insertExecution("BUY", 10L, day2.atTime(9, 0));
         insertExecution("SELL", 10L, day2.atTime(10, 0));
 
-        writer.rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
+        rebuildAutoParticipantPositionState(2L, 12L, day2, day2.atTime(18, 20));
 
         assertState(day1, 2, 0, null, "120.00", 2, 2, day2);
+    }
+
+    @Test
+    void rebuildAutoParticipantPositionState_selectedChunk_doesNotTouchNextAccountCohort() {
+        LocalDate businessDate = LocalDate.of(2027, 1, 18);
+        insertFrozenPosition(1L, 11L, businessDate, new BigDecimal("100.00"), new BigDecimal("105.00"), 0L);
+        jdbcTemplate.update(
+                """
+                insert into stock_close_account_snapshot(
+                    close_cycle_id, account_id, user_key, participant_category, participant_profile_type
+                ) values (1, 20, 'auto-20', 'AUTO_PARTICIPANT', 'LONG_TERM_HOLDER')
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_participant_position_state
+                values (20, 'STOCK002', ?, 3, 0, null, 120, ?, ?)
+                """,
+                businessDate.minusDays(2),
+                businessDate.minusDays(1),
+                businessDate.minusDays(1).atTime(18, 20)
+        );
+
+        rebuildAutoParticipantPositionState(1L, 11L, businessDate, businessDate.atTime(18, 20));
+
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from stock_auto_participant_position_state
+                 where account_id = 20
+                   and last_seen_business_date = ?
+                """,
+                Integer.class,
+                businessDate.minusDays(1)
+        )).isEqualTo(1);
+    }
+
+    private void rebuildAutoParticipantPositionState(
+            long closeCycleId,
+            long closeRunId,
+            LocalDate businessDate,
+            LocalDateTime rebuiltAt
+    ) {
+        writer.rebuildAutoParticipantPositionStateChunk(
+                closeCycleId,
+                closeRunId,
+                businessDate,
+                rebuiltAt,
+                List.of(10L)
+        );
     }
 
     private void insertFrozenPosition(

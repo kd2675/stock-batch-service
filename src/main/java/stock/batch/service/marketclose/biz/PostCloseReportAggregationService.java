@@ -24,6 +24,7 @@ public class PostCloseReportAggregationService {
      * single overnight run may process so recovery never re-reads an unbounded execution range.
      */
     private static final int MAX_SYMBOL_CHUNK_SIZE = 200;
+    private static final int MAX_POSITION_STATE_ACCOUNT_CHUNK_SIZE = 100;
     private static final int MAX_FUNDING_BUDGET_CHUNK_SIZE = 1_000;
 
     private final PostCloseCycleService postCloseCycleService;
@@ -34,12 +35,16 @@ public class PostCloseReportAggregationService {
     @Value("${stock.batch.post-close.report-aggregation.symbol-chunk-size:25}")
     private int symbolChunkSize = 25;
 
+    @Value("${stock.batch.post-close.report-aggregation.position-state-account-chunk-size:50}")
+    private int positionStateAccountChunkSize = 50;
+
     @Value("${stock.batch.post-close.report-aggregation.funding-budget-chunk-size:500}")
     private int fundingBudgetChunkSize = 500;
 
     @PostConstruct
     void validateVolumeConfiguration() {
         validateSymbolChunkSize(symbolChunkSize);
+        validatePositionStateAccountChunkSize(positionStateAccountChunkSize);
         validateFundingBudgetChunkSize(fundingBudgetChunkSize);
     }
 
@@ -96,14 +101,33 @@ public class PostCloseReportAggregationService {
         );
     }
 
-    public int rebuildAutoParticipantPositionState(long closeCycleId, LocalDateTime rebuiltAt) {
+    public PositionStateChunk rebuildAutoParticipantPositionStateChunk(
+            long closeCycleId,
+            LocalDateTime rebuiltAt,
+            long afterAccountId
+    ) {
         requireClosedMarket();
         PostCloseCycle cycle = requireFrozenFullMarketCycle(closeCycleId);
-        return unitService.rebuildAutoParticipantPositionState(
+        int chunkSize = validatePositionStateAccountChunkSize(positionStateAccountChunkSize);
+        List<Long> accountIds = writer.findAutoParticipantAccountChunk(
+                cycle.id(),
+                afterAccountId,
+                chunkSize
+        );
+        if (accountIds.isEmpty()) {
+            return new PositionStateChunk(0, afterAccountId, true);
+        }
+        int processedCount = unitService.rebuildAutoParticipantPositionStateChunk(
                 cycle.id(),
                 requireCloseRunId(cycle),
                 cycle.businessDate(),
-                rebuiltAt
+                rebuiltAt,
+                accountIds
+        );
+        return new PositionStateChunk(
+                processedCount,
+                accountIds.getLast(),
+                accountIds.size() < chunkSize
         );
     }
 
@@ -205,6 +229,17 @@ public class PostCloseReportAggregationService {
         return chunkSize;
     }
 
+    static int validatePositionStateAccountChunkSize(int chunkSize) {
+        if (chunkSize < 1 || chunkSize > MAX_POSITION_STATE_ACCOUNT_CHUNK_SIZE) {
+            throw new IllegalStateException(
+                    ("stock.batch.post-close.report-aggregation.position-state-account-chunk-size "
+                            + "must be between 1 and %d: %d")
+                            .formatted(MAX_POSITION_STATE_ACCOUNT_CHUNK_SIZE, chunkSize)
+            );
+        }
+        return chunkSize;
+    }
+
     static int validateFundingBudgetChunkSize(int chunkSize) {
         if (chunkSize < 1 || chunkSize > MAX_FUNDING_BUDGET_CHUNK_SIZE) {
             throw new IllegalStateException(
@@ -227,6 +262,18 @@ public class PostCloseReportAggregationService {
                 throw new IllegalArgumentException("processedCount must not be negative");
             }
             lastSymbol = lastSymbol == null ? "" : lastSymbol;
+        }
+    }
+
+    public record PositionStateChunk(int processedCount, long lastAccountId, boolean finished) {
+
+        public PositionStateChunk {
+            if (processedCount < 0) {
+                throw new IllegalArgumentException("processedCount must not be negative");
+            }
+            if (lastAccountId < 0) {
+                throw new IllegalArgumentException("lastAccountId must not be negative");
+            }
         }
     }
 
