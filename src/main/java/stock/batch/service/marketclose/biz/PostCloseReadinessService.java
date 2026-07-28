@@ -232,6 +232,9 @@ public class PostCloseReadinessService {
                               join stock_order_book_instrument instrument
                                 on instrument.symbol = config.symbol
                                and instrument.enabled = true
+                              join stock_order_book_market_config market
+                                on market.symbol = config.symbol
+                               and market.enabled = true
                              where config.enabled = true
                                and (
                                    select count(*)

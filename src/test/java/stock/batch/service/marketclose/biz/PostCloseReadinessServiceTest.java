@@ -137,6 +137,32 @@ class PostCloseReadinessServiceTest {
     }
 
     @Test
+    void validateReadyToOpen_stagedDisabledListingWithoutRegime_doesNotBlockOpening() {
+        when(postCloseCycleService.findById(41L)).thenReturn(Optional.of(cycle(PostClosePhase.AUTO_MARKET_PREPARED)));
+        jdbcTemplate.update("""
+                insert into stock_order_book_market_config(symbol, enabled, market_status)
+                values ('STAGED001', false, 'CLOSED')
+                """);
+        jdbcTemplate.update("""
+                insert into stock_auto_market_config(symbol, enabled)
+                values ('STAGED001', true)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_order_book_instrument(symbol, enabled, issued_shares)
+                values ('STAGED001', true, 2000)
+                """);
+        jdbcTemplate.update("""
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity
+                ) values (601, 'STAGED001', 2000, 0)
+                """);
+
+        int checked = service.validateReadyToOpen(41L, LocalDate.of(2026, 7, 2));
+
+        assertThat(checked).isEqualTo(11);
+    }
+
+    @Test
     void validateReadyToOpen_wrongPhase_rejectsBeforeDatabaseAggregation() {
         when(postCloseCycleService.findById(41L)).thenReturn(Optional.of(cycle(PostClosePhase.MARKET_DATA_PREPARED)));
 
