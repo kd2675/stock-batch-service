@@ -775,9 +775,10 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
         return clauses;
     }
 
-    private Set<String> extractCheckLiterals(String checkClause) {
+    static Set<String> extractCheckLiterals(String checkClause) {
         Set<String> literals = new LinkedHashSet<>();
-        Matcher matcher = CHECK_LITERAL_PATTERN.matcher(checkClause);
+        String portableCheckClause = checkClause.replace("\\'", "'");
+        Matcher matcher = CHECK_LITERAL_PATTERN.matcher(portableCheckClause);
         while (matcher.find()) {
             literals.add(normalize(matcher.group(1).replace("''", "'")));
         }

@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -27,6 +28,19 @@ class StockSchemaReadinessValidatorTest {
         );
 
         assertThatCode(() -> validator.run(null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void extractCheckLiterals_mysqlEscapedQuotes_returnsExactValues() {
+        String checkClause = """
+                (`participant_category` in (
+                  _utf8mb4\\'MANUAL_PARTICIPANT\\',
+                  _utf8mb4\\'AUTO_PARTICIPANT\\'
+                ))
+                """;
+
+        assertThat(StockSchemaReadinessValidator.extractCheckLiterals(checkClause))
+                .containsExactlyInAnyOrder("manual_participant", "auto_participant");
     }
 
     @Test
