@@ -179,6 +179,43 @@ class InstitutionScheduledPolicyActivationServiceTest {
     }
 
     @Test
+    void activateDuePolicies_marketStillPending_rejectsWithoutActivatingMandate() {
+        jdbcTemplate.update(
+                """
+                update stock_order_book_market_config
+                   set enabled = false
+                 where symbol = 'NEW001'
+                """
+        );
+
+        assertThatThrownBy(() ->
+                service.activateDuePolicies(BUSINESS_DATE, ACTIVATED_AT)
+        )
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("inactive market symbols");
+
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select status
+                  from stock_market_policy_version
+                 where policy_scope = 'INSTITUTIONAL_PORTFOLIO'
+                   and scope_key = 'INSTITUTION_1'
+                   and version_no = 2
+                """,
+                String.class
+        )).isEqualTo("SCHEDULED");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select count(*)
+                  from stock_institution_symbol_mandate
+                 where portfolio_id = 1
+                   and symbol = 'NEW001'
+                """,
+                Integer.class
+        )).isZero();
+    }
+
+    @Test
     void activateDuePolicies_invalidRiskValue_rollsBackPolicy() {
         jdbcTemplate.update(
                 """
