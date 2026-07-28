@@ -555,23 +555,32 @@ class InstitutionPortfolioPlanner {
         if (total.signum() <= 0 || total.compareTo(sharedLimit) <= 0) {
             return;
         }
-        double ratio = sharedLimit.divide(total, 12, RoundingMode.DOWN).doubleValue();
+        BigDecimal ratio = sharedLimit.divide(total, 18, RoundingMode.DOWN);
         Gate bindingGate = dailyLimit.compareTo(decisionLimit) <= 0
                 ? Gate.PORTFOLIO_DAILY_LIMIT
                 : Gate.DECISION_LIMIT;
+        List<Long> originalQuantities = drafts.stream()
+                .map(Draft::gatedQuantity)
+                .toList();
         for (Draft draft : drafts) {
             if (draft.gatedQuantity() <= 0L) {
                 continue;
             }
             long scaledQuantity = Math.min(
                     draft.gatedQuantity(),
-                    floorToLong(BigDecimal.valueOf(draft.gatedQuantity()).multiply(BigDecimal.valueOf(ratio)))
+                    floorToLong(BigDecimal.valueOf(draft.gatedQuantity()).multiply(ratio))
             );
             if (scaledQuantity < draft.gatedQuantity()) {
                 draft.setGatedQuantity(scaledQuantity);
                 draft.gates().add(bindingGate);
             }
         }
+        fillResidualCapacity(
+                drafts,
+                originalQuantities,
+                sharedLimit,
+                null
+        );
     }
 
     private void applyCashLimit(List<Draft> drafts, BigDecimal availableCash) {
@@ -582,19 +591,72 @@ class InstitutionPortfolioPlanner {
         if (totalBuy.signum() <= 0 || totalBuy.compareTo(availableCash) <= 0) {
             return;
         }
-        double ratio = availableCash.divide(totalBuy, 12, RoundingMode.DOWN).doubleValue();
+        BigDecimal ratio = availableCash.divide(totalBuy, 18, RoundingMode.DOWN);
+        List<Long> originalQuantities = drafts.stream()
+                .map(Draft::gatedQuantity)
+                .toList();
         for (Draft draft : drafts) {
             if (draft.action() != InstitutionDecisionAction.BUY || draft.gatedQuantity() <= 0L) {
                 continue;
             }
             long scaledQuantity = Math.min(
                     draft.gatedQuantity(),
-                    floorToLong(BigDecimal.valueOf(draft.gatedQuantity()).multiply(BigDecimal.valueOf(ratio)))
+                    floorToLong(BigDecimal.valueOf(draft.gatedQuantity()).multiply(ratio))
             );
             if (scaledQuantity < draft.gatedQuantity()) {
                 draft.setGatedQuantity(scaledQuantity);
                 draft.gates().add(Gate.CASH_LIMIT);
             }
+        }
+        fillResidualCapacity(
+                drafts,
+                originalQuantities,
+                availableCash,
+                InstitutionDecisionAction.BUY
+        );
+    }
+
+    private void fillResidualCapacity(
+            List<Draft> drafts,
+            List<Long> originalQuantities,
+            BigDecimal notionalLimit,
+            InstitutionDecisionAction actionFilter
+    ) {
+        BigDecimal used = drafts.stream()
+                .filter(draft -> actionFilter == null || draft.action() == actionFilter)
+                .map(Draft::gatedAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal remaining = nonNegative(notionalLimit.subtract(used));
+        for (int index = 0; index < drafts.size() && remaining.signum() > 0; index++) {
+            Draft draft = drafts.get(index);
+            if (actionFilter != null && draft.action() != actionFilter) {
+                continue;
+            }
+            long availableQuantity = Math.max(
+                    0L,
+                    originalQuantities.get(index) - draft.gatedQuantity()
+            );
+            if (availableQuantity == 0L || draft.input.currentPrice().signum() <= 0) {
+                continue;
+            }
+            long affordableQuantity = floorToLong(
+                    remaining.divide(
+                            draft.input.currentPrice(),
+                            18,
+                            RoundingMode.DOWN
+                    )
+            );
+            long restoredQuantity = Math.min(availableQuantity, affordableQuantity);
+            if (restoredQuantity <= 0L) {
+                continue;
+            }
+            draft.setGatedQuantity(draft.gatedQuantity() + restoredQuantity);
+            remaining = nonNegative(
+                    remaining.subtract(
+                            draft.input.currentPrice()
+                                    .multiply(BigDecimal.valueOf(restoredQuantity))
+                    )
+            );
         }
     }
 

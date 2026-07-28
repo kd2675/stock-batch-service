@@ -99,7 +99,7 @@ class InstitutionOrderExecutionPlanner {
         }
         return new InstitutionOrderExecutionPlan(
                 true,
-                aggressive ? "AGGRESSIVE_WITHIN_15_PERCENT_CAP" : "PASSIVE_LIMIT",
+                aggressive ? "AGGRESSIVE_WITHIN_10_PERCENT_DEPTH" : "PASSIVE_LIMIT",
                 normalizedPrice,
                 quantity,
                 aggressive,
