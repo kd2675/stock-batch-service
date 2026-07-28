@@ -27,7 +27,7 @@ public class AutoProfileBehaviorRegistry {
                 new LossAverseBehavior(),
                 new OverconfidentBehavior(),
                 new HerdFollowerBehavior(),
-                new MarketMakerBehavior(),
+                new PassiveLimitTraderBehavior(),
                 new NoiseTraderBehavior(),
                 new ValueAnchorBehavior(),
                 new ScalperBehavior(),

@@ -227,24 +227,24 @@ public record ProfileSignalContext(
         return stockAllocationRatio();
     }
 
-    public double marketMakerTargetAllocationRatio() {
+    public double passiveLimitTraderTargetAllocationRatio() {
         return 0.50 / Math.max(1, portfolio.eligibleSymbolCount());
     }
 
-    public double marketMakerLowerAllocationRatio() {
-        return marketMakerTargetAllocationRatio() * 0.80;
+    public double passiveLimitTraderLowerAllocationRatio() {
+        return passiveLimitTraderTargetAllocationRatio() * 0.80;
     }
 
-    public double marketMakerUpperAllocationRatio() {
-        return marketMakerTargetAllocationRatio() * 1.20;
+    public double passiveLimitTraderUpperAllocationRatio() {
+        return passiveLimitTraderTargetAllocationRatio() * 1.20;
     }
 
-    public double marketMakerNormalizedInventoryDeviation() {
-        double target = marketMakerTargetAllocationRatio();
+    public double passiveLimitTraderNormalizedInventoryDeviation() {
+        double target = passiveLimitTraderTargetAllocationRatio();
         double allocation = stockAllocationRatio();
         double denominator = allocation >= target
-                ? marketMakerUpperAllocationRatio() - target
-                : target - marketMakerLowerAllocationRatio();
+                ? passiveLimitTraderUpperAllocationRatio() - target
+                : target - passiveLimitTraderLowerAllocationRatio();
         if (denominator <= 0.0) {
             return 0.0;
         }

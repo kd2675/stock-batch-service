@@ -34,7 +34,7 @@ UPDATE stock_post_close_cycle
    SET eod_contract_version = CASE
          WHEN schema_version IN (
            '2026-07-22-eod-v3',
-           '2026-07-23-auto-profile-v2-direct'
+           '2026-07-27-auto-participant-v3-probabilistic'
          ) THEN 'EOD_V1'
          WHEN status = 'COMPLETED' THEN 'LEGACY_COMPLETED'
          ELSE 'UNDECLARED'

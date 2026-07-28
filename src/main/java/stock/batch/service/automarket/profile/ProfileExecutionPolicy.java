@@ -9,56 +9,27 @@ public record ProfileExecutionPolicy(
         ProfileExitMode exitMode,
         ProfileInventoryMode inventoryMode
 ) {
-    static ProfileExecutionPolicy v2Default(
+    static ProfileExecutionPolicy defaults(
             AutoParticipantProfileType profileType,
             double orderMultiplier,
             double orderTtlMultiplier
     ) {
         double normalizedOrderMultiplier = Math.max(0.0, orderMultiplier);
         double normalizedTtlMultiplier = Math.max(0.1, orderTtlMultiplier);
-        ProfilePricingMode pricingMode = profileType == AutoParticipantProfileType.MARKET_MAKER
-                ? ProfilePricingMode.MARKET_MAKING
-                : ProfilePricingMode.DIRECTIONAL;
-        ProfileExitMode exitMode = switch (profileType) {
+        ProfileExitMode exitMode = switch (profileType == null
+                ? AutoParticipantProfileType.defaultType()
+                : profileType) {
             case PROFIT_LOCKER -> ProfileExitMode.TAKE_PROFIT_FIRST;
             case LONG_TERM_HOLDER, PAYDAY_ACCUMULATOR, DIVIDEND_REINVESTOR, LIMIT_DOWN_TRAPPED ->
                     ProfileExitMode.HOLD_LOSSES;
             default -> ProfileExitMode.SIGNAL_DRIVEN;
         };
-        ProfileInventoryMode inventoryMode = profileType == AutoParticipantProfileType.MARKET_MAKER
-                ? ProfileInventoryMode.TARGET_ALLOCATION
-                : ProfileInventoryMode.SIGNAL_DRIVEN;
         return new ProfileExecutionPolicy(
                 normalizedOrderMultiplier / normalizedTtlMultiplier,
                 normalizedOrderMultiplier,
-                pricingMode,
+                ProfilePricingMode.DIRECTIONAL,
                 exitMode,
-                inventoryMode
-        );
-    }
-
-    static ProfileExecutionPolicy legacy(
-            double orderMultiplier,
-            double orderTtlMultiplier,
-            double marketMakingWeight,
-            double profitTakingWeight,
-            double holdingPatienceWeight
-    ) {
-        double normalizedOrderMultiplier = Math.max(0.0, orderMultiplier);
-        double legacyActivityMultiplier = Math.max(0.25, normalizedOrderMultiplier);
-        double legacyPatienceMultiplier = Math.max(0.25, orderTtlMultiplier);
-        return new ProfileExecutionPolicy(
-                legacyActivityMultiplier / legacyPatienceMultiplier,
-                normalizedOrderMultiplier,
-                marketMakingWeight >= 0.8 ? ProfilePricingMode.MARKET_MAKING : ProfilePricingMode.DIRECTIONAL,
-                profitTakingWeight >= 0.90
-                        ? ProfileExitMode.TAKE_PROFIT_FIRST
-                        : holdingPatienceWeight >= 0.85
-                                ? ProfileExitMode.HOLD_LOSSES
-                                : ProfileExitMode.SIGNAL_DRIVEN,
-                marketMakingWeight >= 0.8
-                        ? ProfileInventoryMode.TARGET_ALLOCATION
-                        : ProfileInventoryMode.SIGNAL_DRIVEN
+                ProfileInventoryMode.SIGNAL_DRIVEN
         );
     }
 

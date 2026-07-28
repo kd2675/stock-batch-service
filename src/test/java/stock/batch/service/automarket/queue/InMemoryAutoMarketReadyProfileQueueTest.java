@@ -15,7 +15,7 @@ class InMemoryAutoMarketReadyProfileQueueTest {
     void hasDueProfile_futureAndDueProfiles_reportsOnlyCurrentDueWork() {
         InMemoryAutoMarketReadyProfileQueue queue = new InMemoryAutoMarketReadyProfileQueue();
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 9, 0);
-        queue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now.plusSeconds(1));
+        queue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.plusSeconds(1));
 
         boolean beforeDue = queue.hasDueProfile(now);
         boolean whenDue = queue.hasDueProfile(now.plusSeconds(1));
@@ -27,10 +27,10 @@ class InMemoryAutoMarketReadyProfileQueueTest {
     void removeAll_existingAndMissingProfiles_removesOnlyExistingProfile() {
         InMemoryAutoMarketReadyProfileQueue queue = new InMemoryAutoMarketReadyProfileQueue();
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 9, 0);
-        queue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now);
+        queue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now);
 
         int removedCount = queue.removeAll(List.of(
-                AutoParticipantProfileType.MARKET_MAKER,
+                AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                 AutoParticipantProfileType.SCALPER
         ));
 
@@ -44,14 +44,14 @@ class InMemoryAutoMarketReadyProfileQueueTest {
         queue.enqueue(AutoParticipantProfileType.VALUE_ANCHOR, now.minusMinutes(1));
 
         int storedCount = queue.replaceAll(List.of(
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now),
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now.plusSeconds(1)),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.plusSeconds(1)),
                 new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.SCALPER, now.plusSeconds(2))
         ));
 
         assertThat(storedCount).isEqualTo(2);
         assertThat(queue.claimDueProfile(now)).isEmpty();
-        assertThat(queue.claimDueProfile(now.plusSeconds(1))).contains(AutoParticipantProfileType.MARKET_MAKER);
+        assertThat(queue.claimDueProfile(now.plusSeconds(1))).contains(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER);
         assertThat(queue.claimDueProfile(now.plusSeconds(2))).contains(AutoParticipantProfileType.SCALPER);
     }
 
@@ -59,10 +59,10 @@ class InMemoryAutoMarketReadyProfileQueueTest {
     void snapshot_returnsIndependentCompleteView() {
         InMemoryAutoMarketReadyProfileQueue queue = new InMemoryAutoMarketReadyProfileQueue();
         LocalDateTime readyAt = LocalDateTime.of(2026, 7, 22, 5, 30);
-        queue.enqueue(AutoParticipantProfileType.MARKET_MAKER, readyAt);
+        queue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, readyAt);
 
         assertThat(queue.snapshot())
-                .containsEntry(AutoParticipantProfileType.MARKET_MAKER, readyAt)
+                .containsEntry(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, readyAt)
                 .hasSize(1);
     }
 }

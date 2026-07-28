@@ -18,10 +18,10 @@ class AutoMarketDeterministicRandomTest {
         AutoParticipantStrategy afternoon = strategy(17L, LocalDateTime.of(2027, 1, 18, 15, 0));
 
         double morningValue = AutoMarketDeterministicRandom.stableRange(
-                morning, "V2:STOP_LOSS:RETURN", 0.04, 0.06
+                morning, "V3:STOP_LOSS:RETURN", 0.04, 0.06
         );
         double afternoonValue = AutoMarketDeterministicRandom.stableRange(
-                afternoon, "V2:STOP_LOSS:RETURN", 0.04, 0.06
+                afternoon, "V3:STOP_LOSS:RETURN", 0.04, 0.06
         );
 
         assertThat(afternoonValue).isEqualTo(morningValue);
@@ -31,13 +31,13 @@ class AutoMarketDeterministicRandomTest {
     void stableTrait_differentAccountSeed_producesDifferentOffsetWithinRange() {
         double first = AutoMarketDeterministicRandom.stableRange(
                 strategy(17L, LocalDateTime.of(2027, 1, 18, 9, 0)),
-                "V2:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS",
+                "V3:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS",
                 2_700,
                 4_500
         );
         double second = AutoMarketDeterministicRandom.stableRange(
                 strategy(18L, LocalDateTime.of(2027, 1, 18, 9, 0)),
-                "V2:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS",
+                "V3:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS",
                 2_700,
                 4_500
         );
@@ -51,8 +51,8 @@ class AutoMarketDeterministicRandomTest {
         LocalDateTime slot = LocalDateTime.of(2027, 1, 18, 9, 0);
         AutoParticipantStrategy strategy = strategy(slot);
 
-        long first = AutoMarketDeterministicRandom.seed(strategy, "DEMO001", slot.plusSeconds(5), "V2");
-        long second = AutoMarketDeterministicRandom.seed(strategy, "DEMO001", slot.plusHours(1), "V2");
+        long first = AutoMarketDeterministicRandom.seed(strategy, "DEMO001", slot.plusSeconds(5), "V3");
+        long second = AutoMarketDeterministicRandom.seed(strategy, "DEMO001", slot.plusHours(1), "V3");
 
         assertThat(second).isEqualTo(first);
     }
@@ -61,12 +61,12 @@ class AutoMarketDeterministicRandomTest {
     void seed_differentDecisionSlot_changesDeterministicSequence() {
         LocalDateTime firstSlot = LocalDateTime.of(2027, 1, 18, 9, 0);
 
-        long first = AutoMarketDeterministicRandom.seed(strategy(firstSlot), "DEMO001", firstSlot, "V2");
+        long first = AutoMarketDeterministicRandom.seed(strategy(firstSlot), "DEMO001", firstSlot, "V3");
         long second = AutoMarketDeterministicRandom.seed(
                 strategy(firstSlot.plusSeconds(10)),
                 "DEMO001",
                 firstSlot,
-                "V2"
+                "V3"
         );
 
         assertThat(second).isNotEqualTo(first);
@@ -89,9 +89,9 @@ class AutoMarketDeterministicRandomTest {
                 noise.decisionSlotAt()
         );
 
-        long base = AutoMarketDeterministicRandom.seed(noise, "DEMO001", slot, "V2:policy-a");
-        long changedProfile = AutoMarketDeterministicRandom.seed(observer, "DEMO001", slot, "V2:policy-a");
-        long changedPolicy = AutoMarketDeterministicRandom.seed(noise, "DEMO001", slot, "V2:policy-b");
+        long base = AutoMarketDeterministicRandom.seed(noise, "DEMO001", slot, "V3:policy-a");
+        long changedProfile = AutoMarketDeterministicRandom.seed(observer, "DEMO001", slot, "V3:policy-a");
+        long changedPolicy = AutoMarketDeterministicRandom.seed(noise, "DEMO001", slot, "V3:policy-b");
 
         assertThat(changedProfile).isNotEqualTo(base);
         assertThat(changedPolicy).isNotEqualTo(base);
@@ -124,7 +124,7 @@ class AutoMarketDeterministicRandomTest {
                 null,
                 null,
                 null,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 behaviorSeed,
                 decisionSlot
         );

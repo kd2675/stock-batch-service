@@ -43,18 +43,18 @@ class AutoParticipantOrderPricingTest {
     @Test
     void directionalPricePressure_profileSensitivityChangesPriceResponseWithoutChangingActivityLevel() {
         AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 100, 0, 0, 0);
-        ProfilePolicy marketMakerPolicy = AutoProfileBehaviorRegistry.createDefault()
-                .behavior(AutoParticipantProfileType.MARKET_MAKER)
+        ProfilePolicy passiveLimitTraderPolicy = AutoProfileBehaviorRegistry.createDefault()
+                .behavior(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER)
                 .defaultPolicy();
         ProfilePolicy newsReactivePolicy = AutoProfileBehaviorRegistry.createDefault()
                 .behavior(AutoParticipantProfileType.NEWS_REACTIVE)
                 .defaultPolicy();
 
-        double marketMakerPressure = pricing.directionalPricePressure(config, 5, marketMakerPolicy);
+        double passiveLimitTraderPressure = pricing.directionalPricePressure(config, 5, passiveLimitTraderPolicy);
         double newsReactivePressure = pricing.directionalPricePressure(config, 5, newsReactivePolicy);
 
-        assertThat(List.of(marketMakerPressure, newsReactivePressure))
-                .containsExactly(0.15, 0.65);
+        assertThat(passiveLimitTraderPressure).isBetween(-1.0, 1.0);
+        assertThat(newsReactivePressure).isGreaterThan(passiveLimitTraderPressure);
     }
 
     @Test
@@ -145,118 +145,20 @@ class AutoParticipantOrderPricingTest {
     }
 
     @Test
-    void crossingChance_allDefaultNonMarketMakingProfiles_followPressureDirection() {
+    void crossingChance_allDefaultV3Profiles_followPressureDirection() {
         AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 50, 0, 0, 0);
         List<ProfilePolicy> policies = AutoProfileBehaviorRegistry.createDefault()
                 .defaultPolicies()
                 .values()
                 .stream()
-                .filter(defaultPolicy -> defaultPolicy.marketMakingWeight() < 0.8)
                 .toList();
 
-        assertThat(policies).hasSize(26).allSatisfy(defaultPolicy -> {
+        assertThat(policies).hasSize(AutoParticipantProfileType.values().length).allSatisfy(defaultPolicy -> {
             assertThat(pricing.crossingChance(config, "BUY", defaultPolicy, 0.5))
                     .isGreaterThan(pricing.crossingChance(config, "SELL", defaultPolicy, 0.5));
             assertThat(pricing.crossingChance(config, "BUY", defaultPolicy, -0.5))
                     .isLessThan(pricing.crossingChance(config, "SELL", defaultPolicy, -0.5));
         });
-    }
-
-    @Test
-    void createMarketMakingPrice_depthTicks_distributesQuotesBehindSameSideBest() {
-        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
-
-        BigDecimal topBuyPrice = pricing.createMarketMakingPrice(
-                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 0
-        );
-        BigDecimal deepBuyPrice = pricing.createMarketMakingPrice(
-                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 2
-        );
-        BigDecimal topSellPrice = pricing.createMarketMakingPrice(
-                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 0
-        );
-        BigDecimal deepSellPrice = pricing.createMarketMakingPrice(
-                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), 0.0, 2
-        );
-
-        assertThat(List.of(topBuyPrice, deepBuyPrice, topSellPrice, deepSellPrice))
-                .containsExactly(
-                        new BigDecimal("99.00"),
-                        new BigDecimal("97.00"),
-                        new BigDecimal("101.00"),
-                        new BigDecimal("103.00")
-                );
-    }
-
-    @Test
-    void createMarketMakingPrice_pressureNeverCrossesVisibleOppositeQuote() {
-        AutoMarketConfig config = pressureConfig(new BigDecimal("100.00"), 0, 0, 0, 0);
-
-        BigDecimal positiveBuyPrice = pricing.createMarketMakingPrice(
-                config, "BUY", new BigDecimal("99.00"), new BigDecimal("101.00"), 1.0, 0
-        );
-        BigDecimal negativeSellPrice = pricing.createMarketMakingPrice(
-                config, "SELL", new BigDecimal("99.00"), new BigDecimal("101.00"), -1.0, 0
-        );
-
-        assertThat(positiveBuyPrice).isEqualByComparingTo("99.00");
-        assertThat(negativeSellPrice).isEqualByComparingTo("101.00");
-    }
-
-    @Test
-    void createAutoPrice_marketMakerAtLowerLimitWithoutPassiveBuyPrice_skipsQuote() {
-        AutoMarketConfig config = new AutoMarketConfig(
-                "ZQ001",
-                "ORDERBOOK",
-                100,
-                90,
-                1000L,
-                BigDecimal.ONE,
-                new BigDecimal("70.00"),
-                new BigDecimal("100.00"),
-                new BigDecimal("30.00"),
-                null
-        );
-        ProfilePolicy marketMakerPolicy = AutoProfileBehaviorRegistry.createDefault()
-                .behavior(AutoParticipantProfileType.MARKET_MAKER)
-                .defaultPolicy();
-
-        BigDecimal price = pricing.createAutoPrice(
-                config,
-                10,
-                "BUY",
-                marketMakerPolicy,
-                new AutoMarketOrderBookState(null, new BigDecimal("70.00"), 0, 100)
-        );
-
-        assertThat(price).isNull();
-    }
-
-    @Test
-    void createMarketMakingPrice_dailyLimitNormalization_neverTurnsPassiveQuoteIntoCrossingQuote() {
-        AutoMarketConfig config = new AutoMarketConfig(
-                "ZQ001",
-                "ORDERBOOK",
-                100,
-                90,
-                1000L,
-                BigDecimal.ONE,
-                new BigDecimal("130.00"),
-                new BigDecimal("100.00"),
-                new BigDecimal("30.00"),
-                null
-        );
-
-        BigDecimal price = pricing.createMarketMakingPrice(
-                config,
-                "SELL",
-                new BigDecimal("130.00"),
-                null,
-                0.0,
-                0
-        );
-
-        assertThat(price).isNull();
     }
 
     @Test

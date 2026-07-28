@@ -1,8 +1,7 @@
 package stock.batch.service.automarket.profile;
 
 public enum ProfileInventoryMode {
-    SIGNAL_DRIVEN,
-    TARGET_ALLOCATION;
+    SIGNAL_DRIVEN;
 
     static ProfileInventoryMode parseOrDefault(String value, ProfileInventoryMode defaultValue) {
         if (value == null || value.isBlank()) {

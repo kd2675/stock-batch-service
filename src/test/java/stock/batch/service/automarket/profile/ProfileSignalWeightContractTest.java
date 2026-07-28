@@ -114,7 +114,7 @@ class ProfileSignalWeightContractTest {
                 null,
                 null,
                 null,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 17L + behavior.type().ordinal(),
                 LocalDateTime.of(BUSINESS_DATE, LocalTime.NOON)
         );

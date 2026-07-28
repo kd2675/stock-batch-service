@@ -10,7 +10,7 @@ public enum AutoParticipantProfileType {
     LOSS_AVERSE,
     OVERCONFIDENT,
     HERD_FOLLOWER,
-    MARKET_MAKER,
+    PASSIVE_LIMIT_TRADER,
     NOISE_TRADER,
     VALUE_ANCHOR,
     SCALPER,

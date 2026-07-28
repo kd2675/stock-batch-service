@@ -1,8 +1,7 @@
 package stock.batch.service.automarket.profile;
 
 public enum ProfilePricingMode {
-    DIRECTIONAL,
-    MARKET_MAKING;
+    DIRECTIONAL;
 
     static ProfilePricingMode parseOrDefault(String value, ProfilePricingMode defaultValue) {
         if (value == null || value.isBlank()) {

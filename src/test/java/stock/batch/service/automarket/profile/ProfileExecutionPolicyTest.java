@@ -14,24 +14,6 @@ import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 class ProfileExecutionPolicyTest {
 
     @Test
-    void legacy_separatesDecisionFrequencyFromOrdersPerDecisionWithoutChangingEffectiveCadence() {
-        ProfileExecutionPolicy policy = ProfileExecutionPolicy.legacy(1.25, 0.60, 0.95, 0.00, 0.45);
-
-        assertThat(policy.decisionFrequencyMultiplier()).isEqualTo(1.25 / 0.60);
-        assertThat(policy.ordersPerDecisionMultiplier()).isEqualTo(1.25);
-        assertThat(policy.pricingMode()).isEqualTo(ProfilePricingMode.MARKET_MAKING);
-        assertThat(policy.inventoryMode()).isEqualTo(ProfileInventoryMode.TARGET_ALLOCATION);
-    }
-
-    @Test
-    void legacy_subQuarterMultipliers_preservePreviousCadenceFloor() {
-        ProfileExecutionPolicy policy = ProfileExecutionPolicy.legacy(0.10, 0.20, 0.00, 0.00, 0.00);
-
-        assertThat(policy.decisionFrequencyMultiplier()).isEqualTo(1.0);
-        assertThat(policy.ordersPerDecisionMultiplier()).isEqualTo(0.10);
-    }
-
-    @Test
     void explicitPolicy_keepsFrequencyIndependentFromOrderCountAndTtl() {
         ProfileExecutionPolicy policy = new ProfileExecutionPolicy(
                 0.75,
@@ -46,17 +28,17 @@ class ProfileExecutionPolicyTest {
     }
 
     @Test
-    void v2Default_usesExplicitProfileModesInsteadOfWeightThresholds() {
-        ProfileExecutionPolicy marketMaker = new MarketMakerBehavior().defaultPolicy().executionPolicy();
+    void defaults_useDirectionalModesWithoutLiquidityProviderResponsibilities() {
+        ProfileExecutionPolicy passiveLimitTrader = new PassiveLimitTraderBehavior().defaultPolicy().executionPolicy();
         ProfileExecutionPolicy profitLocker = new ProfitLockerBehavior().defaultPolicy().executionPolicy();
         ProfileExecutionPolicy longTermHolder = new LongTermHolderBehavior().defaultPolicy().executionPolicy();
         ProfileExecutionPolicy noiseTrader = new NoiseTraderBehavior().defaultPolicy().executionPolicy();
 
-        assertThat(marketMaker.pricingMode()).isEqualTo(ProfilePricingMode.MARKET_MAKING);
-        assertThat(marketMaker.inventoryMode()).isEqualTo(ProfileInventoryMode.TARGET_ALLOCATION);
+        assertThat(passiveLimitTrader.pricingMode()).isEqualTo(ProfilePricingMode.DIRECTIONAL);
+        assertThat(passiveLimitTrader.inventoryMode()).isEqualTo(ProfileInventoryMode.SIGNAL_DRIVEN);
         assertThat(profitLocker.exitMode()).isEqualTo(ProfileExitMode.TAKE_PROFIT_FIRST);
         assertThat(longTermHolder.exitMode()).isEqualTo(ProfileExitMode.HOLD_LOSSES);
-        assertThat(noiseTrader).isEqualTo(ProfileExecutionPolicy.v2Default(
+        assertThat(noiseTrader).isEqualTo(ProfileExecutionPolicy.defaults(
                 AutoParticipantProfileType.NOISE_TRADER,
                 1.0,
                 1.0
@@ -64,19 +46,27 @@ class ProfileExecutionPolicyTest {
     }
 
     @Test
-    void behaviorSeedVersion_sameBehaviorPolicy_isStableAndChangesWithExecutionPolicy() {
+    void behaviorSeedVersion_ignoresRetiredOrderCountKnobButTracksActiveExecutionMode() {
         ProfilePolicy base = new NoiseTraderBehavior().defaultPolicy();
         ProfilePolicy same = new NoiseTraderBehavior().defaultPolicy();
-        ProfilePolicy changed = base.withExecutionPolicy(new ProfileExecutionPolicy(
+        ProfilePolicy retiredKnobChanged = base.withExecutionPolicy(new ProfileExecutionPolicy(
                 base.executionPolicy().decisionFrequencyMultiplier(),
                 base.executionPolicy().ordersPerDecisionMultiplier() + 0.25,
                 base.executionPolicy().pricingMode(),
                 base.executionPolicy().exitMode(),
                 base.executionPolicy().inventoryMode()
         ));
+        ProfilePolicy activeModeChanged = base.withExecutionPolicy(new ProfileExecutionPolicy(
+                1.0,
+                1.0,
+                base.executionPolicy().pricingMode(),
+                ProfileExitMode.TAKE_PROFIT_FIRST,
+                base.executionPolicy().inventoryMode()
+        ));
 
         assertThat(same.behaviorSeedVersion()).isEqualTo(base.behaviorSeedVersion());
-        assertThat(changed.behaviorSeedVersion()).isNotEqualTo(base.behaviorSeedVersion());
+        assertThat(retiredKnobChanged.behaviorSeedVersion()).isEqualTo(base.behaviorSeedVersion());
+        assertThat(activeModeChanged.behaviorSeedVersion()).isNotEqualTo(base.behaviorSeedVersion());
     }
 
     @Test
@@ -102,7 +92,7 @@ class ProfileExecutionPolicyTest {
                 .ordersPerDecisionMultiplier()).isEqualTo(originalOrderCountMultiplier);
         assertThat(nextRunSnapshot.get(AutoParticipantProfileType.NOISE_TRADER)
                 .executionPolicy()
-                .ordersPerDecisionMultiplier()).isEqualTo(2.0);
+                .ordersPerDecisionMultiplier()).isEqualTo(1.0);
         assertThatThrownBy(() -> inFlightSnapshot.put(
                 AutoParticipantProfileType.NOISE_TRADER,
                 nextRunSnapshot.get(AutoParticipantProfileType.NOISE_TRADER)
@@ -110,7 +100,7 @@ class ProfileExecutionPolicyTest {
     }
 
     @Test
-    void overrideWith_missingV2Modes_keepsProfileModesWhenLegacyWeightsCrossThresholds() {
+    void overrideWith_missingModes_keepsV3DirectionalModesWhenWeightsCrossThresholds() {
         ProfilePolicy base = new NoiseTraderBehavior().defaultPolicy();
         AutoParticipantProfileConfig config = new AutoParticipantProfileConfig(
                 AutoParticipantProfileType.NOISE_TRADER,
@@ -125,10 +115,6 @@ class ProfileExecutionPolicyTest {
         assertThat(overridden.executionPolicy().pricingMode()).isEqualTo(ProfilePricingMode.DIRECTIONAL);
         assertThat(overridden.executionPolicy().exitMode()).isEqualTo(ProfileExitMode.SIGNAL_DRIVEN);
         assertThat(overridden.executionPolicy().inventoryMode()).isEqualTo(ProfileInventoryMode.SIGNAL_DRIVEN);
-        assertThat(overridden.forLegacyExecution().executionPolicy().pricingMode())
-                .isEqualTo(ProfilePricingMode.MARKET_MAKING);
-        assertThat(overridden.forLegacyExecution().executionPolicy().exitMode())
-                .isEqualTo(ProfileExitMode.TAKE_PROFIT_FIRST);
     }
 
     private AutoParticipantProfileConfig profileConfigWithOrdersPerDecision(String multiplier) {

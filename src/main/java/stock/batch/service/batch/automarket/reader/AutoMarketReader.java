@@ -294,7 +294,7 @@ public class AutoMarketReader {
                            p.recurring_cash_amount,
                            p.recurring_cash_interval_value,
                            p.recurring_cash_interval_unit,
-                           coalesce(pc.behavior_model_version, 'V2') as behavior_model_version,
+                           coalesce(pc.behavior_model_version, 'V3') as behavior_model_version,
                            p.behavior_seed,
                            s.next_run_at,
                            s.priority
@@ -357,7 +357,7 @@ public class AutoMarketReader {
                             rs.getBigDecimal("recurring_cash_amount"),
                             rs.getBigDecimal("recurring_cash_interval_value"),
                             RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit")),
-                            stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.parseOrDefault(rs.getString("behavior_model_version")),
+                            stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.parseRequired(rs.getString("behavior_model_version")),
                             rs.getObject("behavior_seed") == null
                                     ? DeterministicSeed.fromUtf8(rs.getString("user_key"))
                                     : rs.getLong("behavior_seed"),
@@ -410,7 +410,7 @@ public class AutoMarketReader {
 	                       p.recurring_cash_amount,
 	                       p.recurring_cash_interval_value,
 	                       p.recurring_cash_interval_unit
-	                       , coalesce(pc.behavior_model_version, 'V2') as behavior_model_version
+	                       , coalesce(pc.behavior_model_version, 'V3') as behavior_model_version
 	                       , p.behavior_seed
 	                from stock_auto_participant p
                 left join stock_auto_participant_profile_config pc
@@ -450,67 +450,6 @@ public class AutoMarketReader {
             LocalDateTime recentDividendSince
     ) {
         return findTradingSnapshots(accountIds, symbol, recentDividendSince, recentDividendSince.toLocalDate());
-    }
-
-    public List<AutoParticipantTradingSnapshot> findLegacyTradingSnapshots(
-            List<Long> accountIds,
-            String symbol,
-            LocalDateTime recentDividendSince
-    ) {
-        if (accountIds.isEmpty()) {
-            return List.of();
-        }
-        return jdbcClient.sql(
-                """
-                with scoped_accounts as (
-                    select id,
-                           cash_balance
-                    from stock_account
-                    where id in (:accountIds)
-                ),
-                recent_dividend_cash_flows as (
-                    select f.account_id,
-                           sum(f.amount) as recent_dividend_cash_amount
-                    from stock_account_cash_flow f
-                    join scoped_accounts a on a.id = f.account_id
-                    where f.flow_type = 'DEPOSIT'
-                      and f.reason = 'DIVIDEND_PAYMENT'
-                      and f.created_at >= :recentDividendSince
-                    group by f.account_id
-                ),
-                open_order_summary as (
-                    select o.account_id,
-                           sum(case when o.side = 'BUY' then o.quantity - o.filled_quantity else 0 end) as open_buy_quantity,
-                           sum(case when o.side = 'SELL' then o.quantity - o.filled_quantity else 0 end) as open_sell_quantity
-                      from stock_order o
-                      join scoped_accounts a on a.id = o.account_id
-                     where o.symbol = :symbol
-                       and o.market_type = 'ORDER_BOOK'
-                       and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                       and o.quantity > o.filled_quantity
-                     group by o.account_id
-                )
-                select a.id as account_id,
-                       a.cash_balance,
-                       coalesce(max(h.quantity - h.reserved_quantity), 0) as available_quantity,
-                       coalesce(max(case when h.quantity > 0 then h.average_price else 0 end), 0) as average_price,
-                       coalesce(max(f.recent_dividend_cash_amount), 0) as recent_dividend_cash_amount,
-                       coalesce(max(o.open_buy_quantity), 0) as open_buy_quantity,
-                       coalesce(max(o.open_sell_quantity), 0) as open_sell_quantity
-                  from scoped_accounts a
-                  left join stock_holding h
-                    on h.account_id = a.id
-                   and h.symbol = :symbol
-                  left join recent_dividend_cash_flows f on f.account_id = a.id
-                  left join open_order_summary o on o.account_id = a.id
-                 group by a.id, a.cash_balance
-                """
-        )
-                .param("symbol", symbol)
-                .param("recentDividendSince", recentDividendSince)
-                .param("accountIds", accountIds)
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toLegacyTradingSnapshot(rs))
-                .list();
     }
 
     public List<AutoParticipantTradingSnapshot> findTradingSnapshots(

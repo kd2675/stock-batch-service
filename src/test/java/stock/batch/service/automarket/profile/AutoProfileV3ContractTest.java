@@ -16,7 +16,7 @@ import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVe
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.model.AutoParticipantStrategy;
 
-class AutoProfileV2ContractTest {
+class AutoProfileV3ContractTest {
 
     private static final LocalDate BUSINESS_DATE = LocalDate.of(2027, 1, 18);
     private static final BigDecimal PRICE = new BigDecimal("100.00");
@@ -45,50 +45,6 @@ class AutoProfileV2ContractTest {
             assertThat(decision.desiredOrderCount()).isBetween(0, 8);
             assertThat(decision.signalStrength()).isBetween(0.0, 1.0);
         });
-    }
-
-    @Test
-    void marketMaker_balancedInventory_requestsPairedQuotes() {
-        AutoProfileBehavior behavior = registry.behavior(AutoParticipantProfileType.MARKET_MAKER);
-
-        ProfileDecision decision = behavior.decide(context(
-                behavior,
-                5_000L,
-                new BigDecimal("500000.00"),
-                0.0,
-                neutralSignals(),
-                FundingBudgetSnapshot.EMPTY,
-                BehavioralMemory.EMPTY,
-                1,
-                0L
-        ));
-
-        assertThat(decision)
-                .extracting(ProfileDecision::reason, ProfileDecision::desiredOrderCount)
-                .satisfies(values -> {
-                    assertThat(values.get(0)).isEqualTo(ProfileDecisionReason.INVENTORY_BALANCED);
-                    assertThat((Integer) values.get(1)).isEven().isGreaterThanOrEqualTo(2);
-                });
-    }
-
-    @Test
-    void marketMaker_multipleEligibleSymbols_splitsPortfolioInventoryTargetAcrossUniverse() {
-        AutoProfileBehavior behavior = registry.behavior(AutoParticipantProfileType.MARKET_MAKER);
-
-        ProfileDecision decision = behavior.decide(context(
-                behavior,
-                2_500L,
-                new BigDecimal("750000.00"),
-                0.0,
-                neutralSignals(),
-                FundingBudgetSnapshot.EMPTY,
-                BehavioralMemory.EMPTY,
-                2,
-                0L,
-                2
-        ));
-
-        assertThat(decision.reason()).isEqualTo(ProfileDecisionReason.INVENTORY_BALANCED);
     }
 
     @Test
@@ -587,7 +543,7 @@ class AutoProfileV2ContractTest {
                 null,
                 null,
                 null,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 17L + behavior.type().ordinal(),
                 LocalDateTime.of(BUSINESS_DATE, java.time.LocalTime.NOON)
         );

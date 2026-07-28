@@ -64,7 +64,8 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             Map.entry("chk_stock_liquidity_mandate_mode", Set.of("shadow", "pilot")),
             Map.entry("chk_stock_liquidity_daily_state_status", Set.of("shadow")),
             Map.entry("chk_stock_liquidity_transition_stage", Set.of("shadow_ready")),
-            Map.entry("chk_stock_liquidity_transition_activation", Set.of("shadow_ready"))
+            Map.entry("chk_stock_liquidity_transition_activation", Set.of("shadow_ready")),
+            Map.entry("chk_stock_auto_profile_inventory_mode", Set.of("target_allocation"))
     );
     private static final Map<String, Set<String>> REQUIRED_COLUMNS = requiredColumns();
     private static final Map<String, Set<String>> REQUIRED_NOT_NULL_COLUMNS = Map.ofEntries(
@@ -235,16 +236,16 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             Map.entry("chk_portfolio_snapshot_return_contract", Set.of(
                     "defined", "undefined_zero_contribution", "undefined_negative_contribution", "legacy_unverified"
             )),
-            Map.entry("chk_stock_auto_profile_behavior_model", Set.of("v1", "v2")),
+            Map.entry("chk_stock_auto_profile_behavior_model", Set.of("v3")),
             Map.entry("chk_stock_auto_participant_profile_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
             Map.entry("chk_stock_auto_profile_config_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
             Map.entry("chk_stock_auto_profile_decision_frequency", Set.of("decision_frequency_multiplier")),
             Map.entry("chk_stock_auto_profile_orders_per_decision", Set.of("orders_per_decision_multiplier")),
-            Map.entry("chk_stock_auto_profile_pricing_mode", Set.of("directional", "market_making")),
+            Map.entry("chk_stock_auto_profile_pricing_mode", Set.of("directional")),
             Map.entry("chk_stock_auto_profile_exit_mode", Set.of("signal_driven", "take_profit_first", "hold_losses")),
-            Map.entry("chk_stock_auto_profile_inventory_mode", Set.of("signal_driven", "target_allocation")),
+            Map.entry("chk_stock_auto_profile_inventory_mode", Set.of("signal_driven")),
             Map.entry("chk_stock_order_funding_budget_type", Set.of("payday", "dividend")),
-            Map.entry("chk_stock_order_auto_behavior_model", Set.of("v1", "v2")),
+            Map.entry("chk_stock_order_auto_behavior_model", Set.of("v3")),
             Map.entry("chk_stock_order_auto_profile_type", AUTO_PARTICIPANT_PROFILE_CHECK_TOKENS),
             Map.entry("chk_stock_order_strategy_origin_type", Set.of(
                     "institutional_investor", "liquidity_provider", "issue_underwriter"
@@ -422,7 +423,10 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             )),
             Map.entry("chk_stock_auto_share_return_reason", Set.of(
                     "issue_underwriter_return", "auto_participant_withdrawal_custody"
-            ))
+            )),
+            Map.entry("chk_stock_auto_profile_behavior_model", Set.of("v3")),
+            Map.entry("chk_stock_auto_profile_pricing_mode", Set.of("directional")),
+            Map.entry("chk_stock_auto_profile_inventory_mode", Set.of("signal_driven"))
     );
     private static final Map<String, Set<String>> REQUIRED_INDEXES = Map.ofEntries(
             Map.entry("stock_account_cash_flow", Set.of(
@@ -824,7 +828,32 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
         ));
         requirements.put("stock_order", Set.of(
                 "origin_type", "self_trade_group_id",
-                "funding_budget_type", "expires_at", "auto_profile_type", "auto_behavior_model_version"
+                "funding_budget_type", "expires_at", "auto_profile_type", "auto_behavior_model_version",
+                "auto_policy_version", "auto_behavior_event_sequence", "decision_urgency", "cancel_reason"
+        ));
+        requirements.put("stock_auto_participant_policy_revision", Set.of(
+                "policy_version", "status", "effective_trade_date", "runtime_enabled",
+                "runtime_change_reason", "runtime_changed_by", "runtime_changed_at",
+                "policy_json", "created_by", "created_at", "activated_at", "retired_at"
+        ));
+        requirements.put("stock_auto_participant_daily_behavior_state", Set.of(
+                "simulation_trade_date", "account_id", "user_key", "profile_type",
+                "policy_version", "participant_config_version", "activity_state", "activity_session",
+                "daily_seed", "event_sequence", "fatigue_score", "fatigue_updated_at",
+                "submitted_order_count", "submitted_notional", "observed_execution_count",
+                "observed_execution_notional", "observed_cancel_count", "last_attention_at",
+                "last_decision_at", "last_order_at", "last_result_reason", "last_hold_reason",
+                "recovery_factor", "optimistic_version", "created_at", "updated_at"
+        ));
+        requirements.put("stock_auto_participant_order_schedule", Set.of(
+                "account_id", "user_key", "profile_type", "behavior_model_version",
+                "simulation_trade_date", "next_attention_at", "next_guard_at", "next_run_at",
+                "last_run_at", "lease_until", "lease_owner", "priority", "created_at", "updated_at"
+        ));
+        requirements.put("stock_auto_participant_liquidation_plan", Set.of(
+                "simulation_trade_date", "account_id", "symbol", "urgency", "trigger_reason",
+                "status", "target_quantity", "submitted_quantity", "remaining_quantity",
+                "attempt_count", "next_retry_at", "last_error", "created_at", "updated_at"
         ));
         requirements.put("stock_institution_portfolio", Set.of(
                 "id", "participant_id", "account_id", "portfolio_code", "display_name",

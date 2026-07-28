@@ -192,7 +192,7 @@ public class AutoParticipantCashFlowService {
                 .map(RecurringCashCandidate::accountId)
                 .toList();
         Set<Long> executablePaydayAccountIds =
-                autoParticipantCashFlowReader.findExecutableV2FundingAccountIds(
+                autoParticipantCashFlowReader.findExecutableV3FundingAccountIds(
                         paydayAccountIds,
                         AutoParticipantProfileType.PAYDAY_ACCUMULATOR
                 );

@@ -26,7 +26,7 @@ SET @close_account_profile_check_sql := IF(
            AND constraint_name = 'chk_stock_close_account_snapshot_profile_type'
     ),
     'SELECT 1',
-    'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_profile_type CHECK (participant_profile_type IS NULL OR participant_profile_type IN (''NEWS_REACTIVE'', ''MOMENTUM_FOLLOWER'', ''CONTRARIAN'', ''LOSS_AVERSE'', ''OVERCONFIDENT'', ''HERD_FOLLOWER'', ''MARKET_MAKER'', ''NOISE_TRADER'', ''VALUE_ANCHOR'', ''SCALPER'', ''DAY_TRADER'', ''SWING_TRADER'', ''LONG_TERM_HOLDER'', ''PAYDAY_ACCUMULATOR'', ''DIVIDEND_REINVESTOR'', ''LIMIT_DOWN_TRAPPED'', ''AVERAGE_DOWN_BUYER'', ''STOP_LOSS_TRADER'', ''FOMO_BUYER'', ''PANIC_SELLER'', ''DIP_BUYER'', ''PROFIT_LOCKER'', ''LIQUIDITY_AVOIDANT'', ''CASH_DEFENSIVE'', ''WHALE'', ''SMALL_DIVERSIFIER'', ''OBSERVER''))'
+    'ALTER TABLE stock_close_account_snapshot ADD CONSTRAINT chk_stock_close_account_snapshot_profile_type CHECK (participant_profile_type IS NULL OR participant_profile_type IN (''NEWS_REACTIVE'', ''MOMENTUM_FOLLOWER'', ''CONTRARIAN'', ''LOSS_AVERSE'', ''OVERCONFIDENT'', ''HERD_FOLLOWER'', ''PASSIVE_LIMIT_TRADER'', ''NOISE_TRADER'', ''VALUE_ANCHOR'', ''SCALPER'', ''DAY_TRADER'', ''SWING_TRADER'', ''LONG_TERM_HOLDER'', ''PAYDAY_ACCUMULATOR'', ''DIVIDEND_REINVESTOR'', ''LIMIT_DOWN_TRAPPED'', ''AVERAGE_DOWN_BUYER'', ''STOP_LOSS_TRADER'', ''FOMO_BUYER'', ''PANIC_SELLER'', ''DIP_BUYER'', ''PROFIT_LOCKER'', ''LIQUIDITY_AVOIDANT'', ''CASH_DEFENSIVE'', ''WHALE'', ''SMALL_DIVERSIFIER'', ''OBSERVER''))'
 );
 PREPARE close_account_profile_check_stmt FROM @close_account_profile_check_sql;
 EXECUTE close_account_profile_check_stmt;

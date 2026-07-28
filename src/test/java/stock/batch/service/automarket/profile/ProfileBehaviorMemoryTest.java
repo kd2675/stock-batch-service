@@ -168,7 +168,7 @@ class ProfileBehaviorMemoryTest {
                 null,
                 null,
                 null,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 17L,
                 LocalDateTime.of(BUSINESS_DATE, java.time.LocalTime.NOON)
         );

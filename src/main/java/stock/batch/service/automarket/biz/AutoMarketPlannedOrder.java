@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 import stock.batch.service.automarket.profile.ProfileDecisionReason;
+import stock.batch.service.automarket.v3.AutoParticipantDecisionUrgency;
 import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
 import stock.batch.service.batch.automarket.model.AutoParticipantFundingBudgetType;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
@@ -21,8 +22,44 @@ record AutoMarketPlannedOrder(
         AutoParticipantProfileType profileType,
         AutoParticipantBehaviorModelVersion behaviorModelVersion,
         StockOrderOriginType originType,
-        AutoMarketOrderStrategyOrigin strategyOrigin
+        AutoMarketOrderStrategyOrigin strategyOrigin,
+        Long autoPolicyVersion,
+        Long autoBehaviorEventSequence,
+        AutoParticipantDecisionUrgency decisionUrgency
 ) {
+
+    AutoMarketPlannedOrder(
+            long accountId,
+            String symbol,
+            String side,
+            BigDecimal price,
+            long quantity,
+            AutoParticipantFundingBudgetType fundingBudgetType,
+            ProfileDecisionReason decisionReason,
+            LocalDateTime expiresAt,
+            AutoParticipantProfileType profileType,
+            AutoParticipantBehaviorModelVersion behaviorModelVersion,
+            StockOrderOriginType originType,
+            AutoMarketOrderStrategyOrigin strategyOrigin
+    ) {
+        this(
+                accountId,
+                symbol,
+                side,
+                price,
+                quantity,
+                fundingBudgetType,
+                decisionReason,
+                expiresAt,
+                profileType,
+                behaviorModelVersion,
+                originType,
+                strategyOrigin,
+                null,
+                null,
+                null
+        );
+    }
 
     AutoMarketPlannedOrder(long accountId, String symbol, String side, BigDecimal price, long quantity) {
         this(
@@ -37,6 +74,9 @@ record AutoMarketPlannedOrder(
                 null,
                 null,
                 StockOrderOriginType.AUTO_PARTICIPANT,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -61,6 +101,9 @@ record AutoMarketPlannedOrder(
                 null,
                 null,
                 originType,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -85,6 +128,9 @@ record AutoMarketPlannedOrder(
                 null,
                 null,
                 StockOrderOriginType.AUTO_PARTICIPANT,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -110,6 +156,9 @@ record AutoMarketPlannedOrder(
                 null,
                 null,
                 StockOrderOriginType.AUTO_PARTICIPANT,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -138,6 +187,9 @@ record AutoMarketPlannedOrder(
                 profileType,
                 behaviorModelVersion,
                 StockOrderOriginType.AUTO_PARTICIPANT,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -157,6 +209,17 @@ record AutoMarketPlannedOrder(
                 && strategyOrigin == null) {
             throw new IllegalArgumentException(
                     "Institutional market-role orders require strategy-origin metadata"
+            );
+        }
+        if (originType == StockOrderOriginType.AUTO_PARTICIPANT
+                && behaviorModelVersion == AutoParticipantBehaviorModelVersion.V3
+                && (autoPolicyVersion == null
+                || autoPolicyVersion <= 0
+                || autoBehaviorEventSequence == null
+                || autoBehaviorEventSequence < 0
+                || decisionUrgency == null)) {
+            throw new IllegalArgumentException(
+                    "V3 auto-participant orders require policy, event sequence, and urgency metadata"
             );
         }
     }

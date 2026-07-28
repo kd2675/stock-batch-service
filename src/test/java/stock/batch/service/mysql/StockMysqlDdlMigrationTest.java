@@ -61,6 +61,7 @@ class StockMysqlDdlMigrationTest {
             "stock_system_custody_withdrawal_alter.sql",
             "stock_institution_engine_alter.sql",
             "stock_institution_live_only_alter.sql",
+            "stock_auto_participant_v3_alter.sql",
             "stock_liquidity_provider_engine_alter.sql",
             "stock_issuance_underwriting_alter.sql",
             "stock_market_role_independent_provisioning_alter.sql",
@@ -258,34 +259,6 @@ class StockMysqlDdlMigrationTest {
                 "stock_order",
                 "idx_stock_order_auto_reprice"
         )).isZero();
-    }
-
-    @Test
-    void autoMarketRepriceCandidateQuery_usesValidMySqlAliasAndIndexHintOrder() throws IOException {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()
-        );
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
-        resetToCanonicalSchema(dataSource, jdbcTemplate);
-        AutoMarketOrderReader reader = new AutoMarketOrderReader(jdbcTemplate);
-        AutoMarketConfig config = new AutoMarketConfig(
-                "DEMO001",
-                100,
-                60,
-                1_000L,
-                new BigDecimal("100.00"),
-                new BigDecimal("10000.00"),
-                new BigDecimal("10000.00"),
-                null
-        );
-
-        assertThat(reader.findV2MarketMakerReplacementCandidates(
-                config,
-                List.of(1L),
-                LocalDateTime.of(2027, 1, 18, 9, 0),
-                "BUY",
-                10
-        )).isEmpty();
     }
 
     @Test
@@ -586,7 +559,7 @@ class StockMysqlDdlMigrationTest {
                  where profile_type = 'NOISE_TRADER'
                 """,
                 String.class
-        )).isEqualTo("V2");
+        )).isEqualTo("V3");
         assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant_profile_config"))
                 .contains("chk_stock_auto_profile_behavior_model");
         assertThat(showCreateTable(jdbcTemplate, "stock_auto_participant"))
@@ -1276,7 +1249,7 @@ class StockMysqlDdlMigrationTest {
                     recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
                 ) values
                   ('NEWS_REACTIVE', 1, 1, 1, 1, 0, 0, 0, 0, 30, 30, 'DAY', current_timestamp),
-                  ('MARKET_MAKER', 1, 1, 1, 1, 0, 0, 0, 0, 30, 30, 'DAY', current_timestamp)
+                  ('PASSIVE_LIMIT_TRADER', 1, 1, 1, 1, 0, 0, 0, 0, 30, 30, 'DAY', current_timestamp)
                 """
         );
 
@@ -1296,7 +1269,7 @@ class StockMysqlDdlMigrationTest {
                 BigDecimal.class
         )).isEqualByComparingTo("1.3000");
         assertThat(jdbcTemplate.queryForObject(
-                "select price_pressure_sensitivity from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select price_pressure_sensitivity from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 BigDecimal.class
         )).isEqualByComparingTo("0.3000");
         assertThat(columnCount(
@@ -1351,7 +1324,7 @@ class StockMysqlDdlMigrationTest {
                     recurring_deposit_amount, recurring_deposit_interval_days,
                     recurring_deposit_interval_value, recurring_deposit_interval_unit, updated_at
                 ) values
-                  ('MARKET_MAKER', 0.95, 1.25, 0.65, 0.30, 0.60, 1.00, 0.45, 0.00, 0.00, 0, 30, 0, 'DAY', current_timestamp),
+                  ('PASSIVE_LIMIT_TRADER', 0.95, 1.25, 0.65, 0.30, 0.60, 1.00, 0.45, 0.00, 0.00, 0, 30, 0, 'DAY', current_timestamp),
                   ('PROFIT_LOCKER', 0.00, 1.35, 1.25, 1.00, 0.55, 0.85, 0.00, 0.95, 1.00, 0, 30, 0, 'DAY', current_timestamp)
                 """
         );
@@ -1363,19 +1336,19 @@ class StockMysqlDdlMigrationTest {
         );
 
         assertThat(jdbcTemplate.queryForObject(
-                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 BigDecimal.class
         )).isEqualByComparingTo("2.0833");
         assertThat(jdbcTemplate.queryForObject(
-                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 BigDecimal.class
         )).isEqualByComparingTo("1.2500");
         assertThat(jdbcTemplate.queryForObject(
-                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 String.class
         )).isEqualTo("MARKET_MAKING");
         assertThat(jdbcTemplate.queryForObject(
-                "select inventory_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select inventory_mode from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 String.class
         )).isEqualTo("TARGET_ALLOCATION");
         assertThat(jdbcTemplate.queryForObject(
@@ -1389,7 +1362,7 @@ class StockMysqlDdlMigrationTest {
                    set decision_frequency_multiplier = 9.0000,
                        orders_per_decision_multiplier = 2.0000,
                        pricing_mode = 'DIRECTIONAL'
-                 where profile_type = 'MARKET_MAKER'
+                 where profile_type = 'PASSIVE_LIMIT_TRADER'
                 """
         );
         executeScript(
@@ -1398,15 +1371,15 @@ class StockMysqlDdlMigrationTest {
                 false
         );
         assertThat(jdbcTemplate.queryForObject(
-                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select decision_frequency_multiplier from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 BigDecimal.class
         )).isEqualByComparingTo("9.0000");
         assertThat(jdbcTemplate.queryForObject(
-                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select orders_per_decision_multiplier from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 BigDecimal.class
         )).isEqualByComparingTo("2.0000");
         assertThat(jdbcTemplate.queryForObject(
-                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'MARKET_MAKER'",
+                "select pricing_mode from stock_auto_participant_profile_config where profile_type = 'PASSIVE_LIMIT_TRADER'",
                 String.class
         )).isEqualTo("DIRECTIONAL");
         assertThat(jdbcTemplate.queryForObject(

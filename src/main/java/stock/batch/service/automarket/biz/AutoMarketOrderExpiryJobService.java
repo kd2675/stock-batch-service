@@ -94,9 +94,6 @@ public class AutoMarketOrderExpiryJobService {
         );
         Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies =
                 autoProfileBehaviorSupport.policiesWithOverrides(autoMarketReader.findParticipantProfileConfigs());
-        List<Long> activeV2MarketMakerAccountIds =
-                autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds();
-
         int expiredOrders = 0;
         for (AutoMarketConfig config : configs) {
             // Candidate discovery may scan every open order for the symbol. Keep it outside the
@@ -106,8 +103,7 @@ public class AutoMarketOrderExpiryJobService {
                     autoMarketOrderExpiryService.planExpiryCandidates(
                             config,
                             profilePolicies,
-                            clock.simulationDateTime(),
-                            activeV2MarketMakerAccountIds
+                            clock.simulationDateTime()
                     );
             if (plan.hasWork()) {
                 expiredOrders += expireSymbolOrders(config, plan);

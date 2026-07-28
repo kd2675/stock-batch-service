@@ -36,7 +36,7 @@ public class LongTermHolderBehavior extends AbstractAutoProfileBehavior {
         double longReturn = context.marketSignals().return20Day();
         int holdingDays = context.behavioralMemory().holdingTradingDays();
         int minimumHoldingDays = Math.toIntExact(AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:LONG_TERM:MINIMUM_HOLDING_DAYS", 15L, 25L
+                context.strategy(), "V3:LONG_TERM:MINIMUM_HOLDING_DAYS", 15L, 25L
         ));
         boolean emergencyExit = concentration > 0.55 || context.unrealizedReturn() <= -0.35;
         if (context.hasHolding() && emergencyExit) {

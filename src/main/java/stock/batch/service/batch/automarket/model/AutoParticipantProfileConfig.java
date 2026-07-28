@@ -65,7 +65,7 @@ public record AutoParticipantProfileConfig(
     ) {
         this(
                 profileType,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 newsWeight,
                 momentumWeight,
                 contrarianWeight,

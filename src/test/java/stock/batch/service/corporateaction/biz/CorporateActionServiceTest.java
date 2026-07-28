@@ -382,12 +382,12 @@ class CorporateActionServiceTest {
     }
 
     @Test
-    void processCashDividendPaymentStep_grantsPurposeBudgetToEveryExecutableV2ReinvestorProfileAccount() {
+    void processCashDividendPaymentStep_grantsPurposeBudgetToEveryExecutableV3ReinvestorProfileAccount() {
         insertCompletedMarketCloseForToday();
         insertOrderBookInstrument("ZQ041", 100000L, 100000L);
         long actionId = insertAppliedCashDividend("ZQ041", LocalDate.now());
-        insertProfileBehaviorModel("DIVIDEND_REINVESTOR", "V2");
-        insertProfileBehaviorModel("NOISE_TRADER", "V2");
+        insertProfileBehaviorModel("DIVIDEND_REINVESTOR", "V3");
+        insertProfileBehaviorModel("NOISE_TRADER", "V3");
         for (String userKey : new String[]{
                 "dividend-v1",
                 "dividend-v2-other",

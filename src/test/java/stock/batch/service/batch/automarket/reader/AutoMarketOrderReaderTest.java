@@ -45,7 +45,7 @@ class AutoMarketOrderReaderTest {
         jdbcTemplate.execute("""
                 create table stock_auto_participant_profile_config(
                     profile_type varchar(64) not null primary key,
-                    behavior_model_version varchar(20) not null default 'V2'
+                    behavior_model_version varchar(20) not null default 'V3'
                 )
                 """);
         jdbcTemplate.execute("""
@@ -121,20 +121,20 @@ class AutoMarketOrderReaderTest {
         jdbcTemplate.update("insert into stock_auto_participant(user_key, profile_type) values ('auto-010', 'SCALPER')");
         insertOrder(110L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("70000.00"), 3L, 0L, new BigDecimal("210000.00"), now.minusMinutes(5));
         jdbcTemplate.update(
-                "update stock_order set expires_at = ?, auto_profile_type = 'MARKET_MAKER', auto_behavior_model_version = 'V2' where id = 110",
+                "update stock_order set expires_at = ?, auto_profile_type = 'PASSIVE_LIMIT_TRADER', auto_behavior_model_version = 'V3' where id = 110",
                 now
         );
 
         List<AutoOrder> orders = reader.findExpiredAutoOrders(
                 config,
-                Map.of(AutoParticipantProfileType.MARKET_MAKER, now.minusHours(1)),
+                Map.of(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.minusHours(1)),
                 now,
                 10
         );
 
         assertThat(orders).singleElement().satisfies(order -> {
-            assertThat(order.profileType()).isEqualTo(AutoParticipantProfileType.MARKET_MAKER);
-            assertThat(order.behaviorModelVersion()).isEqualTo(AutoParticipantBehaviorModelVersion.V2);
+            assertThat(order.profileType()).isEqualTo(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER);
+            assertThat(order.behaviorModelVersion()).isEqualTo(AutoParticipantBehaviorModelVersion.V3);
             assertThat(order.expiresAt()).isEqualTo(now);
         });
     }
@@ -174,38 +174,6 @@ class AutoMarketOrderReaderTest {
     }
 
     @Test
-    void findV2MarketMakerReplacementCandidates_readsOnlyOldOpenPinnedMarketMakerOrders() {
-        AutoMarketConfig config = new AutoMarketConfig(
-                "STOCK001", 100, 15, 100000L,
-                new BigDecimal("100.00"), new BigDecimal("70000.00"),
-                new BigDecimal("70000.00"), null
-        );
-        LocalDateTime createdBefore = LocalDateTime.of(2026, 6, 29, 10, 0);
-        insertOrder(120L, 10L, "STOCK001", "BUY", "LIMIT", "PENDING", new BigDecimal("69900.00"),
-                3L, 0L, new BigDecimal("209700.00"), createdBefore.minusSeconds(1));
-        insertOrder(121L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70100.00"),
-                3L, 0L, BigDecimal.ZERO, createdBefore);
-        insertOrder(123L, 10L, "STOCK001", "SELL", "LIMIT", "PENDING", new BigDecimal("70200.00"),
-                3L, 0L, BigDecimal.ZERO, createdBefore.minusSeconds(2));
-        insertOrder(122L, 10L, "STOCK001", "BUY", "LIMIT", "CANCELLED", new BigDecimal("69800.00"),
-                3L, 0L, BigDecimal.ZERO, createdBefore.minusMinutes(1));
-        jdbcTemplate.update(
-                "update stock_order set auto_profile_type = 'MARKET_MAKER', auto_behavior_model_version = 'V2', expires_at = ? where id in (120, 121, 122, 123)",
-                createdBefore.plusMinutes(10)
-        );
-
-        List<AutoOrder> buyCandidates = reader.findV2MarketMakerReplacementCandidates(
-                config, List.of(10L), createdBefore, "BUY", 10
-        );
-        List<AutoOrder> sellCandidates = reader.findV2MarketMakerReplacementCandidates(
-                config, List.of(10L), createdBefore, "SELL", 10
-        );
-
-        assertThat(buyCandidates).extracting(AutoOrder::id).containsExactly(120L);
-        assertThat(sellCandidates).extracting(AutoOrder::id).containsExactly(123L);
-    }
-
-    @Test
     void findExpiredAutoOrders_exactProfileThresholdPreventsLegacyHeadOfLineBlocking() {
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001", 100, 15, 100000L,
@@ -242,33 +210,6 @@ class AutoMarketOrderReaderTest {
         );
 
         assertThat(orders).extracting(AutoOrder::id).containsExactly(131L);
-    }
-
-    @Test
-    void findActiveV2MarketMakerAccountIds_appliesModelAtProfileScope() {
-        jdbcTemplate.update("insert into stock_account(id, user_key) values (10, 'auto-v2')");
-        jdbcTemplate.update("insert into stock_account(id, user_key) values (12, 'auto-other')");
-        jdbcTemplate.update("""
-                insert into stock_auto_participant_profile_config(profile_type, behavior_model_version)
-                values ('MARKET_MAKER', 'V2')
-                """);
-        jdbcTemplate.update("""
-                insert into stock_auto_participant(
-                    user_key, profile_type
-                ) values
-                    ('auto-v2', 'MARKET_MAKER'),
-                    ('auto-other', 'NOISE_TRADER')
-                """);
-
-        assertThat(reader.findActiveV2MarketMakerAccountIds(10)).containsExactly(10L);
-
-        jdbcTemplate.update("""
-                update stock_auto_participant_profile_config
-                   set behavior_model_version = 'V1'
-                 where profile_type = 'MARKET_MAKER'
-                """);
-
-        assertThat(reader.findActiveV2MarketMakerAccountIds(10)).isEmpty();
     }
 
     @Test

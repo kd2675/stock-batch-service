@@ -24,6 +24,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.stereotype.Service;
@@ -35,6 +36,8 @@ import stock.batch.service.automarket.lock.AutoMarketProfileLock;
 import stock.batch.service.automarket.profile.ProfilePolicy;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
 import stock.batch.service.automarket.queue.AutoMarketReadyProfileQueue;
+import stock.batch.service.automarket.v3.AutoParticipantBehaviorKernel;
+import stock.batch.service.automarket.v3.AutoParticipantV3Policy;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketHistoricalSignal;
 import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
@@ -84,6 +87,14 @@ public class AutoMarketService {
     private final Map<AutoMarketOrderDropReason, Counter> droppedOrderCounters;
     private final MeterRegistry meterRegistry;
     private final AtomicBoolean candidateBudgetWarningLogged = new AtomicBoolean();
+    private final AutoParticipantBehaviorKernel behaviorKernel =
+            new AutoParticipantBehaviorKernel();
+    private AutoParticipantRiskGuardService riskGuardService;
+
+    @Autowired(required = false)
+    void setRiskGuardService(AutoParticipantRiskGuardService riskGuardService) {
+        this.riskGuardService = riskGuardService;
+    }
 
     @Value("${stock.batch.auto-market.generation-participant-chunk-size:25}")
     private int generationParticipantChunkSize = 25;
@@ -214,15 +225,18 @@ public class AutoMarketService {
         if (!isAutoMarketSessionActive(clock)) {
             return 0;
         }
+        int guardOrderCount = riskGuardService == null
+                ? 0
+                : riskGuardService.processDueGuards(clock.simulationDateTime());
         if (!readyProfileQueue.hasDueProfile(clock.simulationDateTime())) {
-            return 0;
+            return guardOrderCount;
         }
         List<AutoMarketConfig> configs = autoMarketReader.findEnabledConfigs();
         if (configs.isEmpty()) {
-            return 0;
+            return guardOrderCount;
         }
         if (!hasCandidateCapacity(configs.size())) {
-            return 0;
+            return guardOrderCount;
         }
 
         AutoMarketRunCount totalCount = new AutoMarketRunCount();
@@ -254,9 +268,9 @@ public class AutoMarketService {
             requeueProfilesWithoutCandidates(readyProfiles, candidatesByProfile, clock.simulationDateTime());
             activeParticipantCount = activeParticipantCount(candidatesByProfile);
             List<String> activeSymbols = candidateSymbols(candidatesByProfile);
-            List<String> v2Symbols = candidateSymbols(
+            List<String> v3Symbols = candidateSymbols(
                     candidatesByProfile,
-                    AutoParticipantBehaviorModelVersion.V2
+                    AutoParticipantBehaviorModelVersion.V3
             );
             Map<String, BigDecimal> momentumReferencePricesBySymbol = activeSymbols.isEmpty()
                     ? Map.of()
@@ -264,16 +278,16 @@ public class AutoMarketService {
                             activeSymbols,
                             clock.simulationDateTime().minus(PROJECT_SHORT_MOMENTUM_WINDOW)
                     );
-            Map<String, BigDecimal> scalperReferencePricesBySymbol = v2Symbols.isEmpty()
+            Map<String, BigDecimal> scalperReferencePricesBySymbol = v3Symbols.isEmpty()
                     ? Map.of()
                     : autoMarketReader.findLatestPricesAtOrBefore(
-                            v2Symbols,
+                            v3Symbols,
                             clock.simulationDateTime().minus(PROJECT_SCALPER_MOMENTUM_WINDOW)
                     );
-            Map<String, AutoMarketHistoricalSignal> historicalSignalsBySymbol = v2Symbols.isEmpty()
+            Map<String, AutoMarketHistoricalSignal> historicalSignalsBySymbol = v3Symbols.isEmpty()
                     ? Map.of()
                     : autoMarketReader.findHistoricalMarketSignals(
-                            v2Symbols,
+                            v3Symbols,
                             clock.simulationDateTime().toLocalDate()
                     );
             List<ProfileGenerationWork> works = profileGenerationWorks(
@@ -309,7 +323,7 @@ public class AutoMarketService {
                 totalCount.processedCount(),
                 elapsedMillis(startedNanos)
         );
-        return totalCount.processedCount();
+        return guardOrderCount + totalCount.processedCount();
     }
 
     private int activeParticipantCount(Map<AutoParticipantProfileType, List<AutoParticipantSymbolStrategy>> candidatesByProfile) {
@@ -544,20 +558,20 @@ public class AutoMarketService {
             return List.of();
         }
 
-        List<AutoParticipantSymbolStrategy> executedV2Candidates = candidates.stream()
+        List<AutoParticipantSymbolStrategy> v3Candidates = candidates.stream()
                 .filter(candidate -> candidate.strategy().behaviorModelVersion()
-                        == AutoParticipantBehaviorModelVersion.V2)
+                        == AutoParticipantBehaviorModelVersion.V3)
                 .toList();
         Map<Long, Map<String, Long>> projectedQuantitiesByAccount = profileType
                 == AutoParticipantProfileType.SMALL_DIVERSIFIER
-                && !executedV2Candidates.isEmpty()
+                && !v3Candidates.isEmpty()
                 ? autoMarketReader.findProjectedSymbolQuantities(
-                        executedV2Candidates.stream()
+                        v3Candidates.stream()
                                 .map(candidate -> candidate.strategy().accountId())
                                 .distinct()
                                 .sorted()
                                 .toList(),
-                        executedV2Candidates.stream()
+                        v3Candidates.stream()
                                 .map(AutoParticipantSymbolStrategy::symbol)
                                 .distinct()
                                 .sorted()
@@ -565,44 +579,46 @@ public class AutoMarketService {
                 )
                 : Map.of();
 
-        Map<String, Double> targetCountsBySymbol = targetCountsBySymbol(
-                profileType,
-                candidates,
-                configBySymbol,
-                profilePolicies,
-                now,
-                candidatesByUserKey.size()
-        );
-        Map<String, Integer> selectedCountsBySymbol = new LinkedHashMap<>();
         List<AutoParticipantSymbolStrategy> selected = new ArrayList<>();
         for (Map.Entry<String, List<AutoParticipantSymbolStrategy>> entry : candidatesByUserKey.entrySet()) {
-            AutoParticipantSymbolStrategy best = null;
-            double bestScore = Double.NEGATIVE_INFINITY;
-            for (AutoParticipantSymbolStrategy candidate : entry.getValue()) {
-                AutoMarketConfig config = configBySymbol.get(candidate.symbol());
-                double targetCount = Math.max(1.0, targetCountsBySymbol.getOrDefault(candidate.symbol(), 1.0));
-                int selectedCount = selectedCountsBySymbol.getOrDefault(candidate.symbol(), 0);
-                double diversityPenalty = selectedCount / targetCount * Math.max(0.0, symbolSelectionDiversityPenalty);
-                double adjustedScore = symbolSelectionScore(candidate, config, profilePolicies, now)
-                        + participantSymbolAffinity(entry.getKey(), candidate.symbol())
-                        + smallDiversifierExposureScore(
-                                profileType,
-                                candidate,
-                                entry.getValue(),
-                                configBySymbol,
-                                projectedQuantitiesByAccount
-                        )
-                        - diversityPenalty;
-                if (best == null || adjustedScore > bestScore) {
-                    best = candidate;
-                    bestScore = adjustedScore;
-                }
-            }
-            if (best == null) {
+            AutoParticipantStrategy strategy = entry.getValue().getFirst().strategy();
+            AutoParticipantV3Policy v3Policy = strategy.v3Policy() == null
+                    ? AutoParticipantV3Policy.defaults(Math.max(1L, strategy.policyVersion()))
+                    : strategy.v3Policy();
+            String selectedSymbol = behaviorKernel.selectVoluntarySymbol(
+                    entry.getValue().stream()
+                            .map(candidate -> new AutoParticipantBehaviorKernel.SymbolCandidate(
+                                    candidate.symbol(),
+                                    true,
+                                    participantSymbolAffinity(entry.getKey(), candidate.symbol()),
+                                    symbolSelectionScore(
+                                            candidate,
+                                            configBySymbol.get(candidate.symbol()),
+                                            profilePolicies,
+                                            now
+                                    ) + smallDiversifierExposureScore(
+                                            profileType,
+                                            candidate,
+                                            entry.getValue(),
+                                            configBySymbol,
+                                            projectedQuantitiesByAccount
+                                    ),
+                                    Math.clamp(candidate.strategy().intensity(), 1, 10) / 10.0,
+                                    0.70
+                            ))
+                            .toList(),
+                    strategy.behaviorSeed(),
+                    now.toLocalDate(),
+                    strategy.behaviorEventSequence(),
+                    v3Policy
+            );
+            if (selectedSymbol == null) {
                 continue;
             }
-            selected.add(best);
-            selectedCountsBySymbol.merge(best.symbol(), 1, Integer::sum);
+            entry.getValue().stream()
+                    .filter(candidate -> candidate.symbol().equals(selectedSymbol))
+                    .findFirst()
+                    .ifPresent(selected::add);
         }
         return List.copyOf(selected);
     }
@@ -615,7 +631,7 @@ public class AutoMarketService {
             Map<Long, Map<String, Long>> projectedQuantitiesByAccount
     ) {
         if (profileType != AutoParticipantProfileType.SMALL_DIVERSIFIER
-                || candidate.strategy().behaviorModelVersion() != AutoParticipantBehaviorModelVersion.V2
+                || candidate.strategy().behaviorModelVersion() != AutoParticipantBehaviorModelVersion.V3
                 || eligibleCandidates.isEmpty()) {
             return 0.0;
         }
@@ -684,7 +700,7 @@ public class AutoMarketService {
             double reportScore
     ) {
         double selectionReportScore = strategy.behaviorModelVersion()
-                == stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.V2
+                == stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.V3
                         ? Math.abs(reportScore)
                         : reportScore;
         double weightedSignal = policy.momentumWeight() * momentum
@@ -786,7 +802,7 @@ public class AutoMarketService {
                     positiveMomentum * 0.55 - negativeMomentum * 0.12;
             case CONTRARIAN, DIP_BUYER, AVERAGE_DOWN_BUYER, VALUE_ANCHOR, LIMIT_DOWN_TRAPPED ->
                     negativeMomentum * 0.55 - positiveMomentum * 0.10;
-            case MARKET_MAKER, LIQUIDITY_AVOIDANT, CASH_DEFENSIVE, OBSERVER ->
+            case PASSIVE_LIMIT_TRADER, LIQUIDITY_AVOIDANT, CASH_DEFENSIVE, OBSERVER ->
                     quietMarket * 0.35;
             case SCALPER, DAY_TRADER, SWING_TRADER ->
                     Math.abs(momentum) * 0.25 + positiveMomentum * 0.10;
@@ -976,12 +992,23 @@ public class AutoMarketService {
             return count;
         }
 
-        Set<String> dueUserKeys = dueStrategies.stream()
-                .map(AutoParticipantStrategy::userKey)
-                .collect(Collectors.toSet());
+        Map<String, AutoParticipantStrategy> dueStrategiesByUserKey = dueStrategies.stream()
+                .collect(Collectors.toMap(
+                        AutoParticipantStrategy::userKey,
+                        strategy -> strategy,
+                        (left, right) -> left
+                ));
         List<AutoParticipantSymbolStrategy> dueCandidates = work.candidates()
                 .stream()
-                .filter(candidate -> dueUserKeys.contains(candidate.strategy().userKey()))
+                .filter(candidate -> dueStrategiesByUserKey.containsKey(
+                        candidate.strategy().userKey()
+                ))
+                .map(candidate -> new AutoParticipantSymbolStrategy(
+                        candidate.symbol(),
+                        dueStrategiesByUserKey.get(candidate.strategy().userKey()),
+                        candidate.nextRunAt(),
+                        candidate.priority()
+                ))
                 .toList();
         Map<String, Integer> eligibleSymbolCountsByUserKey = dueCandidates.stream()
                 .collect(Collectors.groupingBy(

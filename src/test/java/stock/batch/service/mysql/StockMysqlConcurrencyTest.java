@@ -1126,7 +1126,7 @@ class StockMysqlConcurrencyTest {
     }
 
     @Test
-    void marketMakerBalancedPair_concurrentPlansCommitOneCompletePairAndNeverHalfPair() throws Exception {
+    void passiveLimitTraderBalancedPair_concurrentPlansCommitOneCompletePairAndNeverHalfPair() throws Exception {
         execute(
                 """
                 insert into stock_account(id, user_key, status, cash_balance, revision)

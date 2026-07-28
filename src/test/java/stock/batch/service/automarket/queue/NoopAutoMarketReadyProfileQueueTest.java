@@ -25,7 +25,7 @@ class NoopAutoMarketReadyProfileQueueTest {
 
         assertThatThrownBy(() -> queue.replaceAll(List.of(
                 new AutoMarketReadyProfileQueue.ReadyProfile(
-                        AutoParticipantProfileType.MARKET_MAKER,
+                        AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                         LocalDateTime.of(2026, 7, 22, 5, 30)
                 )
         )))

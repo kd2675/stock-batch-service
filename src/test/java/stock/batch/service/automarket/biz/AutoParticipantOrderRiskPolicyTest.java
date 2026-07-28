@@ -151,7 +151,7 @@ class AutoParticipantOrderRiskPolicyTest {
                 null,
                 null,
                 null,
-                AutoParticipantBehaviorModelVersion.V2,
+                AutoParticipantBehaviorModelVersion.V3,
                 100L + profileType.ordinal(),
                 LocalDateTime.of(2027, 1, 18, 12, 0)
         );

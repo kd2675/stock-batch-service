@@ -39,10 +39,10 @@ public class SwingTraderBehavior extends AbstractAutoProfileBehavior {
         );
         int holdingDays = context.behavioralMemory().holdingTradingDays();
         int minimumHoldingDays = Math.toIntExact(AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:SWING:MINIMUM_HOLDING_DAYS", 2L, 3L
+                context.strategy(), "V3:SWING:MINIMUM_HOLDING_DAYS", 2L, 3L
         ));
         int maximumHoldingDays = Math.toIntExact(AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:SWING:MAXIMUM_HOLDING_DAYS", 8L, 10L
+                context.strategy(), "V3:SWING:MAXIMUM_HOLDING_DAYS", 8L, 10L
         ));
         if (context.hasHolding() && context.unrealizedReturn() <= -0.15) {
             return signalDecision(SELL, ProfileDecisionReason.EXIT_THRESHOLD, 1, -context.unrealizedReturn());

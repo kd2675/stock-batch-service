@@ -18,7 +18,7 @@ class AutoMarketServiceProfileSelectionTest {
 
     @Test
     void profileSelectionSignal_v2NewsSignal_usesEqualActivityForOppositeDirections() {
-        AutoParticipantStrategy strategy = strategy(AutoParticipantBehaviorModelVersion.V2);
+        AutoParticipantStrategy strategy = strategy(AutoParticipantBehaviorModelVersion.V3);
 
         double bullish = AutoMarketService.profileSelectionSignal(strategy, newsPolicy, 0.0, 0.8);
         double bearish = AutoMarketService.profileSelectionSignal(strategy, newsPolicy, 0.0, -0.8);

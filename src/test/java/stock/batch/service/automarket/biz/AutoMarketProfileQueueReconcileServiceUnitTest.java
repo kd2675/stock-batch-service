@@ -63,7 +63,7 @@ class AutoMarketProfileQueueReconcileServiceUnitTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 9, 0);
         List<AutoMarketConfig> configs = List.of(autoMarketConfig("DEMO001"));
         List<AutoMarketReadyProfileQueue.ReadyProfile> readyProfiles = List.of(
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now),
                 new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.SCALPER, now.plusSeconds(3))
         );
         when(simulationClockService.currentSnapshot()).thenReturn(clock(now));
@@ -80,7 +80,7 @@ class AutoMarketProfileQueueReconcileServiceUnitTest {
         verify(scheduleService).findNextProfileSchedules(now, 100);
         verify(readyProfileQueue).removeAll(argThat(profileTypes ->
                 profileTypes.size() == AutoParticipantProfileType.values().length - readyProfiles.size()
-                        && !profileTypes.contains(AutoParticipantProfileType.MARKET_MAKER)
+                        && !profileTypes.contains(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER)
                         && !profileTypes.contains(AutoParticipantProfileType.SCALPER)
         ));
         verify(readyProfileQueue).enqueueAll(readyProfiles);
@@ -133,7 +133,7 @@ class AutoMarketProfileQueueReconcileServiceUnitTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 5, 30);
         List<AutoMarketConfig> configs = List.of(autoMarketConfig("DEMO001"));
         List<AutoMarketReadyProfileQueue.ReadyProfile> readyProfiles = List.of(
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now),
                 new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.SCALPER, now.plusSeconds(3))
         );
         when(simulationClockService.currentSnapshot()).thenReturn(clock(now));
@@ -169,7 +169,7 @@ class AutoMarketProfileQueueReconcileServiceUnitTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 5, 30);
         List<AutoMarketConfig> configs = List.of(autoMarketConfig("DEMO001"));
         List<AutoMarketReadyProfileQueue.ReadyProfile> readyProfiles = List.of(
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now),
                 new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.SCALPER, now.plusSeconds(3))
         );
         when(simulationClockService.currentSnapshot()).thenReturn(clock(now));

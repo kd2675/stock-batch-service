@@ -28,16 +28,16 @@ public class ScalperBehavior extends AbstractAutoProfileBehavior {
                 ProfilePolicy::momentumWeight
         );
         long liquidationWindowSeconds = AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:SCALPER:CLOSE_WINDOW_SECONDS", 600L, 1_200L
+                context.strategy(), "V3:SCALPER:CLOSE_WINDOW_SECONDS", 600L, 1_200L
         );
         double takeProfitReturn = AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:SCALPER:TAKE_PROFIT_RETURN", 0.004, 0.006
+                context.strategy(), "V3:SCALPER:TAKE_PROFIT_RETURN", 0.004, 0.006
         );
         double stopLossReturn = -AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:SCALPER:STOP_LOSS_RETURN", 0.006, 0.009
+                context.strategy(), "V3:SCALPER:STOP_LOSS_RETURN", 0.006, 0.009
         );
         long maximumHoldingSeconds = AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:SCALPER:MAXIMUM_HOLDING_SECONDS", 180L, 300L
+                context.strategy(), "V3:SCALPER:MAXIMUM_HOLDING_SECONDS", 180L, 300L
         );
         if (context.hasHolding() && context.marketSignals().secondsToClose() <= liquidationWindowSeconds) {
             return signalDecision(

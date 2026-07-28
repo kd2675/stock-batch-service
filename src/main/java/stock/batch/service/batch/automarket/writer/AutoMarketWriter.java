@@ -350,6 +350,14 @@ public class AutoMarketWriter {
     }
 
     public int cancelOpenOrders(List<AutoOrder> orders, LocalDateTime cancelledAt) {
+        return cancelOpenOrders(orders, cancelledAt, "TTL_EXPIRED");
+    }
+
+    public int cancelOpenOrders(
+            List<AutoOrder> orders,
+            LocalDateTime cancelledAt,
+            String cancelReason
+    ) {
         List<Long> orderIds = orders.stream().map(AutoOrder::id).distinct().sorted().toList();
         if (orderIds.isEmpty()) {
             return 0;
@@ -358,7 +366,8 @@ public class AutoMarketWriter {
             throw new IllegalArgumentException("Auto-order expiry chunk contains duplicate order ids");
         }
         String placeholders = String.join(",", Collections.nCopies(orderIds.size(), "?"));
-        List<Object> parameters = new ArrayList<>(orderIds.size() + 1);
+        List<Object> parameters = new ArrayList<>(orderIds.size() + 2);
+        parameters.add(cancelReason);
         parameters.add(cancelledAt);
         parameters.addAll(orderIds);
         return jdbcTemplate.update(
@@ -366,6 +375,7 @@ public class AutoMarketWriter {
                 update stock_order
                    set status = 'CANCELLED',
                        reserved_cash = 0,
+                       cancel_reason = ?,
                        updated_at = ?
                  where id in (%s)
                    and status in ('PENDING', 'PARTIALLY_FILLED')
@@ -562,9 +572,9 @@ public class AutoMarketWriter {
         }
         String values = String.join(",", Collections.nCopies(
                 orders.size(),
-                "(?, ?, ?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?, ?, ?, ?, ?)"
+                "(?, ?, ?, ?, ?, 'ORDER_BOOK', ?, 'LIMIT', 'PENDING', ?, ?, 0, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ));
-        List<Object> parameters = new ArrayList<>(orders.size() * 15);
+        List<Object> parameters = new ArrayList<>(orders.size() * 18);
         for (LimitOrderInsert order : orders) {
             parameters.add(order.clientOrderId());
             parameters.add(order.accountId());
@@ -579,6 +589,9 @@ public class AutoMarketWriter {
             parameters.add(order.expiresAt());
             parameters.add(order.autoProfileType());
             parameters.add(order.autoBehaviorModelVersion());
+            parameters.add(order.autoPolicyVersion());
+            parameters.add(order.autoBehaviorEventSequence());
+            parameters.add(order.decisionUrgency());
             parameters.add(createdAt);
             parameters.add(createdAt);
         }
@@ -591,7 +604,8 @@ public class AutoMarketWriter {
                         symbol, market_type, side, order_type, status,
                         limit_price, quantity, filled_quantity, average_fill_price,
                         reserved_cash, funding_budget_type, expires_at, auto_profile_type,
-                        auto_behavior_model_version, created_at, updated_at
+                        auto_behavior_model_version, auto_policy_version,
+                        auto_behavior_event_sequence, decision_urgency, created_at, updated_at
                     )
                     values %s
                     """.formatted(values),
@@ -657,6 +671,67 @@ public class AutoMarketWriter {
             inserted++;
         }
         return inserted;
+    }
+
+    public int recordAutoParticipantSubmissions(
+            List<ActivitySubmission> submissions,
+            LocalDate businessDate,
+            LocalDateTime submittedAt
+    ) {
+        if (submissions == null || submissions.isEmpty()) {
+            return 0;
+        }
+        List<ActivitySubmission> ordered = submissions.stream()
+                .sorted(Comparator.comparingLong(ActivitySubmission::accountId))
+                .toList();
+        String countCases = String.join(
+                " ",
+                Collections.nCopies(ordered.size(), "when ? then ?")
+        );
+        String notionalCases = String.join(
+                " ",
+                Collections.nCopies(ordered.size(), "when ? then ?")
+        );
+        String placeholders = String.join(",", Collections.nCopies(ordered.size(), "?"));
+        List<Object> parameters = new ArrayList<>(ordered.size() * 7 + 4);
+        for (ActivitySubmission submission : ordered) {
+            parameters.add(submission.accountId());
+            parameters.add(submission.orderCount());
+        }
+        for (ActivitySubmission submission : ordered) {
+            parameters.add(submission.accountId());
+            parameters.add(submission.notional());
+        }
+        for (ActivitySubmission submission : ordered) {
+            parameters.add(submission.accountId());
+            parameters.add(submission.orderCount());
+        }
+        parameters.add(submittedAt);
+        parameters.add(submittedAt);
+        parameters.add(submittedAt);
+        parameters.add(businessDate);
+        ordered.forEach(submission -> parameters.add(submission.accountId()));
+        int updated = jdbcTemplate.update(
+                """
+                update stock_auto_participant_daily_behavior_state
+                   set submitted_order_count = submitted_order_count
+                           + case account_id %s else 0 end,
+                       submitted_notional = submitted_notional
+                           + case account_id %s else 0 end,
+                       fatigue_score = fatigue_score
+                           + (case account_id %s else 0 end * 0.160000),
+                       fatigue_updated_at = ?,
+                       last_order_at = ?,
+                       last_result_reason = 'ORDER_SUBMITTED',
+                       optimistic_version = optimistic_version + 1,
+                       updated_at = ?
+                 where simulation_trade_date = ?
+                   and account_id in (%s)
+                """.formatted(countCases, notionalCases, countCases, placeholders),
+                parameters.toArray()
+        );
+        requireChunkCount("V3 auto-participant submission state", ordered.size(), updated);
+        return updated;
     }
 
     public int markAverageDownDecisions(
@@ -775,6 +850,14 @@ public class AutoMarketWriter {
     public record PositionStateKey(long accountId, String symbol) {
     }
 
+    public record ActivitySubmission(long accountId, int orderCount, BigDecimal notional) {
+        public ActivitySubmission {
+            if (accountId <= 0 || orderCount <= 0 || notional == null || notional.signum() <= 0) {
+                throw new IllegalArgumentException("A positive V3 submission aggregate is required");
+            }
+        }
+    }
+
     public record HoldingReservationState(
             HoldingReservationKey key,
             long quantity,
@@ -799,8 +882,45 @@ public class AutoMarketWriter {
             String autoProfileType,
             String autoBehaviorModelVersion,
             String originType,
-            String selfTradeGroupId
+            String selfTradeGroupId,
+            Long autoPolicyVersion,
+            Long autoBehaviorEventSequence,
+            String decisionUrgency
     ) {
+        public LimitOrderInsert(
+                String clientOrderId,
+                long accountId,
+                String symbol,
+                String side,
+                BigDecimal price,
+                long quantity,
+                BigDecimal reservedCash,
+                String fundingBudgetType,
+                LocalDateTime expiresAt,
+                String autoProfileType,
+                String autoBehaviorModelVersion,
+                String originType,
+                String selfTradeGroupId
+        ) {
+            this(
+                    clientOrderId,
+                    accountId,
+                    symbol,
+                    side,
+                    price,
+                    quantity,
+                    reservedCash,
+                    fundingBudgetType,
+                    expiresAt,
+                    autoProfileType,
+                    autoBehaviorModelVersion,
+                    originType,
+                    selfTradeGroupId,
+                    null,
+                    null,
+                    null
+            );
+        }
         public LimitOrderInsert(
                 String clientOrderId,
                 long accountId,
@@ -823,7 +943,10 @@ public class AutoMarketWriter {
                     null,
                     null,
                     "AUTO_PARTICIPANT",
-                    "ACCOUNT:" + accountId
+                    "ACCOUNT:" + accountId,
+                    null,
+                    null,
+                    null
             );
         }
 
@@ -850,7 +973,10 @@ public class AutoMarketWriter {
                     null,
                     null,
                     "AUTO_PARTICIPANT",
-                    "ACCOUNT:" + accountId
+                    "ACCOUNT:" + accountId,
+                    null,
+                    null,
+                    null
             );
         }
 

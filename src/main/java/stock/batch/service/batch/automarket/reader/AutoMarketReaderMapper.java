@@ -69,7 +69,7 @@ final class AutoMarketReaderMapper {
     static AutoParticipantProfileConfig toProfileConfig(ResultSet rs) throws SQLException {
         return new AutoParticipantProfileConfig(
                 AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
-                AutoParticipantBehaviorModelVersion.parseOrDefault(rs.getString("behavior_model_version")),
+                AutoParticipantBehaviorModelVersion.parseRequired(rs.getString("behavior_model_version")),
                 rs.getBigDecimal("news_weight"),
                 rs.getBigDecimal("momentum_weight"),
                 rs.getBigDecimal("contrarian_weight"),
@@ -126,7 +126,7 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("recurring_cash_amount"),
                 rs.getBigDecimal("recurring_cash_interval_value"),
                 RecurringCashIntervalUnit.parseOrNull(rs.getString("recurring_cash_interval_unit")),
-                AutoParticipantBehaviorModelVersion.parseOrDefault(rs.getString("behavior_model_version")),
+                AutoParticipantBehaviorModelVersion.parseRequired(rs.getString("behavior_model_version")),
                 behaviorSeed(rs)
         );
     }
@@ -159,7 +159,7 @@ final class AutoMarketReaderMapper {
                 rs.getBigDecimal("reserved_cash"),
                 rs.getBigDecimal("limit_price"),
                 AutoParticipantProfileType.parseOrDefault(rs.getString("profile_type")),
-                stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.parseOrDefault(
+                stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion.parseRequired(
                         rs.getString("behavior_model_version")
                 ),
                 rs.getTimestamp("expires_at") == null ? null : rs.getTimestamp("expires_at").toLocalDateTime(),
@@ -191,18 +191,6 @@ final class AutoMarketReaderMapper {
                 zeroIfNull(rs.getBigDecimal("peak_close_price")),
                 Math.max(0, rs.getInt("recent_profitable_trading_days")),
                 Math.max(0, rs.getInt("recent_closed_trading_days"))
-        );
-    }
-
-    static AutoParticipantTradingSnapshot toLegacyTradingSnapshot(ResultSet rs) throws SQLException {
-        return new AutoParticipantTradingSnapshot(
-                rs.getLong("account_id"),
-                zeroIfNull(rs.getBigDecimal("cash_balance")),
-                Math.max(0L, rs.getLong("available_quantity")),
-                zeroIfNull(rs.getBigDecimal("average_price")),
-                zeroIfNull(rs.getBigDecimal("recent_dividend_cash_amount")),
-                Math.max(0L, rs.getLong("open_buy_quantity")),
-                Math.max(0L, rs.getLong("open_sell_quantity"))
         );
     }
 

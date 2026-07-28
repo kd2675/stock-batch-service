@@ -28,7 +28,7 @@ public class ProfitLockerBehavior extends AbstractAutoProfileBehavior {
                 ProfilePolicy::profitTakingWeight
         );
         double takeProfitReturn = AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:PROFIT_LOCKER:RETURN", 0.04, 0.06
+                context.strategy(), "V3:PROFIT_LOCKER:RETURN", 0.04, 0.06
         );
         if (profitSignal < takeProfitReturn) {
             return ProfileDecision.hold(

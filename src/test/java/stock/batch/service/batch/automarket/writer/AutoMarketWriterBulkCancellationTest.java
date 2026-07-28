@@ -52,6 +52,7 @@ class AutoMarketWriterBulkCancellationTest {
                     id bigint primary key,
                     status varchar(30) not null,
                     reserved_cash decimal(19, 2) not null,
+                    cancel_reason varchar(40),
                     updated_at timestamp
                 )
                 """);

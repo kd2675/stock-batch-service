@@ -587,6 +587,10 @@ CREATE TABLE IF NOT EXISTS stock_order (
   expires_at TIMESTAMP,
   auto_profile_type VARCHAR(40),
   auto_behavior_model_version VARCHAR(20),
+  auto_policy_version BIGINT,
+  auto_behavior_event_sequence BIGINT,
+  decision_urgency VARCHAR(30),
+  cancel_reason VARCHAR(40),
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_order_market_type_valid CHECK (CASE `market_type` WHEN 'VIRTUAL_PRICE' THEN 1 WHEN 'ORDER_BOOK' THEN 1 ELSE 0 END = 1),
@@ -609,12 +613,27 @@ CREATE TABLE IF NOT EXISTS stock_order (
   CONSTRAINT chk_stock_order_reserved_cash_non_negative CHECK (reserved_cash >= 0),
   CONSTRAINT chk_stock_order_funding_budget_type CHECK (funding_budget_type IS NULL OR funding_budget_type IN ('PAYDAY', 'DIVIDEND')),
   CONSTRAINT chk_stock_order_auto_behavior_model CHECK (
-    auto_behavior_model_version IS NULL OR auto_behavior_model_version IN ('V1', 'V2')
+    auto_behavior_model_version IS NULL OR auto_behavior_model_version = 'V3'
+  ),
+  CONSTRAINT chk_stock_order_auto_policy_version CHECK (auto_policy_version IS NULL OR auto_policy_version > 0),
+  CONSTRAINT chk_stock_order_auto_event_sequence CHECK (
+    auto_behavior_event_sequence IS NULL OR auto_behavior_event_sequence >= 0
+  ),
+  CONSTRAINT chk_stock_order_decision_urgency CHECK (
+    decision_urgency IS NULL OR decision_urgency IN (
+      'VOLUNTARY', 'RISK_REDUCTION', 'MANDATORY_CLOSE', 'OPERATIONAL_QUOTE'
+    )
+  ),
+  CONSTRAINT chk_stock_order_cancel_reason CHECK (
+    cancel_reason IS NULL OR cancel_reason IN (
+      'TTL_EXPIRED', 'REPRICE', 'ADMIN_CANCELLED', 'PARTICIPANT_WITHDRAWAL',
+      'SESSION_CLOSE', 'POLICY_CHANGE', 'RISK_REDUCTION', 'ROLE_SUSPENDED'
+    )
   ),
   CONSTRAINT chk_stock_order_auto_profile_type CHECK (
     auto_profile_type IS NULL OR auto_profile_type IN (
       'NEWS_REACTIVE', 'MOMENTUM_FOLLOWER', 'CONTRARIAN', 'LOSS_AVERSE', 'OVERCONFIDENT',
-      'HERD_FOLLOWER', 'MARKET_MAKER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
+      'HERD_FOLLOWER', 'PASSIVE_LIMIT_TRADER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
       'DAY_TRADER', 'SWING_TRADER', 'LONG_TERM_HOLDER', 'PAYDAY_ACCUMULATOR',
       'DIVIDEND_REINVESTOR', 'LIMIT_DOWN_TRAPPED', 'AVERAGE_DOWN_BUYER', 'STOP_LOSS_TRADER',
       'FOMO_BUYER', 'PANIC_SELLER', 'DIP_BUYER', 'PROFIT_LOCKER', 'LIQUIDITY_AVOIDANT',
@@ -988,7 +1007,7 @@ CREATE TABLE IF NOT EXISTS stock_close_account_snapshot (
   CONSTRAINT chk_stock_close_account_snapshot_profile_type CHECK (
     participant_profile_type IS NULL OR participant_profile_type IN (
       'NEWS_REACTIVE', 'MOMENTUM_FOLLOWER', 'CONTRARIAN', 'LOSS_AVERSE', 'OVERCONFIDENT',
-      'HERD_FOLLOWER', 'MARKET_MAKER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
+      'HERD_FOLLOWER', 'PASSIVE_LIMIT_TRADER', 'NOISE_TRADER', 'VALUE_ANCHOR', 'SCALPER',
       'DAY_TRADER', 'SWING_TRADER', 'LONG_TERM_HOLDER', 'PAYDAY_ACCUMULATOR',
       'DIVIDEND_REINVESTOR', 'LIMIT_DOWN_TRAPPED', 'AVERAGE_DOWN_BUYER', 'STOP_LOSS_TRADER',
       'FOMO_BUYER', 'PANIC_SELLER', 'DIP_BUYER', 'PROFIT_LOCKER', 'LIQUIDITY_AVOIDANT',
@@ -1229,7 +1248,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant (
       WHEN 'LOSS_AVERSE' THEN 1
       WHEN 'OVERCONFIDENT' THEN 1
       WHEN 'HERD_FOLLOWER' THEN 1
-      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'PASSIVE_LIMIT_TRADER' THEN 1
       WHEN 'NOISE_TRADER' THEN 1
       WHEN 'VALUE_ANCHOR' THEN 1
       WHEN 'SCALPER' THEN 1
@@ -1471,7 +1490,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_auto_order_budget_budget ON stock_auto_part
 
 CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   profile_type VARCHAR(40) NOT NULL PRIMARY KEY,
-  behavior_model_version VARCHAR(20) NOT NULL DEFAULT 'V2',
+  behavior_model_version VARCHAR(20) NOT NULL DEFAULT 'V3',
   news_weight DECIMAL(8,4) DEFAULT NULL,
   momentum_weight DECIMAL(8,4) DEFAULT NULL,
   contrarian_weight DECIMAL(8,4) DEFAULT NULL,
@@ -1508,7 +1527,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
       WHEN 'LOSS_AVERSE' THEN 1
       WHEN 'OVERCONFIDENT' THEN 1
       WHEN 'HERD_FOLLOWER' THEN 1
-      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'PASSIVE_LIMIT_TRADER' THEN 1
       WHEN 'NOISE_TRADER' THEN 1
       WHEN 'VALUE_ANCHOR' THEN 1
       WHEN 'SCALPER' THEN 1
@@ -1532,7 +1551,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
       ELSE 0
     END = 1
   ),
-  CONSTRAINT chk_stock_auto_profile_behavior_model CHECK (behavior_model_version IN ('V1', 'V2')),
+  CONSTRAINT chk_stock_auto_profile_behavior_model CHECK (behavior_model_version = 'V3'),
   CONSTRAINT chk_stock_auto_profile_news_weight CHECK (news_weight IS NULL OR (news_weight >= 0 AND news_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_momentum_weight CHECK (momentum_weight IS NULL OR (momentum_weight >= 0 AND momentum_weight <= 1)),
   CONSTRAINT chk_stock_auto_profile_contrarian_weight CHECK (contrarian_weight IS NULL OR (contrarian_weight >= 0 AND contrarian_weight <= 1)),
@@ -1553,9 +1572,9 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_profile_config (
   CONSTRAINT chk_stock_auto_profile_holding_patience CHECK (holding_patience_weight >= 0 AND holding_patience_weight <= 1),
   CONSTRAINT chk_stock_auto_profile_deep_loss_hold CHECK (deep_loss_hold_weight >= 0 AND deep_loss_hold_weight <= 1),
   CONSTRAINT chk_stock_auto_profile_profit_taking CHECK (profit_taking_weight >= 0 AND profit_taking_weight <= 1),
-  CONSTRAINT chk_stock_auto_profile_pricing_mode CHECK (pricing_mode IS NULL OR pricing_mode IN ('DIRECTIONAL', 'MARKET_MAKING')),
+  CONSTRAINT chk_stock_auto_profile_pricing_mode CHECK (pricing_mode IS NULL OR pricing_mode = 'DIRECTIONAL'),
   CONSTRAINT chk_stock_auto_profile_exit_mode CHECK (exit_mode IS NULL OR exit_mode IN ('SIGNAL_DRIVEN', 'TAKE_PROFIT_FIRST', 'HOLD_LOSSES')),
-  CONSTRAINT chk_stock_auto_profile_inventory_mode CHECK (inventory_mode IS NULL OR inventory_mode IN ('SIGNAL_DRIVEN', 'TARGET_ALLOCATION')),
+  CONSTRAINT chk_stock_auto_profile_inventory_mode CHECK (inventory_mode IS NULL OR inventory_mode = 'SIGNAL_DRIVEN'),
   CONSTRAINT chk_stock_auto_profile_recurring_deposit CHECK (recurring_deposit_amount >= 0),
   CONSTRAINT chk_stock_auto_profile_recurring_interval CHECK (recurring_deposit_interval_days >= 1),
   CONSTRAINT chk_stock_auto_profile_recurring_interval_value CHECK (recurring_deposit_interval_value >= 0 AND recurring_deposit_interval_value <= 1000),
@@ -1590,7 +1609,7 @@ CREATE TABLE IF NOT EXISTS stock_auto_participant_event_profile_config (
       WHEN 'LOSS_AVERSE' THEN 1
       WHEN 'OVERCONFIDENT' THEN 1
       WHEN 'HERD_FOLLOWER' THEN 1
-      WHEN 'MARKET_MAKER' THEN 1
+      WHEN 'PASSIVE_LIMIT_TRADER' THEN 1
       WHEN 'NOISE_TRADER' THEN 1
       WHEN 'VALUE_ANCHOR' THEN 1
       WHEN 'SCALPER' THEN 1
@@ -2402,24 +2421,181 @@ CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_symbol_enabled ON stock_au
 CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_symbol_lookup ON stock_auto_participant_symbol_config(symbol, user_key);
 CREATE INDEX IF NOT EXISTS idx_stock_auto_participant_symbol_user_enabled ON stock_auto_participant_symbol_config(user_key, enabled, symbol);
 
-CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule (
+CREATE TABLE IF NOT EXISTS stock_auto_participant_policy_revision (
+  policy_version BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  status VARCHAR(20) NOT NULL,
+  effective_trade_date DATE,
+  runtime_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  runtime_change_reason VARCHAR(200),
+  runtime_changed_by VARCHAR(64),
+  runtime_changed_at TIMESTAMP,
+  policy_json CLOB NOT NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  activated_at TIMESTAMP,
+  retired_at TIMESTAMP,
+  CONSTRAINT chk_stock_auto_policy_status CHECK (
+    status IN ('DRAFT', 'SCHEDULED', 'ACTIVE', 'RETIRED')
+  ),
+  CONSTRAINT chk_stock_auto_policy_effective_date CHECK (
+    (status = 'DRAFT' AND effective_trade_date IS NULL)
+    OR (status <> 'DRAFT' AND effective_trade_date IS NOT NULL)
+  ),
+  CONSTRAINT chk_stock_auto_policy_activation_time CHECK (
+    (status IN ('DRAFT', 'SCHEDULED') AND activated_at IS NULL)
+    OR (status IN ('ACTIVE', 'RETIRED') AND activated_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_stock_auto_policy_retired_time CHECK (
+    (status <> 'RETIRED' AND retired_at IS NULL)
+    OR (status = 'RETIRED' AND retired_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_stock_auto_policy_runtime_audit CHECK (
+    (
+      runtime_change_reason IS NULL
+      AND runtime_changed_by IS NULL
+      AND runtime_changed_at IS NULL
+    )
+    OR (
+      runtime_change_reason <> ''
+      AND runtime_changed_by <> ''
+      AND runtime_changed_at IS NOT NULL
+    )
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_policy_status_effective
+  ON stock_auto_participant_policy_revision(status, effective_trade_date, policy_version);
+
+INSERT INTO stock_auto_participant_policy_revision(
+    status, effective_trade_date, runtime_enabled,
+    policy_json, created_by, created_at, activated_at, retired_at
+) SELECT
+    'ACTIVE', DATE '1970-01-01', TRUE,
+    '{"model":"V3","executionIntercept":-0.35,"signalSensitivity":1.70,"fatigueSensitivity":1.15,"fatigueHalfLifeSeconds":2700,"reentryTauSeconds":180,"ordinaryQuantityGamma":3.0,"rareLargeOrderProbability":0.025}',
+    'SYSTEM', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL
+WHERE NOT EXISTS (
+    SELECT 1
+      FROM stock_auto_participant_policy_revision
+     WHERE status = 'ACTIVE'
+);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_daily_behavior_state (
+  simulation_trade_date DATE NOT NULL,
+  account_id BIGINT NOT NULL,
   user_key VARCHAR(64) NOT NULL,
   profile_type VARCHAR(40) NOT NULL,
+  policy_version BIGINT NOT NULL,
+  participant_config_version BIGINT NOT NULL,
+  activity_state VARCHAR(20) NOT NULL,
+  activity_session VARCHAR(20) NOT NULL,
+  daily_seed BIGINT NOT NULL,
+  event_sequence BIGINT NOT NULL DEFAULT 0,
+  fatigue_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+  fatigue_updated_at TIMESTAMP NOT NULL,
+  submitted_order_count BIGINT NOT NULL DEFAULT 0,
+  submitted_notional DECIMAL(24,2) NOT NULL DEFAULT 0.00,
+  observed_execution_count BIGINT NOT NULL DEFAULT 0,
+  observed_execution_notional DECIMAL(24,2) NOT NULL DEFAULT 0.00,
+  observed_cancel_count BIGINT NOT NULL DEFAULT 0,
+  last_attention_at TIMESTAMP,
+  last_decision_at TIMESTAMP,
+  last_order_at TIMESTAMP,
+  last_result_reason VARCHAR(50),
+  last_hold_reason VARCHAR(50),
+  recovery_factor DECIMAL(12,8) NOT NULL DEFAULT 0.00000000,
+  optimistic_version BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (simulation_trade_date, account_id),
+  CONSTRAINT chk_stock_auto_behavior_policy_version CHECK (policy_version > 0),
+  CONSTRAINT chk_stock_auto_behavior_config_version CHECK (participant_config_version > 0),
+  CONSTRAINT chk_stock_auto_behavior_activity_state CHECK (
+    activity_state IN ('OFFLINE', 'LOW', 'NORMAL', 'HIGH')
+  ),
+  CONSTRAINT chk_stock_auto_behavior_session CHECK (
+    activity_session IN ('OPENING', 'MIDDAY', 'CLOSING', 'RANDOM')
+  ),
+  CONSTRAINT chk_stock_auto_behavior_event_sequence CHECK (event_sequence >= 0),
+  CONSTRAINT chk_stock_auto_behavior_fatigue CHECK (fatigue_score >= 0),
+  CONSTRAINT chk_stock_auto_behavior_submission CHECK (
+    submitted_order_count >= 0 AND submitted_notional >= 0
+  ),
+  CONSTRAINT chk_stock_auto_behavior_observed CHECK (
+    observed_execution_count >= 0
+    AND observed_execution_notional >= 0
+    AND observed_cancel_count >= 0
+  ),
+  CONSTRAINT chk_stock_auto_behavior_recovery CHECK (recovery_factor BETWEEN 0 AND 1),
+  CONSTRAINT chk_stock_auto_behavior_optimistic_version CHECK (optimistic_version >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_behavior_account_date
+  ON stock_auto_participant_daily_behavior_state(account_id, simulation_trade_date);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_behavior_policy_date
+  ON stock_auto_participant_daily_behavior_state(policy_version, simulation_trade_date, account_id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_behavior_state_date
+  ON stock_auto_participant_daily_behavior_state(activity_state, simulation_trade_date, account_id);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_order_schedule (
+  account_id BIGINT NOT NULL,
+  user_key VARCHAR(64) NOT NULL,
+  profile_type VARCHAR(40) NOT NULL,
+  behavior_model_version VARCHAR(20) NOT NULL DEFAULT 'V3',
+  simulation_trade_date DATE NOT NULL,
+  next_attention_at TIMESTAMP,
+  next_guard_at TIMESTAMP NOT NULL,
   next_run_at TIMESTAMP NOT NULL,
   last_run_at TIMESTAMP NULL,
   lease_until TIMESTAMP NULL,
   lease_owner VARCHAR(80) NULL,
-  run_interval_seconds INT NOT NULL,
   priority INT NOT NULL,
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
-  PRIMARY KEY (user_key),
-  CONSTRAINT chk_stock_auto_order_schedule_interval CHECK (run_interval_seconds > 0),
+  PRIMARY KEY (account_id),
+  CONSTRAINT uk_stock_auto_order_schedule_user UNIQUE (user_key),
+  CONSTRAINT chk_stock_auto_order_schedule_model CHECK (behavior_model_version = 'V3'),
+  CONSTRAINT chk_stock_auto_order_schedule_next_run CHECK (
+    next_run_at = LEAST(COALESCE(next_attention_at, next_guard_at), next_guard_at)
+  ),
   CONSTRAINT chk_stock_auto_order_schedule_priority CHECK (priority between 1 and 100)
 );
 
-CREATE INDEX IF NOT EXISTS idx_stock_auto_order_schedule_due ON stock_auto_participant_order_schedule(next_run_at, lease_until, priority, user_key);
-CREATE INDEX IF NOT EXISTS idx_stock_auto_order_schedule_profile_due ON stock_auto_participant_order_schedule(profile_type, next_run_at, user_key);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_order_schedule_due ON stock_auto_participant_order_schedule(next_run_at, lease_until, priority, account_id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_order_schedule_profile_due ON stock_auto_participant_order_schedule(profile_type, next_run_at, account_id);
+CREATE INDEX IF NOT EXISTS idx_stock_auto_order_schedule_trade_date ON stock_auto_participant_order_schedule(simulation_trade_date, next_run_at, account_id);
+
+CREATE TABLE IF NOT EXISTS stock_auto_participant_liquidation_plan (
+  simulation_trade_date DATE NOT NULL,
+  account_id BIGINT NOT NULL,
+  symbol VARCHAR(20) NOT NULL,
+  urgency VARCHAR(30) NOT NULL,
+  trigger_reason VARCHAR(50) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  target_quantity BIGINT NOT NULL,
+  submitted_quantity BIGINT NOT NULL DEFAULT 0,
+  remaining_quantity BIGINT NOT NULL,
+  attempt_count INT NOT NULL DEFAULT 0,
+  next_retry_at TIMESTAMP,
+  last_error VARCHAR(120),
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (simulation_trade_date, account_id, symbol, urgency),
+  CONSTRAINT chk_stock_auto_liquidation_urgency CHECK (
+    urgency IN ('RISK_REDUCTION', 'MANDATORY_CLOSE')
+  ),
+  CONSTRAINT chk_stock_auto_liquidation_status CHECK (
+    status IN ('PENDING', 'SUBMITTED', 'COMPLETED', 'INCOMPLETE')
+  ),
+  CONSTRAINT chk_stock_auto_liquidation_quantity CHECK (
+    target_quantity > 0
+    AND submitted_quantity >= 0
+    AND remaining_quantity >= 0
+  ),
+  CONSTRAINT chk_stock_auto_liquidation_attempt CHECK (attempt_count >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_auto_liquidation_retry
+  ON stock_auto_participant_liquidation_plan(status, next_retry_at, account_id, symbol);
 
 CREATE TABLE IF NOT EXISTS stock_instrument_report_event (
   id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,

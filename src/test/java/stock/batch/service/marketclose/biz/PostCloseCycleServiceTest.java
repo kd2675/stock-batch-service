@@ -505,7 +505,7 @@ class PostCloseCycleServiceTest {
                 ) values (?, 'CLOSE_REQUESTED', 1, 'previous-node', 'COMPLETED',
                           ?, ?, 'previous-build', '2026-07-22-eod-v3', 'EOD_V1', ?, ?),
                          (?, 'REPORTS_AGGREGATED', 2, 'current-node', 'COMPLETED',
-                          ?, ?, 'current-build', '2026-07-23-auto-profile-v2-direct', 'EOD_V1', ?, ?)
+                          ?, ?, 'current-build', '2026-07-27-auto-participant-v3-probabilistic', 'EOD_V1', ?, ?)
                 """,
                 cycle.id(),
                 NOW,

@@ -83,8 +83,8 @@ class AutoParticipantCashFlowServiceTest {
     }
 
     @Test
-    void fundRecurringCash_participantRecurringCashOverridesProfileRecurringDeposit() {
-        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V1");
+    void fundRecurringCash_participantRecurringCashOverridesDepositAndCreatesV3PurposeBudget() {
+        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V3");
         insertAutoParticipant("stock-auto-custom", "PAYDAY_ACCUMULATOR", true, "50000.00", "0.5", "HOUR");
         insertActiveAccount("stock-auto-custom", "0.00");
 
@@ -112,12 +112,12 @@ class AutoParticipantCashFlowServiceTest {
                 where a.user_key = 'stock-auto-custom'
                   and f.reason = 'AUTO_PROFILE_RECURRING_DEPOSIT'
                 """)).isZero();
-        assertThat(queryLong("select count(*) from stock_auto_participant_funding_budget")).isZero();
+        assertThat(queryLong("select count(*) from stock_auto_participant_funding_budget")).isEqualTo(1L);
     }
 
     @Test
-    void fundRecurringCash_v2ExecutePaydayParticipant_createsPurposeBudget() {
-        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V2");
+    void fundRecurringCash_v3PaydayParticipant_createsPurposeBudget() {
+        insertProfileBehaviorModel("PAYDAY_ACCUMULATOR", "V3");
         insertAutoParticipant("stock-auto-v2-payday", "PAYDAY_ACCUMULATOR", true, "50000.00", "1", "DAY");
         insertActiveAccount("stock-auto-v2-payday", "0.00");
 
@@ -135,8 +135,8 @@ class AutoParticipantCashFlowServiceTest {
     }
 
     @Test
-    void fundRecurringCash_v2ExecuteNonPurposeProfile_doesNotCreatePurposeBudget() {
-        insertProfileBehaviorModel("NOISE_TRADER", "V2");
+    void fundRecurringCash_v3NonPurposeProfile_doesNotCreatePurposeBudget() {
+        insertProfileBehaviorModel("NOISE_TRADER", "V3");
         insertAutoParticipant("stock-auto-v2-noise", "NOISE_TRADER", true, "50000.00", "1", "DAY");
         insertActiveAccount("stock-auto-v2-noise", "0.00");
 

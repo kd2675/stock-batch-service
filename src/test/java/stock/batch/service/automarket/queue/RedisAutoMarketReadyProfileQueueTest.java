@@ -66,10 +66,10 @@ class RedisAutoMarketReadyProfileQueueTest {
         @SuppressWarnings("unchecked")
         ZSetOperations<String, String> zSetOperations = mock(ZSetOperations.class);
         when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
-        when(zSetOperations.add(eq("queue"), eq("MARKET_MAKER"), anyDouble())).thenReturn(false);
+        when(zSetOperations.add(eq("queue"), eq("PASSIVE_LIMIT_TRADER"), anyDouble())).thenReturn(false);
         RedisAutoMarketReadyProfileQueue queue = new RedisAutoMarketReadyProfileQueue(redisTemplate, "queue", "Asia/Seoul");
 
-        boolean result = queue.enqueue(AutoParticipantProfileType.MARKET_MAKER, LocalDateTime.of(2026, 7, 3, 9, 0));
+        boolean result = queue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, LocalDateTime.of(2026, 7, 3, 9, 0));
 
         assertThat(result).isTrue();
     }
@@ -80,16 +80,16 @@ class RedisAutoMarketReadyProfileQueueTest {
         @SuppressWarnings("unchecked")
         ZSetOperations<String, String> zSetOperations = mock(ZSetOperations.class);
         when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
-        when(zSetOperations.remove(eq("queue"), eq("MARKET_MAKER"), eq("SCALPER"))).thenReturn(2L);
+        when(zSetOperations.remove(eq("queue"), eq("PASSIVE_LIMIT_TRADER"), eq("SCALPER"))).thenReturn(2L);
         RedisAutoMarketReadyProfileQueue queue = new RedisAutoMarketReadyProfileQueue(redisTemplate, "queue", "Asia/Seoul");
 
         int removedCount = queue.removeAll(List.of(
-                AutoParticipantProfileType.MARKET_MAKER,
+                AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                 AutoParticipantProfileType.SCALPER
         ));
 
         assertThat(removedCount).isEqualTo(2);
-        verify(zSetOperations).remove("queue", "MARKET_MAKER", "SCALPER");
+        verify(zSetOperations).remove("queue", "PASSIVE_LIMIT_TRADER", "SCALPER");
     }
 
     @Test
@@ -100,7 +100,7 @@ class RedisAutoMarketReadyProfileQueueTest {
                 any(RedisScript.class),
                 eq(List.of("queue")),
                 any(String.class),
-                eq("MARKET_MAKER"),
+                eq("PASSIVE_LIMIT_TRADER"),
                 any(String.class),
                 eq("SCALPER")
         )).thenReturn(2L);
@@ -108,7 +108,7 @@ class RedisAutoMarketReadyProfileQueueTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 3, 5, 30);
 
         int storedCount = queue.replaceAll(List.of(
-                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.MARKET_MAKER, now),
+                new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now),
                 new AutoMarketReadyProfileQueue.ReadyProfile(AutoParticipantProfileType.SCALPER, now.plusSeconds(3))
         ));
 
@@ -138,13 +138,13 @@ class RedisAutoMarketReadyProfileQueueTest {
                 any(RedisScript.class),
                 eq(List.of("queue")),
                 any(String.class),
-                eq("MARKET_MAKER")
+                eq("PASSIVE_LIMIT_TRADER")
         )).thenThrow(new IllegalStateException("redis unavailable"));
         RedisAutoMarketReadyProfileQueue queue = new RedisAutoMarketReadyProfileQueue(redisTemplate, "queue", "Asia/Seoul");
 
         assertThatThrownBy(() -> queue.replaceAll(List.of(
                 new AutoMarketReadyProfileQueue.ReadyProfile(
-                        AutoParticipantProfileType.MARKET_MAKER,
+                        AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                         LocalDateTime.of(2026, 7, 3, 5, 30)
                 )
         )))
@@ -163,7 +163,7 @@ class RedisAutoMarketReadyProfileQueueTest {
         double score = readyAt.atZone(ZoneId.of("Asia/Seoul")).toInstant().toEpochMilli();
         when(redisTemplate.opsForZSet()).thenReturn(zSetOperations);
         when(zSetOperations.rangeWithScores("queue", 0, -1)).thenReturn(Set.of(tuple));
-        when(tuple.getValue()).thenReturn("MARKET_MAKER");
+        when(tuple.getValue()).thenReturn("PASSIVE_LIMIT_TRADER");
         when(tuple.getScore()).thenReturn(score);
         RedisAutoMarketReadyProfileQueue queue = new RedisAutoMarketReadyProfileQueue(
                 redisTemplate,
@@ -172,7 +172,7 @@ class RedisAutoMarketReadyProfileQueueTest {
         );
 
         assertThat(queue.snapshot())
-                .containsEntry(AutoParticipantProfileType.MARKET_MAKER, readyAt)
+                .containsEntry(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, readyAt)
                 .hasSize(1);
     }
 }

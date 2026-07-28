@@ -11,6 +11,7 @@ import java.util.Map;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -37,6 +38,14 @@ public class AutoMarketProfileQueueReconcileService {
     private final AutoMarketReadyProfileQueue readyProfileQueue;
     private final SimulationClockService simulationClockService;
     private final TransactionTemplate transactionTemplate;
+    private AutoParticipantPolicyActivationService policyActivationService;
+
+    @Autowired(required = false)
+    void setPolicyActivationService(
+            AutoParticipantPolicyActivationService policyActivationService
+    ) {
+        this.policyActivationService = policyActivationService;
+    }
 
     @Value("${stock.batch.auto-market.profile-queue.reconcile-limit:100}")
     private int reconcileLimit;
@@ -56,6 +65,13 @@ public class AutoMarketProfileQueueReconcileService {
     }
 
     public int reconcileReadyProfilesForPreOpen() {
+        SimulationClockSnapshot clock = simulationClockService.currentSnapshot();
+        if (policyActivationService != null) {
+            policyActivationService.activateDuePolicies(
+                    clock.simulationDateTime().toLocalDate(),
+                    clock.simulationDateTime()
+            );
+        }
         return reconcileReadyProfiles(autoMarketReader.findDailyRegimePreCreateConfigs(), true);
     }
 
@@ -153,16 +169,14 @@ public class AutoMarketProfileQueueReconcileService {
             Map<AutoParticipantProfileType, ProfilePolicy> profilePolicies,
             LocalDateTime now
     ) {
-        if (!autoMarketReader.hasMissingParticipantSchedules(configs)) {
-            return 0;
-        }
         Map<String, List<AutoParticipantStrategy>> enabledStrategiesBySymbol =
                 autoMarketReader.findEnabledParticipantStrategiesBySymbol(configs);
-        return transactionTemplate.execute(status -> autoParticipantOrderScheduleService.ensureSchedules(
+        Integer scheduledCount = transactionTemplate.execute(status -> autoParticipantOrderScheduleService.ensureSchedules(
                 uniqueParticipantStrategies(enabledStrategiesBySymbol),
                 profilePolicies,
                 now
         ));
+        return scheduledCount == null ? 0 : scheduledCount;
     }
 
     private List<AutoParticipantStrategy> uniqueParticipantStrategies(Map<String, List<AutoParticipantStrategy>> strategiesBySymbol) {

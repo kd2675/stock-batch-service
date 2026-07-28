@@ -48,7 +48,7 @@ public class AutoParticipantCashFlowReader {
                 .list();
     }
 
-    public Set<Long> findExecutableV2FundingAccountIds(
+    public Set<Long> findExecutableV3FundingAccountIds(
             List<Long> accountIds,
             AutoParticipantProfileType profileType
     ) {
@@ -67,7 +67,7 @@ public class AutoParticipantCashFlowReader {
                    and p.enabled = true
                    and p.withdrawn_at is null
                    and p.profile_type = :profileType
-                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
+                   and coalesce(pc.behavior_model_version, 'V3') = 'V3'
                  order by a.id asc
                 """
         )

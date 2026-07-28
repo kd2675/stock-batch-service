@@ -31,7 +31,7 @@ public class AverageDownBuyerBehavior extends AbstractAutoProfileBehavior {
                 ProfilePolicy::dipBuyWeight
         );
         double averageDownThreshold = AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:AVERAGE_DOWN:RETURN", 0.045, 0.06
+                context.strategy(), "V3:AVERAGE_DOWN:RETURN", 0.045, 0.06
         );
         if (lossSignal < averageDownThreshold) {
             return ProfileDecision.hold(ProfileDecisionReason.INSUFFICIENT_SIGNAL, Math.abs(context.unrealizedReturn()));

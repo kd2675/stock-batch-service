@@ -88,13 +88,11 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
-        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan = expiryPlan();
         when(autoMarketOrderExpiryService.planExpiryCandidates(
                 org.mockito.ArgumentMatchers.eq(config),
                 org.mockito.ArgumentMatchers.eq(Map.of()),
-                any(LocalDateTime.class),
-                org.mockito.ArgumentMatchers.eq(List.of(1L))
+                any(LocalDateTime.class)
         )).thenReturn(plan);
         when(marketSessionFenceService.lockOpenOrderBookFences(List.of("STOCK001")))
                 .thenReturn(Optional.of(openApproval("STOCK001")));
@@ -174,13 +172,11 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
-        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan = expiryPlan();
         when(autoMarketOrderExpiryService.planExpiryCandidates(
                 org.mockito.ArgumentMatchers.eq(config),
                 org.mockito.ArgumentMatchers.eq(Map.of()),
-                any(LocalDateTime.class),
-                org.mockito.ArgumentMatchers.eq(List.of(1L))
+                any(LocalDateTime.class)
         )).thenReturn(plan);
         when(marketSessionFenceService.lockOpenOrderBookFences(List.of("STOCK001")))
                 .thenReturn(Optional.of(openApproval("STOCK001")));
@@ -260,12 +256,10 @@ class AutoMarketOrderExpiryJobServiceTest {
         when(autoMarketReader.findEnabledMaintenanceConfigs()).thenReturn(List.of(config));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(autoProfileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
-        when(autoMarketOrderExpiryService.loadActiveV2MarketMakerAccountIds()).thenReturn(List.of(1L));
         when(autoMarketOrderExpiryService.planExpiryCandidates(
                 org.mockito.ArgumentMatchers.eq(config),
                 org.mockito.ArgumentMatchers.eq(Map.of()),
-                any(LocalDateTime.class),
-                org.mockito.ArgumentMatchers.eq(List.of(1L))
+                any(LocalDateTime.class)
         )).thenAnswer(invocation -> {
             candidatePlanningCompleted.set(true);
             return expiryPlan();
@@ -278,8 +272,7 @@ class AutoMarketOrderExpiryJobServiceTest {
         verify(autoMarketOrderExpiryService).planExpiryCandidates(
                 org.mockito.ArgumentMatchers.eq(config),
                 org.mockito.ArgumentMatchers.eq(Map.of()),
-                any(LocalDateTime.class),
-                org.mockito.ArgumentMatchers.eq(List.of(1L))
+                any(LocalDateTime.class)
         );
         verify(autoMarketOrderExpiryService, never()).expirePlannedOrders(any(), any(), any());
     }
@@ -326,8 +319,7 @@ class AutoMarketOrderExpiryJobServiceTest {
 
         assertThat(expiredCount).isZero();
         verify(autoMarketReader, never()).findEnabledMaintenanceConfigs();
-        verify(autoMarketOrderExpiryService, never()).loadActiveV2MarketMakerAccountIds();
-        verify(autoMarketOrderExpiryService, never()).planExpiryCandidates(any(), any(), any(), any());
+        verify(autoMarketOrderExpiryService, never()).planExpiryCandidates(any(), any(), any());
         verify(autoMarketOrderExpiryService, never()).expirePlannedOrders(any(), any(), any());
     }
 
@@ -336,7 +328,6 @@ class AutoMarketOrderExpiryJobServiceTest {
                 Map.of(),
                 LocalDateTime.of(2026, 7, 3, 8, 59),
                 100,
-                List.of(),
                 List.of(mock(AutoOrder.class))
         );
     }

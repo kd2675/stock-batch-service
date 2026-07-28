@@ -60,7 +60,7 @@ class StockDdlContractTest {
 
     private static final List<String> AUTO_PARTICIPANT_PROFILE_TYPES = List.of(
             "NEWS_REACTIVE", "MOMENTUM_FOLLOWER", "CONTRARIAN", "LOSS_AVERSE",
-            "OVERCONFIDENT", "HERD_FOLLOWER", "MARKET_MAKER", "NOISE_TRADER",
+            "OVERCONFIDENT", "HERD_FOLLOWER", "PASSIVE_LIMIT_TRADER", "NOISE_TRADER",
             "VALUE_ANCHOR", "SCALPER", "DAY_TRADER", "SWING_TRADER",
             "LONG_TERM_HOLDER", "PAYDAY_ACCUMULATOR", "DIVIDEND_REINVESTOR",
             "LIMIT_DOWN_TRAPPED", "AVERAGE_DOWN_BUYER", "STOP_LOSS_TRADER",
@@ -83,10 +83,10 @@ class StockDdlContractTest {
             "INSERT INTO stock_instrument",
             "INSERT INTO stock_price",
             "INSERT INTO stock_virtual_market_config",
-            "INSERT INTO stock_auto_participant",
+            "INSERT INTO stock_auto_participant(",
             "MERGE INTO stock_virtual_market_config",
             "MERGE INTO stock_order_book_instrument",
-            "MERGE INTO stock_auto_participant",
+            "MERGE INTO stock_auto_participant(",
             "삼성전자",
             "'seed'",
             "stock-auto-001"

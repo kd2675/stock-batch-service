@@ -43,9 +43,6 @@ class AutoMarketOrderExpiryServiceTest {
         behaviorSupport = new AutoProfileBehaviorSupport();
         service = new AutoMarketOrderExpiryService(reader, executor, behaviorSupport);
         ReflectionTestUtils.setField(service, "expiryChunkLimit", 100);
-        ReflectionTestUtils.setField(service, "marketMakerReplacementLimitPerSide", 10);
-        ReflectionTestUtils.setField(service, "marketMakerRepriceThresholdTicks", 2);
-        ReflectionTestUtils.setField(service, "marketMakerMinimumQuoteLifetimeSeconds", 30);
         service.validateVolumeConfiguration();
         config = new AutoMarketConfig(
                 "STOCK001", 100, 60, 1_000_000L,
@@ -67,66 +64,67 @@ class AutoMarketOrderExpiryServiceTest {
     @Test
     void expireOldAutoOrders_pinnedExpiryIgnoresCurrentProfilePolicy() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
-        AutoOrder pinned = order(1L, AutoParticipantProfileType.MARKET_MAKER,
-                AutoParticipantBehaviorModelVersion.V2, now, now.minusHours(1));
+        AutoOrder pinned = order(1L, AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
+                AutoParticipantBehaviorModelVersion.V3, now, now.minusHours(1));
         when(reader.findExpiredAutoOrders(eq(config), any(), eq(now), anyInt()))
                 .thenReturn(List.of(pinned));
-        when(executor.expireOrders(any(), eq(now))).thenReturn(1);
+        when(executor.expireOrders(any(), eq(now), eq("TTL_EXPIRED"))).thenReturn(1);
 
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of());
+                service.planExpiryCandidates(config, policies, now);
         int expired = service.expirePlannedOrders(config, plan, now);
 
         assertThat(expired).isEqualTo(1);
-        verify(executor).expireOrders(List.of(pinned), now);
+        verify(executor).expireOrders(List.of(pinned), now, "TTL_EXPIRED");
     }
 
     @Test
-    void expireOldAutoOrders_capsV2MarketMakerChurnButKeepsOtherProfiles() {
+    void expireOldAutoOrders_expiresAllDueV3OrdersWithoutQuoteRoleSpecialCase() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
         List<AutoOrder> candidates = new ArrayList<>();
         for (long id = 1; id <= 15; id++) {
-            candidates.add(order(id, AutoParticipantProfileType.MARKET_MAKER,
-                    AutoParticipantBehaviorModelVersion.V2, now.minusSeconds(1), now.minusHours(1), "BUY"));
+            candidates.add(order(id, AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
+                    AutoParticipantBehaviorModelVersion.V3, now.minusSeconds(1), now.minusHours(1), "BUY"));
         }
         for (long id = 16; id <= 30; id++) {
-            candidates.add(order(id, AutoParticipantProfileType.MARKET_MAKER,
-                    AutoParticipantBehaviorModelVersion.V2, now.minusSeconds(1), now.minusHours(1), "SELL"));
+            candidates.add(order(id, AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
+                    AutoParticipantBehaviorModelVersion.V3, now.minusSeconds(1), now.minusHours(1), "SELL"));
         }
         AutoOrder scalper = order(100L, AutoParticipantProfileType.SCALPER,
-                AutoParticipantBehaviorModelVersion.V2, now.minusSeconds(1), now.minusHours(1));
+                AutoParticipantBehaviorModelVersion.V3, now.minusSeconds(1), now.minusHours(1));
         candidates.add(scalper);
         when(reader.findExpiredAutoOrders(eq(config), any(), eq(now), anyInt())).thenReturn(candidates);
-        when(executor.expireOrders(any(), eq(now))).thenAnswer(invocation -> invocation.<List<AutoOrder>>getArgument(0).size());
+        when(executor.expireOrders(any(), eq(now), eq("TTL_EXPIRED")))
+                .thenAnswer(invocation -> invocation.<List<AutoOrder>>getArgument(0).size());
         ArgumentCaptor<List<AutoOrder>> expiredCaptor = ArgumentCaptor.forClass(List.class);
 
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of());
+                service.planExpiryCandidates(config, policies, now);
         int expired = service.expirePlannedOrders(config, plan, now);
 
-        verify(executor).expireOrders(expiredCaptor.capture(), eq(now));
-        long marketMakerCount = expiredCaptor.getValue().stream()
-                .filter(order -> order.profileType() == AutoParticipantProfileType.MARKET_MAKER)
+        verify(executor).expireOrders(expiredCaptor.capture(), eq(now), eq("TTL_EXPIRED"));
+        long passiveLimitTraderCount = expiredCaptor.getValue().stream()
+                .filter(order -> order.profileType() == AutoParticipantProfileType.PASSIVE_LIMIT_TRADER)
                 .count();
         boolean containsScalper = expiredCaptor.getValue().contains(scalper);
-        assertThat(expired + ":" + marketMakerCount + ":" + containsScalper).isEqualTo("21:20:true");
+        assertThat(expired + ":" + passiveLimitTraderCount + ":" + containsScalper).isEqualTo("31:30:true");
     }
 
     @Test
-    void expireOldAutoOrders_legacyOrderStillUsesProfileThreshold() {
+    void expireOldAutoOrders_unpinnedOrderStillUsesProfileThreshold() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
         AutoOrder stillFresh = order(1L, AutoParticipantProfileType.NOISE_TRADER,
                 null, null, now.minusSeconds(30));
         when(reader.findExpiredAutoOrders(eq(config), any(), eq(now), anyInt()))
                 .thenReturn(List.of(stillFresh));
-        when(executor.expireOrders(any(), eq(now))).thenReturn(0);
+        when(executor.expireOrders(any(), eq(now), eq("TTL_EXPIRED"))).thenReturn(0);
 
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of());
+                service.planExpiryCandidates(config, policies, now);
         int expired = service.expirePlannedOrders(config, plan, now);
 
         assertThat(expired).isZero();
-        verify(executor).expireOrders(List.of(), now);
+        verify(executor).expireOrders(List.of(), now, "TTL_EXPIRED");
     }
 
     @Test
@@ -148,72 +146,34 @@ class AutoMarketOrderExpiryServiceTest {
         );
         when(reader.findExpiredInstitutionOrders("STOCK001", now, 100))
                 .thenReturn(List.of(institutionOrder));
-        when(executor.expireOrders(any(), eq(now))).thenReturn(1);
+        when(executor.expireOrders(any(), eq(now), eq("TTL_EXPIRED"))).thenReturn(1);
 
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of());
+                service.planExpiryCandidates(config, policies, now);
         int expired = service.expirePlannedOrders(config, plan, now);
 
         assertThat(expired).isEqualTo(1);
-        verify(executor).expireOrders(List.of(institutionOrder), now);
+        verify(executor).expireOrders(List.of(institutionOrder), now, "TTL_EXPIRED");
     }
 
     @Test
-    void expireOldAutoOrders_withoutV2MarketMakerCandidates_skipsOrderBookSnapshot() {
+    void expireOldAutoOrders_withoutCandidates_hasNoWork() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of());
+                service.planExpiryCandidates(config, policies, now);
 
         assertThat(plan.hasWork()).isFalse();
-        verify(executor, never()).loadOrderBookState(config.symbol());
         verify(executor, never()).expireOrders(any(), any());
     }
 
     @Test
-    void planExpiryCandidates_activeV2MarketMakerWithoutOpenQuotes_hasNoLockWork() {
+    void planExpiryCandidates_withoutOpenOrders_hasNoLockWork() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
 
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(config, policies, now, List.of(1L));
+                service.planExpiryCandidates(config, policies, now);
 
         assertThat(plan.hasWork()).isFalse();
-    }
-
-    @Test
-    void expireOldAutoOrders_repricesOnlyOldV2MarketMakerQuotesBeyondTickThreshold() {
-        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
-        when(reader.findActiveV2MarketMakerAccountIds(anyInt())).thenReturn(List.of(1L));
-        AutoOrder staleBuy = order(1L, AutoParticipantProfileType.MARKET_MAKER,
-                AutoParticipantBehaviorModelVersion.V2, now.plusMinutes(10), now.minusMinutes(1), "BUY",
-                new BigDecimal("69700.00"));
-        AutoOrder competitiveBuy = order(2L, AutoParticipantProfileType.MARKET_MAKER,
-                AutoParticipantBehaviorModelVersion.V2, now.plusMinutes(10), now.minusMinutes(1), "BUY",
-                new BigDecimal("69900.00"));
-        AutoOrder staleSell = order(3L, AutoParticipantProfileType.MARKET_MAKER,
-                AutoParticipantBehaviorModelVersion.V2, now.plusMinutes(10), now.minusMinutes(1), "SELL",
-                new BigDecimal("70400.00"));
-        when(reader.findV2MarketMakerReplacementCandidates(
-                eq(config), eq(List.of(1L)), eq(now.minusSeconds(30)), eq("BUY"), anyInt()
-        )).thenReturn(List.of(staleBuy, competitiveBuy));
-        when(reader.findV2MarketMakerReplacementCandidates(
-                eq(config), eq(List.of(1L)), eq(now.minusSeconds(30)), eq("SELL"), anyInt()
-        )).thenReturn(List.of(staleSell));
-        when(executor.expireOrders(any(), eq(now)))
-                .thenAnswer(invocation -> invocation.<List<AutoOrder>>getArgument(0).size());
-        ArgumentCaptor<List<AutoOrder>> expiredCaptor = ArgumentCaptor.forClass(List.class);
-
-        AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
-                service.planExpiryCandidates(
-                        config,
-                        policies,
-                        now,
-                        service.loadActiveV2MarketMakerAccountIds()
-                );
-        int expired = service.expirePlannedOrders(config, plan, now);
-
-        verify(executor).expireOrders(expiredCaptor.capture(), eq(now));
-        assertThat(expired).isEqualTo(2);
-        assertThat(expiredCaptor.getValue()).extracting(AutoOrder::id).containsExactly(1L, 3L);
     }
 
     private AutoOrder order(

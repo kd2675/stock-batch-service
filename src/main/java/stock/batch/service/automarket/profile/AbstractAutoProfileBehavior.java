@@ -13,7 +13,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
 
     protected AbstractAutoProfileBehavior(AutoParticipantProfileType type, ProfilePolicy defaultPolicy) {
         this.type = type;
-        this.defaultPolicy = defaultPolicy.withExecutionPolicy(ProfileExecutionPolicy.v2Default(
+        this.defaultPolicy = defaultPolicy.withExecutionPolicy(ProfileExecutionPolicy.defaults(
                 type,
                 defaultPolicy.orderMultiplier(),
                 defaultPolicy.orderTtlMultiplier()
@@ -59,21 +59,10 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
     }
 
     protected int standardOrderCount(ProfileSignalContext context, boolean canStayIdle) {
-        if (context.policy().executionPolicy().ordersPerDecisionMultiplier() <= 0) {
-            return 0;
-        }
         if (canStayIdle && Math.abs(context.pricePressure()) < 0.35 && Math.abs(context.unrealizedReturn()) < 0.05) {
             return 0;
         }
-        int movementStrength = Math.clamp(context.activityLevel(), 1, 10);
-        int baseOrderCount = Math.max(1, (int) Math.ceil(movementStrength / 3.5));
-        double profitBoost = 1.0;
-        if (context.unrealizedReturn() > 0) {
-            profitBoost += Math.min(0.75, context.unrealizedReturn() * 4.0 * context.policy().overconfidenceWeight());
-        }
-        return Math.clamp((int) Math.round(
-                baseOrderCount * context.policy().executionPolicy().ordersPerDecisionMultiplier() * profitBoost
-        ), canStayIdle ? 0 : 1, 8);
+        return 1;
     }
 
     protected ProfileDecision signalDecision(
@@ -94,7 +83,7 @@ public abstract class AbstractAutoProfileBehavior implements AutoProfileBehavior
     }
 
     /**
-     * Applies an administrator override without changing the profile's default V2 thresholds.
+     * Applies an administrator override without changing the profile's default thresholds.
      * A zero weight disables the signal, while the profile default produces the original value.
      */
     protected double weightedSignal(

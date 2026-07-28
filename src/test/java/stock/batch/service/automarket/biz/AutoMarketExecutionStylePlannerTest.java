@@ -8,7 +8,7 @@ import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 
 import stock.batch.service.automarket.profile.MarketSignalSnapshot;
-import stock.batch.service.automarket.profile.MarketMakerBehavior;
+import stock.batch.service.automarket.profile.PassiveLimitTraderBehavior;
 import stock.batch.service.automarket.profile.ParticipantPortfolioSnapshot;
 import stock.batch.service.automarket.profile.ProfileDecision;
 import stock.batch.service.automarket.profile.ProfileDecisionAction;
@@ -42,38 +42,6 @@ class AutoMarketExecutionStylePlannerTest {
         ))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("HOLD decision");
-    }
-
-    @Test
-    void intentFor_balancedMarketMaker_alternatesPairedSidesAndSkewsTowardInventoryReduction() {
-        ProfileSignalContext context = contextWithStockValue("600.00");
-        ProfileDecision decision = new ProfileDecision(
-                ProfileDecisionAction.BUY,
-                ProfileDecisionReason.INVENTORY_BALANCED,
-                4,
-                1.0
-        );
-
-        AutoMarketExecutionIntent buy = planner.intentFor(
-                AutoParticipantProfileType.MARKET_MAKER,
-                context,
-                decision,
-                0,
-                4
-        );
-        AutoMarketExecutionIntent sell = planner.intentFor(
-                AutoParticipantProfileType.MARKET_MAKER,
-                context,
-                decision,
-                1,
-                4
-        );
-
-        assertThat(buy.action()).isEqualTo(ProfileDecisionAction.BUY);
-        assertThat(sell.action()).isEqualTo(ProfileDecisionAction.SELL);
-        assertThat(buy.quantityMultiplier()).isLessThan(sell.quantityMultiplier());
-        assertThat(buy.inventorySkewTicks()).isNegative();
-        assertThat(sell.inventorySkewTicks()).isEqualTo(buy.inventorySkewTicks());
     }
 
     @Test
@@ -147,7 +115,7 @@ class AutoMarketExecutionStylePlannerTest {
     }
 
     @Test
-    void intentFor_marketMakerWithSignalDrivenInventory_keepsDirectionalIntent() {
+    void intentFor_passiveLimitTraderWithSignalDrivenInventory_keepsDirectionalIntent() {
         ProfileSignalContext base = contextWithStockValue("500.00");
         ProfileSignalContext context = new ProfileSignalContext(
                 base.strategy(),
@@ -182,7 +150,7 @@ class AutoMarketExecutionStylePlannerTest {
         );
 
         AutoMarketExecutionIntent intent = planner.intentFor(
-                AutoParticipantProfileType.MARKET_MAKER,
+                AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                 context,
                 decision,
                 0,
@@ -192,61 +160,8 @@ class AutoMarketExecutionStylePlannerTest {
         assertThat(intent).isEqualTo(AutoMarketExecutionIntent.directional(ProfileDecisionAction.SELL));
     }
 
-    @Test
-    void intentFor_marketMakerWithDirectionalPricing_doesNotCreatePairedMarketMakingIntent() {
-        ProfileSignalContext base = contextWithStockValue("500.00");
-        ProfileSignalContext context = withExecutionPolicy(base, new ProfileExecutionPolicy(
-                1.0,
-                1.0,
-                ProfilePricingMode.DIRECTIONAL,
-                ProfileExitMode.SIGNAL_DRIVEN,
-                ProfileInventoryMode.TARGET_ALLOCATION
-        ));
-        ProfileDecision decision = new ProfileDecision(
-                ProfileDecisionAction.BUY,
-                ProfileDecisionReason.INVENTORY_BALANCED,
-                2,
-                0.0
-        );
-
-        AutoMarketExecutionIntent intent = planner.intentFor(
-                AutoParticipantProfileType.MARKET_MAKER,
-                context,
-                decision,
-                1,
-                2
-        );
-
-        assertThat(intent).isEqualTo(AutoMarketExecutionIntent.directional(ProfileDecisionAction.BUY));
-    }
-
-    private ProfileSignalContext withExecutionPolicy(
-            ProfileSignalContext base,
-            ProfileExecutionPolicy executionPolicy
-    ) {
-        return new ProfileSignalContext(
-                base.strategy(),
-                base.config(),
-                base.policy().withExecutionPolicy(executionPolicy),
-                base.activityLevel(),
-                base.momentumPressure(),
-                base.herdPressure(),
-                base.unrealizedReturn(),
-                base.availableQuantity(),
-                base.cashBalance(),
-                base.recentDividendCashAmount(),
-                base.atLowerPriceLimit(),
-                base.orderIndex(),
-                base.noise(),
-                base.portfolio(),
-                base.marketSignals(),
-                base.fundingBudgets(),
-                base.behavioralMemory()
-        );
-    }
-
     private ProfileSignalContext contextWithStockValue(String stockValue) {
-        MarketMakerBehavior behavior = new MarketMakerBehavior();
+        PassiveLimitTraderBehavior behavior = new PassiveLimitTraderBehavior();
         AutoMarketConfig config = new AutoMarketConfig(
                 "STOCK001",
                 100,
@@ -261,7 +176,7 @@ class AutoMarketExecutionStylePlannerTest {
                 "auto-001",
                 1L,
                 5,
-                AutoParticipantProfileType.MARKET_MAKER
+                AutoParticipantProfileType.PASSIVE_LIMIT_TRADER
         );
         long holdingQuantity = new BigDecimal(stockValue)
                 .divide(config.currentPrice())

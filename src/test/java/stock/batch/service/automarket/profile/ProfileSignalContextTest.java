@@ -46,7 +46,7 @@ class ProfileSignalContextTest {
     }
 
     @Test
-    void marketMakerTargetAllocation_usesEligibleUniverseInsteadOfCurrentPositionCount() {
+    void passiveLimitTraderTargetAllocation_usesEligibleUniverseInsteadOfCurrentPositionCount() {
         ParticipantPortfolioSnapshot portfolio = new ParticipantPortfolioSnapshot(
                 100L,
                 0L,
@@ -77,6 +77,6 @@ class ProfileSignalContextTest {
                 BehavioralMemory.EMPTY
         );
 
-        assertThat(context.marketMakerTargetAllocationRatio()).isEqualTo(0.50 / 3.0);
+        assertThat(context.passiveLimitTraderTargetAllocationRatio()).isEqualTo(0.50 / 3.0);
     }
 }

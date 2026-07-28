@@ -56,13 +56,13 @@ public class StopLossTraderBehavior extends AbstractAutoProfileBehavior {
 
     private double stopLossReturn(ProfileSignalContext context) {
         return -AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:STOP_LOSS:RETURN", 0.04, 0.06
+                context.strategy(), "V3:STOP_LOSS:RETURN", 0.04, 0.06
         );
     }
 
     private double strongDownwardMomentum(ProfileSignalContext context) {
         return -AutoMarketDeterministicRandom.stableRange(
-                context.strategy(), "V2:STOP_LOSS:MOMENTUM", 0.60, 0.70
+                context.strategy(), "V3:STOP_LOSS:MOMENTUM", 0.60, 0.70
         );
     }
 }

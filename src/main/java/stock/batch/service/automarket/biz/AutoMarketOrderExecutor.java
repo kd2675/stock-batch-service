@@ -18,8 +18,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import stock.batch.service.batch.automarket.model.AutoOrder;
 import stock.batch.service.batch.automarket.model.AutoMarketOrderBookSnapshot;
-import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
-import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 import stock.batch.service.batch.automarket.reader.AutoMarketOrderReader;
 import stock.batch.service.batch.automarket.writer.AutoMarketWriter;
 import stock.batch.service.automarket.profile.ProfileDecisionReason;
@@ -61,6 +59,10 @@ class AutoMarketOrderExecutor {
     }
 
     int expireOrders(List<AutoOrder> orders, LocalDateTime now) {
+        return expireOrders(orders, now, "TTL_EXPIRED");
+    }
+
+    int expireOrders(List<AutoOrder> orders, LocalDateTime now, String cancelReason) {
         if (orders.isEmpty()) {
             return 0;
         }
@@ -69,7 +71,7 @@ class AutoMarketOrderExecutor {
         if (lockedOrders.isEmpty()) {
             return 0;
         }
-        int cancelledCount = autoMarketWriter.cancelOpenOrders(lockedOrders, now);
+        int cancelledCount = autoMarketWriter.cancelOpenOrders(lockedOrders, now, cancelReason);
         if (cancelledCount != lockedOrders.size()) {
             throw new IllegalStateException(
                     "Auto-order expiry cancellation count mismatch: expected=%d, actual=%d"
@@ -178,27 +180,21 @@ class AutoMarketOrderExecutor {
                                         .thenComparing(AutoMarketWriter.HoldingReservationKey::symbol))
                                 .toList()
                 );
-        BalancedPairFilterResult pairFilter = filterBalancedMarketMakerPairs(
-                plannedOrders,
-                accountStates,
-                holdingStates
-        );
-        List<AutoMarketPlannedOrder> pairEligibleOrders = pairFilter.eligibleOrders();
         AutoParticipantFundingBudgetService.ReservationPlan fundingPlan =
-                pairEligibleOrders.stream().noneMatch(order -> order.fundingBudgetType() != null)
+                plannedOrders.stream().noneMatch(order -> order.fundingBudgetType() != null)
                         ? AutoParticipantFundingBudgetService.ReservationPlan.empty()
-                        : fundingBudgetService.planReservations(pairEligibleOrders, now.toLocalDate());
-        List<AutoMarketPlannedOrder> fundingEligibleOrders = pairEligibleOrders.stream()
+                        : fundingBudgetService.planReservations(plannedOrders, now.toLocalDate());
+        List<AutoMarketPlannedOrder> fundingEligibleOrders = plannedOrders.stream()
                 .filter(fundingPlan::accepts)
                 .toList();
-        int failedFundingBudgetCount = (int) pairEligibleOrders.stream()
+        int failedFundingBudgetCount = (int) plannedOrders.stream()
                 .filter(order -> order.fundingBudgetType() != null)
                 .filter(order -> !fundingPlan.accepts(order))
                 .count();
         Set<AutoMarketPlannedOrder> acceptedOrderSet = Collections.newSetFromMap(new IdentityHashMap<>());
-        int failedBuyReserveCount = pairFilter.rejectedBuyCount() + failedFundingBudgetCount
+        int failedBuyReserveCount = failedFundingBudgetCount
                 + reserveBuyOrders(fundingEligibleOrders, accountStates, acceptedOrderSet, now);
-        int failedSellReserveCount = pairFilter.rejectedSellCount() + reserveSellOrders(
+        int failedSellReserveCount = reserveSellOrders(
                 groupSellOrdersByHolding(fundingEligibleOrders),
                 accountStates,
                 holdingStates,
@@ -243,7 +239,10 @@ class AutoMarketOrderExecutor {
                             order.profileType() == null ? null : order.profileType().name(),
                             order.behaviorModelVersion() == null ? null : order.behaviorModelVersion().name(),
                             order.originType().name(),
-                            accountState.resolvedSelfTradeGroupId()
+                            accountState.resolvedSelfTradeGroupId(),
+                            order.autoPolicyVersion(),
+                            order.autoBehaviorEventSequence(),
+                            order.decisionUrgency() == null ? null : order.decisionUrgency().name()
                     );
                 })
                 .toList();
@@ -252,6 +251,29 @@ class AutoMarketOrderExecutor {
             throw new IllegalStateException("Auto order batch insert count mismatch: expected=%d, actual=%d"
                     .formatted(acceptedOrders.size(), insertedCount));
         }
+        Map<Long, List<AutoMarketPlannedOrder>> autoOrdersByAccount = acceptedOrders.stream()
+                .filter(order -> order.originType()
+                        == stock.batch.service.batch.automarket.model.StockOrderOriginType.AUTO_PARTICIPANT)
+                .collect(java.util.stream.Collectors.groupingBy(
+                        AutoMarketPlannedOrder::accountId,
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.toList()
+                ));
+        List<AutoMarketWriter.ActivitySubmission> activitySubmissions = autoOrdersByAccount.entrySet()
+                .stream()
+                .map(entry -> new AutoMarketWriter.ActivitySubmission(
+                        entry.getKey(),
+                        entry.getValue().size(),
+                        entry.getValue().stream()
+                                .map(order -> order.price().multiply(BigDecimal.valueOf(order.quantity())))
+                                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                ))
+                .toList();
+        autoMarketWriter.recordAutoParticipantSubmissions(
+                activitySubmissions,
+                now.toLocalDate(),
+                now
+        );
         List<AutoMarketWriter.StrategyOriginInsert> strategyOrigins = acceptedOrders.stream()
                 .filter(order -> order.strategyOrigin() != null)
                 .map(order -> {
@@ -297,66 +319,6 @@ class AutoMarketOrderExecutor {
                 failedBuyReserveCount,
                 failedSellReserveCount
         );
-    }
-
-    private BalancedPairFilterResult filterBalancedMarketMakerPairs(
-            List<AutoMarketPlannedOrder> plannedOrders,
-            Map<Long, AutoMarketWriter.AccountReservationState> accountStates,
-            Map<AutoMarketWriter.HoldingReservationKey, AutoMarketWriter.HoldingReservationState> holdingStates
-    ) {
-        Map<BalancedPairKey, List<AutoMarketPlannedOrder>> pairsByKey = new LinkedHashMap<>();
-        for (AutoMarketPlannedOrder order : plannedOrders) {
-            if (isBalancedV2MarketMakerOrder(order)) {
-                pairsByKey.computeIfAbsent(
-                        new BalancedPairKey(order.accountId(), order.symbol()),
-                        ignored -> new ArrayList<>()
-                ).add(order);
-            }
-        }
-        if (pairsByKey.isEmpty()) {
-            return new BalancedPairFilterResult(plannedOrders, 0, 0);
-        }
-        Set<AutoMarketPlannedOrder> rejected = Collections.newSetFromMap(new IdentityHashMap<>());
-        int rejectedBuyCount = 0;
-        int rejectedSellCount = 0;
-        for (Map.Entry<BalancedPairKey, List<AutoMarketPlannedOrder>> entry : pairsByKey.entrySet()) {
-            List<AutoMarketPlannedOrder> pairOrders = entry.getValue();
-            List<AutoMarketPlannedOrder> buyOrders = pairOrders.stream().filter(order -> BUY.equals(order.side())).toList();
-            List<AutoMarketPlannedOrder> sellOrders = pairOrders.stream().filter(order -> SELL.equals(order.side())).toList();
-            AutoMarketWriter.AccountReservationState accountState = accountStates.get(entry.getKey().accountId());
-            AutoMarketWriter.HoldingReservationState holdingState = holdingStates.get(
-                    new AutoMarketWriter.HoldingReservationKey(entry.getKey().accountId(), entry.getKey().symbol())
-            );
-            BigDecimal requiredCash = buyOrders.stream()
-                    .map(AutoMarketPlannedOrder::reservedCash)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            long requiredHolding = sellOrders.stream().mapToLong(AutoMarketPlannedOrder::quantity).sum();
-            boolean completePair = !buyOrders.isEmpty() && buyOrders.size() == sellOrders.size();
-            boolean resourcesAvailable = isActive(accountState)
-                    && accountState.cashBalance().compareTo(requiredCash) >= 0
-                    && holdingState != null
-                    && holdingState.availableQuantity() >= requiredHolding;
-            if (completePair && resourcesAvailable) {
-                continue;
-            }
-            rejected.addAll(pairOrders);
-            rejectedBuyCount += buyOrders.size();
-            rejectedSellCount += sellOrders.size();
-        }
-        if (rejected.isEmpty()) {
-            return new BalancedPairFilterResult(plannedOrders, 0, 0);
-        }
-        return new BalancedPairFilterResult(
-                plannedOrders.stream().filter(order -> !rejected.contains(order)).toList(),
-                rejectedBuyCount,
-                rejectedSellCount
-        );
-    }
-
-    private boolean isBalancedV2MarketMakerOrder(AutoMarketPlannedOrder order) {
-        return order.profileType() == AutoParticipantProfileType.MARKET_MAKER
-                && order.behaviorModelVersion() == AutoParticipantBehaviorModelVersion.V2
-                && order.decisionReason() == ProfileDecisionReason.INVENTORY_BALANCED;
     }
 
     private void markAverageDownDecisions(
@@ -482,16 +444,6 @@ class AutoMarketOrderExecutor {
 
     private String nextClientOrderId() {
         return "auto-" + UUID.randomUUID().toString().replace("-", "");
-    }
-
-    private record BalancedPairKey(long accountId, String symbol) {
-    }
-
-    private record BalancedPairFilterResult(
-            List<AutoMarketPlannedOrder> eligibleOrders,
-            int rejectedBuyCount,
-            int rejectedSellCount
-    ) {
     }
 
 }

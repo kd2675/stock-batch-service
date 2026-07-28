@@ -166,7 +166,7 @@ public class CorporateActionAccountWriter {
                    and e.cash_amount > 0
                    and a.status = 'ACTIVE'
                    and p.profile_type = 'DIVIDEND_REINVESTOR'
-                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
+                   and coalesce(pc.behavior_model_version, 'V3') = 'V3'
                    and p.enabled = true
                    and p.withdrawn_at is null
                 """.formatted(placeholders),

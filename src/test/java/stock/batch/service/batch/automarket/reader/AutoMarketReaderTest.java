@@ -109,7 +109,7 @@ class AutoMarketReaderTest {
         realJdbcTemplate.execute("""
                 create table stock_auto_participant_profile_config (
                     profile_type varchar(64) not null primary key,
-                    behavior_model_version varchar(20) not null default 'V2'
+                    behavior_model_version varchar(20) not null default 'V3'
                 )
                 """);
         realJdbcTemplate.execute("""
@@ -230,7 +230,7 @@ class AutoMarketReaderTest {
         realJdbcTemplate.execute("""
                 create table stock_auto_participant_profile_config (
                     profile_type varchar(64) not null primary key,
-                    behavior_model_version varchar(20) not null default 'V2'
+                    behavior_model_version varchar(20) not null default 'V3'
                 )
                 """);
         realJdbcTemplate.execute("""
@@ -424,86 +424,6 @@ class AutoMarketReaderTest {
         assertThat(emptyHoldingSnapshot.accountId()).isEqualTo(20L);
         assertThat(emptyHoldingSnapshot.availableQuantity()).isZero();
         assertThat(emptyHoldingSnapshot.recentDividendCashAmount()).isEqualByComparingTo(BigDecimal.ZERO);
-    }
-
-    @Test
-    void findLegacyTradingSnapshots_doesNotRequireV2PortfolioOrBehaviorTables() {
-        JdbcTemplate realJdbcTemplate = createJdbcTemplate("auto_market_reader_legacy_snapshot_test");
-        realJdbcTemplate.execute("""
-                create table stock_account (
-                    id bigint not null,
-                    cash_balance decimal(19, 2) not null
-                )
-                """);
-        realJdbcTemplate.execute("""
-                create table stock_holding (
-                    account_id bigint not null,
-                    symbol varchar(20) not null,
-                    quantity bigint not null,
-                    reserved_quantity bigint not null,
-                    average_price decimal(19, 2) not null
-                )
-                """);
-        realJdbcTemplate.execute("""
-                create table stock_account_cash_flow (
-                    account_id bigint not null,
-                    flow_type varchar(32) not null,
-                    reason varchar(64) not null,
-                    amount decimal(19, 2) not null,
-                    created_at timestamp not null
-                )
-                """);
-        createSnapshotOrderTable(realJdbcTemplate);
-        LocalDateTime since = LocalDateTime.of(2026, 6, 29, 9, 0);
-        realJdbcTemplate.update(
-                "insert into stock_account(id, cash_balance) values (?, ?)",
-                10L,
-                new BigDecimal("100000.00")
-        );
-        realJdbcTemplate.update(
-                """
-                insert into stock_holding(
-                    account_id, symbol, quantity, reserved_quantity, average_price
-                ) values (?, ?, ?, ?, ?)
-                """,
-                10L,
-                "STOCK001",
-                10L,
-                3L,
-                new BigDecimal("50000.00")
-        );
-        realJdbcTemplate.update(
-                """
-                insert into stock_account_cash_flow(
-                    account_id, flow_type, reason, amount, created_at
-                ) values (?, 'DEPOSIT', 'DIVIDEND_PAYMENT', ?, ?)
-                """,
-                10L,
-                new BigDecimal("3000.00"),
-                since.plusMinutes(1)
-        );
-        insertSnapshotOrder(realJdbcTemplate, 1L, 10L, "BUY", new BigDecimal("51000.00"), 6L, 1L);
-        insertSnapshotOrder(realJdbcTemplate, 2L, 10L, "SELL", new BigDecimal("52000.00"), 4L, 1L);
-        AutoMarketReader realReader = new AutoMarketReader(realJdbcTemplate);
-
-        AutoParticipantTradingSnapshot snapshot = realReader.findLegacyTradingSnapshots(
-                List.of(10L),
-                "STOCK001",
-                since
-        ).getFirst();
-
-        assertThat(
-                "%d:%d:%d:%d:%d".formatted(
-                        snapshot.accountId(),
-                        snapshot.availableQuantity(),
-                        snapshot.openBuyQuantity(),
-                        snapshot.openSellQuantity(),
-                        snapshot.portfolioPositionCount()
-                )
-        ).isEqualTo("10:7:5:3:1");
-        assertThat(snapshot.recentDividendCashAmount()).isEqualByComparingTo("3000.00");
-        assertThat(snapshot.paydayAvailableBudget()).isZero();
-        assertThat(snapshot.positionOpenedBusinessDate()).isNull();
     }
 
     @Test

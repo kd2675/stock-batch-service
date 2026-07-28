@@ -26,7 +26,6 @@ public class AutoMarketOrderReader {
     private final String lockClause;
     private final String lockedOrderTable;
     private final String expiryOrderTable;
-    private final String marketMakerReplacementOrderTable;
 
     public AutoMarketOrderReader(JdbcTemplate jdbcTemplate) {
         this.jdbcClient = JdbcClient.create(new NamedParameterJdbcTemplate(jdbcTemplate));
@@ -35,9 +34,6 @@ public class AutoMarketOrderReader {
         this.lockedOrderTable = mysql ? "stock_order force index (primary)" : "stock_order";
         this.expiryOrderTable = mysql
                 ? "stock_order o force index (idx_stock_order_market_status_symbol)"
-                : "stock_order o";
-        this.marketMakerReplacementOrderTable = mysql
-                ? "stock_order o force index (idx_stock_order_account_status_created)"
                 : "stock_order o";
     }
 
@@ -75,7 +71,7 @@ public class AutoMarketOrderReader {
                        o.reserved_cash,
                        o.limit_price,
                        coalesce(o.auto_profile_type, p.profile_type) as profile_type,
-                       coalesce(o.auto_behavior_model_version, 'V1') as behavior_model_version,
+                       coalesce(o.auto_behavior_model_version, 'V3') as behavior_model_version,
                        o.expires_at,
                        o.created_at
                   from %s
@@ -162,80 +158,6 @@ public class AutoMarketOrderReader {
                         rs.getObject("expires_at", LocalDateTime.class),
                         rs.getObject("created_at", LocalDateTime.class)
                 ))
-                .list();
-    }
-
-    public List<Long> findActiveV2MarketMakerAccountIds(int limit) {
-        return jdbcClient.sql(
-                """
-                select a.id
-                  from stock_auto_participant p
-                  join stock_account a on a.user_key = p.user_key
-                  left join stock_auto_participant_profile_config pc
-                    on pc.profile_type = p.profile_type
-                 where p.enabled = true
-                   and p.withdrawn_at is null
-                   and p.profile_type = 'MARKET_MAKER'
-                   and coalesce(pc.behavior_model_version, 'V2') = 'V2'
-                   and a.status = 'ACTIVE'
-                 order by a.id asc
-                 limit :limit
-                """
-        )
-                .param("limit", Math.max(1, limit))
-                .query(Long.class)
-                .list();
-    }
-
-    public List<AutoOrder> findV2MarketMakerReplacementCandidates(
-            AutoMarketConfig config,
-            List<Long> accountIds,
-            LocalDateTime createdBefore,
-            String side,
-            int limit
-    ) {
-        if (accountIds == null || accountIds.isEmpty()) {
-            return List.of();
-        }
-        if (!"BUY".equals(side) && !"SELL".equals(side)) {
-            throw new IllegalArgumentException("Market-maker replacement side must be BUY or SELL: " + side);
-        }
-        return jdbcClient.sql(
-                """
-                select o.id,
-                       o.account_id,
-                       o.symbol,
-                       o.side,
-                       o.quantity,
-                       o.filled_quantity,
-                       o.reserved_cash,
-                       o.limit_price,
-                       o.auto_profile_type as profile_type,
-                       o.auto_behavior_model_version as behavior_model_version,
-                       o.expires_at,
-                       o.created_at
-                  from %s
-                 where o.symbol = :symbol
-                   and o.account_id in (:accountIds)
-                   and o.market_type = 'ORDER_BOOK'
-                   and o.order_type = 'LIMIT'
-                   and o.status in ('PENDING', 'PARTIALLY_FILLED')
-                   and o.quantity > o.filled_quantity
-                   and o.auto_profile_type = 'MARKET_MAKER'
-                   and o.auto_behavior_model_version = 'V2'
-                   and o.side = :side
-                   and o.limit_price is not null
-                   and o.created_at < :createdBefore
-                 order by o.created_at asc, o.id asc
-                 limit :limit
-                """.formatted(marketMakerReplacementOrderTable)
-        )
-                .param("symbol", config.symbol())
-                .param("accountIds", accountIds)
-                .param("side", side)
-                .param("createdBefore", createdBefore)
-                .param("limit", Math.max(1, limit))
-                .query((rs, rowNum) -> AutoMarketReaderMapper.toAutoParticipantOrder(rs))
                 .list();
     }
 

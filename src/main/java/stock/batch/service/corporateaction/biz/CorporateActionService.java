@@ -1131,7 +1131,7 @@ public class CorporateActionService {
         policies.put(AutoParticipantProfileType.WHALE, eventPolicy(AutoParticipantProfileType.WHALE, "0.90", "0.55", "0.50"));
         policies.put(AutoParticipantProfileType.CASH_DEFENSIVE, eventPolicy(AutoParticipantProfileType.CASH_DEFENSIVE, "0.25", "0.08", "0.10"));
         policies.put(AutoParticipantProfileType.OBSERVER, eventPolicy(AutoParticipantProfileType.OBSERVER, "0.05", "0.00", "0.05"));
-        policies.put(AutoParticipantProfileType.MARKET_MAKER, eventPolicy(AutoParticipantProfileType.MARKET_MAKER, "0.20", "0.05", "0.10"));
+        policies.put(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, eventPolicy(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, "0.20", "0.05", "0.10"));
         policies.put(AutoParticipantProfileType.SCALPER, eventPolicy(AutoParticipantProfileType.SCALPER, "0.15", "0.05", "0.08"));
         policies.put(AutoParticipantProfileType.DAY_TRADER, eventPolicy(AutoParticipantProfileType.DAY_TRADER, "0.20", "0.08", "0.10"));
         policies.put(AutoParticipantProfileType.PANIC_SELLER, eventPolicy(AutoParticipantProfileType.PANIC_SELLER, "0.10", "0.03", "0.05"));

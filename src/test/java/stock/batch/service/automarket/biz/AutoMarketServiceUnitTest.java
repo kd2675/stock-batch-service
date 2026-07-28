@@ -111,7 +111,7 @@ class AutoMarketServiceUnitTest {
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
         InMemoryReadyProfileQueue readyProfileQueue = new InMemoryReadyProfileQueue();
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 16, 0);
-        readyProfileQueue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now.minusSeconds(1));
+        readyProfileQueue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.minusSeconds(1));
         AutoMarketService service = new AutoMarketService(
                 autoMarketReader,
                 autoMarketDailyRegimeService,
@@ -134,7 +134,7 @@ class AutoMarketServiceUnitTest {
 
         assertThat(profiles).hasSize(1);
         assertThat(ReflectionTestUtils.getField(profiles.get(0), "profileType"))
-                .isEqualTo(AutoParticipantProfileType.MARKET_MAKER);
+                .isEqualTo(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER);
         verify(scheduleService, never()).findDueProfileSchedules(any(), anyInt());
     }
 
@@ -152,7 +152,7 @@ class AutoMarketServiceUnitTest {
         AutoMarketGenerationSlotLimiter generationSlotLimiter = new AutoMarketGenerationSlotLimiter(1);
         assertThat(generationSlotLimiter.tryAcquire()).isTrue();
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 16, 0);
-        readyProfileQueue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now.minusSeconds(1));
+        readyProfileQueue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.minusSeconds(1));
         AutoMarketService service = new AutoMarketService(
                 autoMarketReader,
                 autoMarketDailyRegimeService,
@@ -175,12 +175,12 @@ class AutoMarketServiceUnitTest {
 
         assertThat(profiles).isEmpty();
         assertThat(readyProfileQueue.readyAtByProfile)
-                .containsKey(AutoParticipantProfileType.MARKET_MAKER);
+                .containsKey(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER);
         verify(scheduleService, never()).findDueProfileSchedules(any(), anyInt());
     }
 
     @Test
-    void runAutoMarketStep_v1GenerationFailure_skipsV2SignalsAndDoesNotCompleteSchedules() {
+    void runAutoMarketStep_v3GenerationFailure_doesNotCompleteClaimedSchedule() {
         AutoMarketReader autoMarketReader = mock(AutoMarketReader.class);
         AutoMarketDailyRegimeService autoMarketDailyRegimeService = mock(AutoMarketDailyRegimeService.class);
         AutoParticipantOrderService autoParticipantOrderService = mock(AutoParticipantOrderService.class);
@@ -294,13 +294,6 @@ class AutoMarketServiceUnitTest {
         int processedCount = service.runAutoMarketStep();
 
         assertThat(processedCount).isZero();
-        verify(autoMarketReader, times(1))
-                .findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusHours(1));
-        verify(autoMarketReader, never())
-                .findLatestPricesAtOrBefore(List.of("STOCK001"), now.minusMinutes(5));
-        verify(autoMarketReader, never())
-                .findHistoricalMarketSignals(List.of("STOCK001"), now.toLocalDate());
-        verify(autoMarketReader, never()).findProjectedSymbolQuantities(anyList(), anyList());
         verify(scheduleService, never()).completeStrategies(any(), any(), any());
     }
 
@@ -348,7 +341,7 @@ class AutoMarketServiceUnitTest {
                 new BigDecimal("70000.00"),
                 null
         );
-        readyProfileQueue.enqueue(AutoParticipantProfileType.MARKET_MAKER, now.minusSeconds(1));
+        readyProfileQueue.enqueue(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.minusSeconds(1));
         when(simulationClockService.currentSnapshot()).thenReturn(new SimulationClockSnapshot(
                 LocalDate.of(2026, 7, 3),
                 now,
@@ -369,11 +362,11 @@ class AutoMarketServiceUnitTest {
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(autoMarketReader.findParticipantProfileConfigs()).thenReturn(List.of());
         when(profileBehaviorSupport.policiesWithOverrides(List.of())).thenReturn(Map.of());
-        when(autoMarketReader.findDueParticipantSymbolStrategies(List.of(config), AutoParticipantProfileType.MARKET_MAKER, now, 100))
+        when(autoMarketReader.findDueParticipantSymbolStrategies(List.of(config), AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now, 100))
                 .thenReturn(List.of());
-        when(scheduleService.findNextProfileSchedules(List.of(AutoParticipantProfileType.MARKET_MAKER), now.plusSeconds(1)))
+        when(scheduleService.findNextProfileSchedules(List.of(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER), now.plusSeconds(1)))
                 .thenReturn(List.of(new AutoMarketReadyProfileQueue.ReadyProfile(
-                        AutoParticipantProfileType.MARKET_MAKER,
+                        AutoParticipantProfileType.PASSIVE_LIMIT_TRADER,
                         now.plusSeconds(1)
                 )));
 
@@ -381,7 +374,7 @@ class AutoMarketServiceUnitTest {
 
         assertThat(processedCount).isZero();
         assertThat(readyProfileQueue.readyAtByProfile)
-                .containsEntry(AutoParticipantProfileType.MARKET_MAKER, now.plusSeconds(1));
+                .containsEntry(AutoParticipantProfileType.PASSIVE_LIMIT_TRADER, now.plusSeconds(1));
         verify(autoParticipantOrderService, never()).placeAutoOrders(
                 any(),
                 any(),

@@ -30,6 +30,12 @@ import stock.batch.service.automarket.profile.ProfileDecisionAction;
 import stock.batch.service.automarket.profile.ProfileDecisionReason;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
 import stock.batch.service.automarket.support.AutoMarketDeterministicRandom;
+import stock.batch.service.automarket.v3.AutoParticipantDecisionUrgency;
+import stock.batch.service.automarket.v3.AutoParticipantBehaviorKernel;
+import stock.batch.service.automarket.v3.AutoParticipantV3Policy;
+import stock.batch.service.automarket.v3.SafeQuantityBindingReason;
+import stock.batch.service.automarket.v3.SafeQuantityCalculator;
+import stock.batch.service.automarket.v3.SafeQuantityLimit;
 import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 import stock.batch.service.batch.automarket.model.AutoMarketHistoricalSignal;
 import stock.batch.service.batch.automarket.model.AutoParticipantBehaviorModelVersion;
@@ -40,8 +46,6 @@ import stock.batch.service.batch.automarket.model.AutoParticipantTradingSnapshot
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
 
 import static stock.batch.service.automarket.biz.AutoMarketPricePolicy.dailyLowerLimit;
-import static stock.batch.service.automarket.support.AutoMarketRandomSupport.nextInt;
-import static stock.batch.service.automarket.support.AutoMarketRandomSupport.noise;
 import static stock.batch.service.automarket.support.AutoMarketRandomSupport.withSeed;
 
 @Component
@@ -57,6 +61,8 @@ class AutoParticipantOrderService {
     private final AutoParticipantOrderPricing autoParticipantOrderPricing;
     private final AutoProfileBehaviorSupport autoProfileBehaviorSupport;
     private final AutoMarketExecutionStylePlanner executionStylePlanner = new AutoMarketExecutionStylePlanner();
+    private final AutoParticipantBehaviorKernel behaviorKernel = new AutoParticipantBehaviorKernel();
+    private final SafeQuantityCalculator safeQuantityCalculator = new SafeQuantityCalculator();
     private MeterRegistry meterRegistry;
     private RecentMarketActivityTracker recentMarketActivityTracker;
     private AutoParticipantPositionActivityTracker positionActivityTracker;
@@ -84,6 +90,9 @@ class AutoParticipantOrderService {
 
     @Value("${stock.batch.auto-market.max-open-order-quantity-multiplier:10}")
     private int maxOpenOrderQuantityMultiplier = 10;
+
+    @Value("${stock.batch.execution.fee-rate:0.00015}")
+    private BigDecimal buyFeeRate = new BigDecimal("0.00015");
 
     AutoParticipantOrderService(
             AutoMarketReader autoMarketReader,
@@ -158,17 +167,13 @@ class AutoParticipantOrderService {
             LocalDateTime businessEffectiveAt,
             Map<String, Integer> eligibleSymbolCountsByUserKey
     ) {
-        boolean hasV2Strategies = strategies.stream()
-                .anyMatch(strategy -> strategy.behaviorModelVersion() == AutoParticipantBehaviorModelVersion.V2);
         Map<Long, AutoParticipantTradingState> tradingStates = loadTradingStates(strategies, config, businessEffectiveAt);
         registerIntradayPositionClocks(strategies, tradingStates, config.symbol(), businessEffectiveAt);
         AutoMarketOrderBookState priceReferenceOrderBookState =
                 autoMarketOrderExecutor.loadOrderBookState(config.symbol());
         AutoMarketOrderBookState planningOrderBookState = priceReferenceOrderBookState;
         RecentMarketActivityTracker.RecentMarketActivitySnapshot recentMarketActivity =
-                hasV2Strategies
-                        ? recentMarketActivity(config.symbol(), businessEffectiveAt)
-                        : RecentMarketActivityTracker.RecentMarketActivitySnapshot.EMPTY;
+                recentMarketActivity(config.symbol(), businessEffectiveAt);
         double initialOrderPressure = planningOrderBookState.orderPressure();
         boolean atLowerPriceLimit = isAtLowerPriceLimit(config);
         List<AutoMarketPlannedOrder> plannedOrders = new ArrayList<>();
@@ -181,20 +186,17 @@ class AutoParticipantOrderService {
             );
             AutoProfileBehavior behavior = autoProfileBehaviorSupport.behavior(strategy.profileType());
             ProfilePolicy policy = autoProfileBehaviorSupport.policy(profilePolicies, strategy.profileType());
-            boolean executeV2 = strategy.behaviorModelVersion() == AutoParticipantBehaviorModelVersion.V2;
-            ProfilePolicy executionPolicy = executeV2 ? policy : policy.forLegacyExecution();
-            String v2PolicyVersion = executeV2 ? v2PolicyVersion(strategy, policy) : "V1";
+            ProfilePolicy executionPolicy = policy;
+            String v3PolicyVersion = v3PolicyVersion(strategy, policy);
             int activityLevel = behavior.activityLevel(strategy);
             double unrealizedReturn = unrealizedReturn(tradingState, config);
-            double profileNoise = executeV2
-                    ? AutoMarketDeterministicRandom.symmetricNoise(
-                            strategy,
-                            config.symbol(),
-                            businessEffectiveAt,
-                            Math.max(0.0, policy.noiseWeight()) * 0.18,
-                            v2PolicyVersion
-                    )
-                    : noise(policy.noiseWeight(), 0.18);
+            double profileNoise = AutoMarketDeterministicRandom.symmetricNoise(
+                    strategy,
+                    config.symbol(),
+                    businessEffectiveAt,
+                    Math.max(0.0, policy.noiseWeight()) * 0.18,
+                    v3PolicyVersion
+            );
             ProfileSignalContext initialContext = profileContext(
                     strategy,
                     config,
@@ -213,33 +215,42 @@ class AutoParticipantOrderService {
                     recentMarketActivity,
                     eligibleSymbolCount(strategy, eligibleSymbolCountsByUserKey)
             );
-            ProfileDecision v2Decision = executeV2
-                    ? decideV2(
+            ProfileDecision v3Decision = decideV3(
+                    strategy,
+                    config.symbol(),
+                    businessEffectiveAt,
+                    behavior,
+                    policy,
+                    v3PolicyVersion,
+                    initialContext
+            );
+            recordProfileDecision(strategy, v3Decision);
+            AutoParticipantDecisionUrgency decisionUrgency = decisionUrgency(
+                    strategy.profileType(),
+                    v3Decision
+            );
+            AutoParticipantV3Policy activeV3Policy = strategy.v3Policy() == null
+                    ? AutoParticipantV3Policy.defaults(Math.max(1L, strategy.policyVersion()))
+                    : strategy.v3Policy();
+            if (v3Decision.action() != ProfileDecisionAction.HOLD
+                    && decisionUrgency == AutoParticipantDecisionUrgency.VOLUNTARY
+                    && !shouldExecuteVoluntaryOrder(
                             strategy,
-                            config.symbol(),
+                            v3Decision,
+                            profileNoise,
                             businessEffectiveAt,
-                            behavior,
-                            policy,
-                            v2PolicyVersion,
-                            initialContext
-                    )
-                    : ProfileDecision.hold(ProfileDecisionReason.INSUFFICIENT_SIGNAL, 0.0);
-            if (executeV2) {
-                recordProfileDecision(strategy, v2Decision);
+                            activeV3Policy
+                    )) {
+                incrementDropCount(
+                        planningDropCounts,
+                        AutoMarketOrderDropReason.FOLLOW_THROUGH_SKIPPED
+                );
+                decisionCount++;
+                continue;
             }
             int orderTtlSeconds = behavior.orderTtlSeconds(config.orderTtlSeconds(), executionPolicy);
-            if (executeV2 && strategy.profileType() == AutoParticipantProfileType.MARKET_MAKER) {
-                orderTtlSeconds = Math.max(orderTtlSeconds, Math.max(120, config.orderTtlSeconds() * 2));
-            }
             LocalDateTime orderExpiresAt = businessEffectiveAt.plusSeconds(Math.max(1, orderTtlSeconds));
-            int baseOrderCount = executeV2
-                    ? v2Decision.desiredOrderCount()
-                    : behavior.orderCount(initialContext);
-            int orderCount = executionPolicy.executionPolicy().ordersPerDecisionMultiplier() <= 0
-                    ? 0
-                    : executeV2
-                            ? scaledV2OrderCount(v2Decision, config)
-                            : scaledOrderCount(baseOrderCount, config);
+            int orderCount = v3Decision.action() == ProfileDecisionAction.HOLD ? 0 : 1;
             decisionCount++;
             for (int index = 0; index < orderCount; index++) {
                 ProfileSignalContext context = profileContext(
@@ -260,18 +271,14 @@ class AutoParticipantOrderService {
                         recentMarketActivity,
                         eligibleSymbolCount(strategy, eligibleSymbolCountsByUserKey)
                 );
-                AutoMarketExecutionIntent v2Intent = executeV2
-                        ? executionStylePlanner.intentFor(
-                                strategy.profileType(),
-                                context,
-                                v2Decision,
-                                index,
-                                orderCount
-                        )
-                        : null;
-                String side = v2Intent == null
-                        ? behavior.chooseSide(context)
-                        : v2Intent.action() == ProfileDecisionAction.BUY ? BUY : SELL;
+                AutoMarketExecutionIntent v3Intent = executionStylePlanner.intentFor(
+                        strategy.profileType(),
+                        context,
+                        v3Decision,
+                        index,
+                        orderCount
+                );
+                String side = v3Intent.action() == ProfileDecisionAction.BUY ? BUY : SELL;
                 if (side == null) {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.SIDE_NOT_SELECTED);
                     continue;
@@ -281,20 +288,12 @@ class AutoParticipantOrderService {
                     incrementDropCount(planningDropCounts, infeasibleReason);
                     continue;
                 }
-                BigDecimal price = v2Intent == null
-                        ? autoParticipantOrderPricing.createAutoPrice(
-                                config,
-                                activityLevel,
-                                side,
-                                executionPolicy,
-                                priceReferenceOrderBookState
-                        )
-                        : withSeed(
+                BigDecimal price = withSeed(
                                 AutoMarketDeterministicRandom.seed(
                                         strategy,
                                         config.symbol(),
                                         businessEffectiveAt,
-                                        v2PolicyVersion + ":PRICE:" + index
+                                        v3PolicyVersion + ":PRICE:" + index
                                 ),
                                 () -> autoParticipantOrderPricing.createAutoPrice(
                                         config,
@@ -302,56 +301,38 @@ class AutoParticipantOrderService {
                                         side,
                                         executionPolicy,
                                         priceReferenceOrderBookState,
-                                        v2Intent
+                                        v3Intent
                                 )
                         );
                 if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.INVALID_PRICE);
                     continue;
                 }
-                QuantityDecision quantityDecision = v2Intent == null
-                        ? createQuantity(
-                                tradingState,
-                                side,
-                                price,
-                                executionPolicy,
-                                config.maxOrderQuantity(),
-                                1.0,
-                                0L,
-                                null
-                        )
-                        : withSeed(
-                                AutoMarketDeterministicRandom.seed(
-                                        strategy,
-                                        config.symbol(),
-                                        businessEffectiveAt,
-                                        v2PolicyVersion + ":QUANTITY:" + index
-                                ),
-                                () -> createQuantity(
-                                        tradingState,
-                                        side,
-                                        price,
-                                        executionPolicy,
-                                        config.maxOrderQuantity(),
-                                        v2Intent.quantityMultiplier(),
-                                        v2Intent.requestedQuantity(),
-                                        strategy.profileType()
-                                )
-                        );
+                QuantityDecision quantityDecision = createQuantity(
+                        strategy,
+                        tradingState,
+                        context,
+                        priceReferenceOrderBookState,
+                        side,
+                        price,
+                        config.maxOrderQuantity(),
+                        v3Intent.requestedQuantity(),
+                        fundingBudgetTypeForIntent(strategy, side),
+                        decisionUrgency,
+                        activeV3Policy
+                );
                 if (!quantityDecision.accepted()) {
                     incrementDropCount(planningDropCounts, quantityDecision.dropReason());
                     continue;
                 }
-                long profileRiskQuantity = executeV2
-                        ? applyProfileRiskQuantity(
-                                strategy.profileType(),
-                                context,
-                                v2Decision,
-                                side,
-                                price,
-                                quantityDecision.quantity()
-                        )
-                        : quantityDecision.quantity();
+                long profileRiskQuantity = applyProfileRiskQuantity(
+                        strategy.profileType(),
+                        context,
+                        v3Decision,
+                        side,
+                        price,
+                        quantityDecision.quantity()
+                );
                 if (profileRiskQuantity <= 0) {
                     incrementDropCount(planningDropCounts, AutoMarketOrderDropReason.PROFILE_RISK_LIMIT);
                     continue;
@@ -360,11 +341,11 @@ class AutoParticipantOrderService {
                         side,
                         profileRiskQuantity,
                         initialOrderPressure,
-                        executeV2 ? v2Decision.reason() : null,
-                        executeV2 ? v2Decision.signalStrength() : 0.0,
-                        executeV2 ? strategy.profileType() : null
+                        v3Decision.reason(),
+                        v3Decision.signalStrength(),
+                        strategy.profileType()
                 );
-                AutoParticipantFundingBudgetType fundingBudgetType = fundingBudgetType(strategy, side, executeV2);
+                AutoParticipantFundingBudgetType fundingBudgetType = fundingBudgetType(strategy, side);
                 if (fundingBudgetType != null) {
                     BigDecimal availableBudget = fundingBudgetType == AutoParticipantFundingBudgetType.PAYDAY
                             ? tradingState.paydayAvailableBudget()
@@ -383,10 +364,15 @@ class AutoParticipantOrderService {
                         price,
                         quantity,
                         fundingBudgetType,
-                        executeV2 ? v2Decision.reason() : null,
+                        v3Decision.reason(),
                         orderExpiresAt,
                         strategy.profileType(),
-                        strategy.behaviorModelVersion()
+                        strategy.behaviorModelVersion(),
+                        stock.batch.service.batch.automarket.model.StockOrderOriginType.AUTO_PARTICIPANT,
+                        null,
+                        activeV3Policy.policyVersion(),
+                        strategy.behaviorEventSequence(),
+                        decisionUrgency
                 ));
                 planningOrderBookState = planningOrderBookState.withPlacedOrder(side, price, quantity);
                 tradingState.reserve(side, price, quantity);
@@ -420,7 +406,7 @@ class AutoParticipantOrderService {
         ).increment();
     }
 
-    private ProfileDecision decideV2(
+    private ProfileDecision decideV3(
             AutoParticipantStrategy strategy,
             String symbol,
             LocalDateTime businessEffectiveAt,
@@ -429,18 +415,55 @@ class AutoParticipantOrderService {
             String policyVersion,
             ProfileSignalContext context
     ) {
-        if (policy.executionPolicy().decisionFrequencyMultiplier() <= 0
-                || policy.executionPolicy().ordersPerDecisionMultiplier() <= 0) {
-            return ProfileDecision.hold(ProfileDecisionReason.ACTIVITY_DISABLED, 0.0);
-        }
         return withSeed(
                 AutoMarketDeterministicRandom.seed(strategy, symbol, businessEffectiveAt, policyVersion),
                 () -> behavior.decide(context)
         );
     }
 
-    private String v2PolicyVersion(AutoParticipantStrategy strategy, ProfilePolicy policy) {
-        return "V2:" + strategy.profileType().name() + ":" + policy.behaviorSeedVersion();
+    private String v3PolicyVersion(AutoParticipantStrategy strategy, ProfilePolicy policy) {
+        return "V3:" + Math.max(1L, strategy.policyVersion()) + ":"
+                + strategy.profileType().name() + ":" + policy.behaviorSeedVersion();
+    }
+
+    private AutoParticipantDecisionUrgency decisionUrgency(
+            AutoParticipantProfileType profileType,
+            ProfileDecision decision
+    ) {
+        if (decision.reason() == ProfileDecisionReason.SESSION_CLOSE) {
+            return AutoParticipantDecisionUrgency.MANDATORY_CLOSE;
+        }
+        if (decision.reason() == ProfileDecisionReason.HOLDING_PERIOD
+                || decision.reason() == ProfileDecisionReason.RISK_LIMIT
+                || decision.reason() == ProfileDecisionReason.EXIT_THRESHOLD
+                && profileType == AutoParticipantProfileType.STOP_LOSS_TRADER) {
+            return AutoParticipantDecisionUrgency.RISK_REDUCTION;
+        }
+        return AutoParticipantDecisionUrgency.VOLUNTARY;
+    }
+
+    private boolean shouldExecuteVoluntaryOrder(
+            AutoParticipantStrategy strategy,
+            ProfileDecision decision,
+            double independentNoise,
+            LocalDateTime businessEffectiveAt,
+            AutoParticipantV3Policy policy
+    ) {
+        LocalDateTime lastOrderAt = strategy.lastOrderAt();
+        long elapsedSeconds = lastOrderAt == null
+                ? 86_400L
+                : Math.max(0L, Duration.between(lastOrderAt, businessEffectiveAt).toSeconds());
+        return behaviorKernel.shouldExecuteVoluntaryOrder(
+                decision.signalStrength(),
+                Math.clamp(independentNoise * 5.0, -1.0, 1.0),
+                strategy.fatigueScore(),
+                behaviorKernel.reentryFactor(elapsedSeconds, policy),
+                strategy.activityState(),
+                strategy.behaviorSeed(),
+                businessEffectiveAt.toLocalDate(),
+                strategy.behaviorEventSequence(),
+                policy
+        );
     }
 
     private Map<Long, AutoParticipantTradingState> loadTradingStates(
@@ -452,30 +475,17 @@ class AutoParticipantOrderService {
             return Map.of();
         }
         LocalDateTime recentDividendSince = businessEffectiveAt.minus(PROJECT_DIVIDEND_REINVESTMENT_SIGNAL_WINDOW);
-        List<Long> legacyAccountIds = strategies.stream()
-                .filter(strategy -> strategy.behaviorModelVersion() == AutoParticipantBehaviorModelVersion.V1)
+        List<Long> accountIds = strategies.stream()
                 .map(AutoParticipantStrategy::accountId)
                 .distinct()
                 .sorted()
                 .toList();
-        List<Long> v2AccountIds = accountIdsForModel(strategies, AutoParticipantBehaviorModelVersion.V2);
-        List<AutoParticipantTradingSnapshot> snapshots =
-                new ArrayList<>(legacyAccountIds.size() + v2AccountIds.size());
-        if (!legacyAccountIds.isEmpty()) {
-            snapshots.addAll(autoMarketReader.findLegacyTradingSnapshots(
-                    legacyAccountIds,
-                    config.symbol(),
-                    recentDividendSince
-            ));
-        }
-        if (!v2AccountIds.isEmpty()) {
-            snapshots.addAll(autoMarketReader.findTradingSnapshots(
-                    v2AccountIds,
-                    config.symbol(),
-                    recentDividendSince,
-                    businessEffectiveAt.toLocalDate()
-            ));
-        }
+        List<AutoParticipantTradingSnapshot> snapshots = autoMarketReader.findTradingSnapshots(
+                accountIds,
+                config.symbol(),
+                recentDividendSince,
+                businessEffectiveAt.toLocalDate()
+        );
         return snapshots.stream()
                 .map(AutoParticipantTradingState::from)
                 .collect(Collectors.toMap(
@@ -483,18 +493,6 @@ class AutoParticipantOrderService {
                         Function.identity(),
                         (left, right) -> left
                 ));
-    }
-
-    private List<Long> accountIdsForModel(
-            List<AutoParticipantStrategy> strategies,
-            AutoParticipantBehaviorModelVersion modelVersion
-    ) {
-        return strategies.stream()
-                .filter(strategy -> strategy.behaviorModelVersion() == modelVersion)
-                .map(AutoParticipantStrategy::accountId)
-                .distinct()
-                .sorted()
-                .toList();
     }
 
     private ProfileSignalContext profileContext(
@@ -516,13 +514,11 @@ class AutoParticipantOrderService {
             int eligibleSymbolCount
     ) {
         AutoParticipantPositionActivityTracker.PositionAgeSnapshot positionAge =
-                strategy.behaviorModelVersion() == AutoParticipantBehaviorModelVersion.V2
-                        ? intradayPositionAge(
+                intradayPositionAge(
                                 strategy.accountId(),
                                 config.symbol(),
                                 businessEffectiveAt
-                        )
-                        : AutoParticipantPositionActivityTracker.PositionAgeSnapshot.UNAVAILABLE;
+                        );
         return new ProfileSignalContext(
                 strategy,
                 config,
@@ -584,9 +580,6 @@ class AutoParticipantOrderService {
             return;
         }
         for (AutoParticipantStrategy strategy : strategies) {
-            if (strategy.behaviorModelVersion() != AutoParticipantBehaviorModelVersion.V2) {
-                continue;
-            }
             AutoParticipantTradingState state = tradingStates.get(strategy.accountId());
             positionActivityTracker.register(
                     strategy.accountId(),
@@ -664,61 +657,113 @@ class AutoParticipantOrderService {
     }
 
     private QuantityDecision createQuantity(
+            AutoParticipantStrategy strategy,
             AutoParticipantTradingState tradingState,
+            ProfileSignalContext context,
+            AutoMarketOrderBookState orderBookState,
             String side,
             BigDecimal price,
-            ProfilePolicy policy,
             int maxOrderQuantity,
-            double intentQuantityMultiplier,
             long requestedQuantity,
-            AutoParticipantProfileType v2ProfileType
+            AutoParticipantFundingBudgetType fundingBudgetType,
+            AutoParticipantDecisionUrgency urgency,
+            AutoParticipantV3Policy policy
     ) {
-        int maxQuantity = Math.max(1, maxOrderQuantity);
-        int openQuantityMultiplier = v2ProfileType == AutoParticipantProfileType.MARKET_MAKER
-                ? Math.min(2, maxOpenOrderQuantityMultiplier)
-                : maxOpenOrderQuantityMultiplier;
-        long maxOpenQuantity = (long) maxQuantity * Math.max(1, openQuantityMultiplier);
+        long maxQuantity = Math.max(1, maxOrderQuantity);
+        long maxOpenQuantity = maxQuantity * Math.max(1, maxOpenOrderQuantityMultiplier);
         long remainingOpenCapacity = tradingState.remainingOpenCapacity(side, maxOpenQuantity);
-        if (remainingOpenCapacity <= 0) {
-            return QuantityDecision.dropped(AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT);
-        }
-        if (policy.quantityMultiplier() <= 0) {
-            return QuantityDecision.dropped(AutoMarketOrderDropReason.QUANTITY_MULTIPLIER_ZERO);
-        }
-        int hardUpperBound = maxQuantity;
-        long profileQuantity = requestedQuantity > 0
-                ? Math.min(requestedQuantity, hardUpperBound)
-                : scaleProfileQuantity(
-                        nextInt(1, hardUpperBound),
-                        policy.quantityMultiplier() * Math.clamp(intentQuantityMultiplier, 0.0, 2.0),
-                        hardUpperBound
-                );
-        if (BUY.equals(side)) {
-            if (price.compareTo(BigDecimal.ZERO) <= 0) {
-                return QuantityDecision.dropped(AutoMarketOrderDropReason.INVALID_PRICE);
-            }
-            long affordableQuantity = tradingState.cashBalance()
-                    .divide(price, 0, RoundingMode.DOWN)
-                    .longValue();
-            if (affordableQuantity <= 0) {
-                return QuantityDecision.dropped(AutoMarketOrderDropReason.INSUFFICIENT_CASH);
-            }
-            return QuantityDecision.accepted(Math.min(Math.min(profileQuantity, affordableQuantity), remainingOpenCapacity));
-        }
-        if (tradingState.availableQuantity() <= 0) {
-            return QuantityDecision.dropped(AutoMarketOrderDropReason.INSUFFICIENT_HOLDING);
-        }
-        return QuantityDecision.accepted(
-                Math.min(Math.min(profileQuantity, tradingState.availableQuantity()), remainingOpenCapacity)
+        ProfileDecision quantityCapacityDecision = new ProfileDecision(
+                BUY.equals(side) ? ProfileDecisionAction.BUY : ProfileDecisionAction.SELL,
+                ProfileDecisionReason.SIGNAL,
+                1,
+                0.0
         );
+        long allocationCapacity = applyProfileRiskQuantity(
+                strategy.profileType(),
+                context,
+                quantityCapacityDecision,
+                side,
+                price,
+                Long.MAX_VALUE
+        );
+        if (requestedQuantity > 0) {
+            allocationCapacity = Math.min(allocationCapacity, requestedQuantity);
+        }
+        BigDecimal budget = fundingBudgetType == AutoParticipantFundingBudgetType.PAYDAY
+                ? tradingState.paydayAvailableBudget()
+                : fundingBudgetType == AutoParticipantFundingBudgetType.DIVIDEND
+                        ? tradingState.dividendAvailableBudget()
+                        : tradingState.liquidPortfolioAsset();
+        long budgetCapacity = budget.signum() <= 0
+                ? fundingBudgetType == null ? Long.MAX_VALUE : 0L
+                : budget.divide(price, 0, RoundingMode.DOWN).longValue();
+        boolean aggressive = isAggressive(side, price, orderBookState);
+        long oppositeDepth = BUY.equals(side)
+                ? orderBookState.openSellQuantity()
+                : orderBookState.openBuyQuantity();
+        long averageDailyVolumeCapacity = context.marketSignals().averageVolume5Day() > 0
+                ? Math.max(1L, Math.round(context.marketSignals().averageVolume5Day() * 0.02))
+                : Long.MAX_VALUE;
+        SafeQuantityLimit limit = safeQuantityCalculator.calculate(new SafeQuantityCalculator.LimitInput(
+                BUY.equals(side),
+                aggressive,
+                tradingState.cashBalance(),
+                price,
+                buyFeeRate,
+                maxQuantity,
+                remainingOpenCapacity,
+                tradingState.availableQuantity(),
+                allocationCapacity,
+                budgetCapacity,
+                oppositeDepth,
+                averageDailyVolumeCapacity,
+                Long.MAX_VALUE
+        ));
+        if (limit.safeMaximum() <= 0) {
+            return QuantityDecision.dropped(dropReason(limit.bindingReason(), side));
+        }
+        long quantity = safeQuantityCalculator.sample(
+                limit,
+                urgency,
+                strategy.behaviorSeed(),
+                strategy.decisionSlotAt() == null
+                        ? java.time.LocalDate.of(1970, 1, 1)
+                        : strategy.decisionSlotAt().toLocalDate(),
+                strategy.behaviorEventSequence(),
+                policy
+        ).quantity();
+        return quantity <= 0
+                ? QuantityDecision.dropped(dropReason(limit.bindingReason(), side))
+                : QuantityDecision.accepted(quantity);
     }
 
-    static long scaleProfileQuantity(long sampledQuantity, double multiplier, long hardUpperBound) {
-        if (sampledQuantity <= 0 || multiplier <= 0 || hardUpperBound <= 0) {
-            return 0;
+    private boolean isAggressive(String side, BigDecimal price, AutoMarketOrderBookState orderBookState) {
+        if (BUY.equals(side)) {
+            return orderBookState.bestAsk() != null && price.compareTo(orderBookState.bestAsk()) >= 0;
         }
-        long scaledQuantity = Math.round(sampledQuantity * multiplier);
-        return Math.clamp(scaledQuantity, 1L, hardUpperBound);
+        return orderBookState.bestBid() != null && price.compareTo(orderBookState.bestBid()) <= 0;
+    }
+
+    private AutoMarketOrderDropReason dropReason(SafeQuantityBindingReason bindingReason, String side) {
+        if (bindingReason == SafeQuantityBindingReason.OPEN_ORDER_ALLOWANCE) {
+            return AutoMarketOrderDropReason.OPEN_QUANTITY_LIMIT;
+        }
+        if (bindingReason == SafeQuantityBindingReason.BUY_AFFORDABILITY) {
+            return AutoMarketOrderDropReason.INSUFFICIENT_CASH;
+        }
+        if (bindingReason == SafeQuantityBindingReason.SELLABLE_HOLDING) {
+            return AutoMarketOrderDropReason.INSUFFICIENT_HOLDING;
+        }
+        return BUY.equals(side)
+                ? AutoMarketOrderDropReason.PROFILE_RISK_LIMIT
+                : AutoMarketOrderDropReason.INSUFFICIENT_HOLDING;
+    }
+
+    private AutoParticipantFundingBudgetType fundingBudgetTypeForIntent(
+            AutoParticipantStrategy strategy,
+            String side
+    ) {
+        return fundingBudgetType(strategy, side);
     }
 
     private void incrementDropCount(
@@ -740,10 +785,9 @@ class AutoParticipantOrderService {
 
     private AutoParticipantFundingBudgetType fundingBudgetType(
             AutoParticipantStrategy strategy,
-            String side,
-            boolean executeV2
+            String side
     ) {
-        if (!executeV2 || !BUY.equals(side)) {
+        if (!BUY.equals(side)) {
             return null;
         }
         return switch (strategy.profileType()) {
@@ -803,7 +847,7 @@ class AutoParticipantOrderService {
             double capitalRate = switch (profileType) {
                 case SMALL_DIVERSIFIER -> 0.01;
                 case AVERAGE_DOWN_BUYER -> 0.01;
-                case MARKET_MAKER -> 0.02;
+                case PASSIVE_LIMIT_TRADER -> 0.05;
                 case WHALE -> 0.10;
                 default -> 0.05;
             };
@@ -820,7 +864,7 @@ class AutoParticipantOrderService {
                 case PAYDAY_ACCUMULATOR, DIVIDEND_REINVESTOR -> 0.35;
                 case LONG_TERM_HOLDER -> 0.45;
                 case WHALE -> 0.50;
-                case MARKET_MAKER -> context.marketMakerUpperAllocationRatio();
+                case PASSIVE_LIMIT_TRADER -> 0.40;
                 default -> 0.40;
             };
             BigDecimal maximumStockValue = liquidAsset.multiply(BigDecimal.valueOf(maximumAllocation));
@@ -851,27 +895,6 @@ class AutoParticipantOrderService {
             return 0;
         }
         return Math.clamp((int) Math.round(baseOrderCount * config.liquidityMultiplier()), 1, 8);
-    }
-
-    private int scaledV2OrderCount(ProfileDecision decision, AutoMarketConfig config) {
-        if (decision.action() == ProfileDecisionAction.HOLD
-                || decision.desiredOrderCount() <= 0) {
-            return 0;
-        }
-        if (decision.action() == ProfileDecisionAction.SELL
-                && (decision.reason() == ProfileDecisionReason.SESSION_CLOSE
-                || decision.reason() == ProfileDecisionReason.HOLDING_PERIOD)) {
-            return Math.clamp(decision.desiredOrderCount(), 1, 8);
-        }
-        int scaledCount = scaledOrderCount(decision.desiredOrderCount(), config);
-        if (scaledCount <= 0 || decision.reason() != ProfileDecisionReason.INVENTORY_BALANCED) {
-            return scaledCount;
-        }
-        int pairedCount = Math.max(2, scaledCount);
-        if (pairedCount % 2 != 0) {
-            pairedCount = pairedCount < 8 ? pairedCount + 1 : pairedCount - 1;
-        }
-        return Math.clamp(pairedCount, 2, 8);
     }
 
     private boolean isAtLowerPriceLimit(AutoMarketConfig config) {

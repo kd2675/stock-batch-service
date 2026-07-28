@@ -66,13 +66,7 @@ public final class ProfilePolicy {
                 dipBuyWeight,
                 holdingPatienceWeight,
                 deepLossHoldWeight,
-                ProfileExecutionPolicy.legacy(
-                        orderMultiplier,
-                        orderTtlMultiplier,
-                        marketMakingWeight,
-                        profitTakingWeight,
-                        holdingPatienceWeight
-                )
+                ProfileExecutionPolicy.defaults(null, orderMultiplier, orderTtlMultiplier)
         );
     }
 
@@ -167,14 +161,8 @@ public final class ProfilePolicy {
         double overriddenOrderMultiplier = nonNegativeOrDefault(config.orderMultiplier(), orderMultiplier);
         double overriddenTtlMultiplier = positiveOrDefault(config.orderTtlMultiplier(), orderTtlMultiplier);
         ProfileExecutionPolicy overriddenExecutionPolicy = new ProfileExecutionPolicy(
-                nonNegativeOrDefault(
-                        config.decisionFrequencyMultiplier(),
-                        executionPolicy.decisionFrequencyMultiplier()
-                ),
-                nonNegativeOrDefault(
-                        config.ordersPerDecisionMultiplier(),
-                        executionPolicy.ordersPerDecisionMultiplier()
-                ),
+                1.0,
+                1.0,
                 ProfilePricingMode.parseOrDefault(config.pricingMode(), executionPolicy.pricingMode()),
                 ProfileExitMode.parseOrDefault(config.exitMode(), executionPolicy.exitMode()),
                 ProfileInventoryMode.parseOrDefault(config.inventoryMode(), executionPolicy.inventoryMode())
@@ -208,21 +196,6 @@ public final class ProfilePolicy {
 
     public ProfilePolicy withExecutionPolicy(ProfileExecutionPolicy value) {
         return copy(pricePressureSensitivity, value == null ? executionPolicy : value);
-    }
-
-    public ProfileExecutionPolicy legacyExecutionPolicy() {
-        return ProfileExecutionPolicy.legacy(
-                orderMultiplier,
-                orderTtlMultiplier,
-                marketMakingWeight,
-                profitTakingWeight,
-                holdingPatienceWeight
-        );
-    }
-
-    public ProfilePolicy forLegacyExecution() {
-        ProfileExecutionPolicy legacyPolicy = legacyExecutionPolicy();
-        return executionPolicy.equals(legacyPolicy) ? this : copy(pricePressureSensitivity, legacyPolicy);
     }
 
     private ProfilePolicy copy(double sensitivity, ProfileExecutionPolicy value) {
@@ -310,8 +283,6 @@ public final class ProfilePolicy {
         hash = mix(hash, dipBuyWeight);
         hash = mix(hash, holdingPatienceWeight);
         hash = mix(hash, deepLossHoldWeight);
-        hash = mix(hash, executionPolicy.decisionFrequencyMultiplier());
-        hash = mix(hash, executionPolicy.ordersPerDecisionMultiplier());
         hash = mix(hash, executionPolicy.pricingMode().name());
         hash = mix(hash, executionPolicy.exitMode().name());
         hash = mix(hash, executionPolicy.inventoryMode().name());

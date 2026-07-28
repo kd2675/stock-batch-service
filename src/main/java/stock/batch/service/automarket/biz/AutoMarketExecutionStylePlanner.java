@@ -3,8 +3,6 @@ package stock.batch.service.automarket.biz;
 import stock.batch.service.automarket.profile.ProfileDecision;
 import stock.batch.service.automarket.profile.ProfileDecisionAction;
 import stock.batch.service.automarket.profile.ProfileDecisionReason;
-import stock.batch.service.automarket.profile.ProfileInventoryMode;
-import stock.batch.service.automarket.profile.ProfilePricingMode;
 import stock.batch.service.automarket.profile.ProfileSignalContext;
 import stock.batch.service.batch.automarket.model.AutoParticipantProfileType;
 
@@ -19,12 +17,6 @@ final class AutoMarketExecutionStylePlanner {
     ) {
         if (decision.action() == ProfileDecisionAction.HOLD || totalOrderCount <= 0) {
             throw new IllegalArgumentException("A HOLD decision cannot be converted into an execution intent");
-        }
-        if (profileType == AutoParticipantProfileType.MARKET_MAKER
-                && context.policy().executionPolicy().inventoryMode()
-                == ProfileInventoryMode.TARGET_ALLOCATION
-                && context.policy().executionPolicy().pricingMode() == ProfilePricingMode.MARKET_MAKING) {
-            return marketMakerIntent(context, decision, orderIndex);
         }
         if (decision.action() == ProfileDecisionAction.SELL
                 && (decision.reason() == ProfileDecisionReason.SESSION_CLOSE
@@ -63,35 +55,6 @@ final class AutoMarketExecutionStylePlanner {
             );
         }
         return AutoMarketExecutionIntent.directional(decision.action());
-    }
-
-    private AutoMarketExecutionIntent marketMakerIntent(
-            ProfileSignalContext context,
-            ProfileDecision decision,
-            int orderIndex
-    ) {
-        if (decision.reason() == ProfileDecisionReason.INVENTORY_BALANCED) {
-            double normalizedDeviation = context.marketMakerNormalizedInventoryDeviation();
-            int inventorySkewTicks = -(int) Math.round(normalizedDeviation * 2.0);
-            boolean buy = Math.floorMod(orderIndex, 2) == 0;
-            double quantityMultiplier = buy
-                    ? Math.clamp(1.0 - normalizedDeviation * 0.60, 0.40, 1.60)
-                    : Math.clamp(1.0 + normalizedDeviation * 0.60, 0.40, 1.60);
-            return new AutoMarketExecutionIntent(
-                    buy ? ProfileDecisionAction.BUY : ProfileDecisionAction.SELL,
-                    quantityMultiplier,
-                    inventorySkewTicks,
-                    1
-            );
-        }
-        int inventorySkewTicks = decision.action() == ProfileDecisionAction.BUY ? 1 : -1;
-        double quantityMultiplier = Math.clamp(1.0 + decision.signalStrength() * 0.50, 1.0, 1.50);
-        return new AutoMarketExecutionIntent(
-                decision.action(),
-                quantityMultiplier,
-                inventorySkewTicks,
-                1
-        );
     }
 
     private long divideRoundingUp(long dividend, int divisor) {

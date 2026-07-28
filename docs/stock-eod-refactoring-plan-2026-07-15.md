@@ -859,7 +859,7 @@ NOT EXISTS (
 시장·fence·snapshot·regime·정산 검사는 config/control/snapshot 테이블의 단일 bounded 조회, 기업행사는 processing ledger 미완료 count, Redis는 profile enum으로 상한이 고정된 zset snapshot, 실행 정체성은 cycle PK 조회만 사용합니다. `stock_order`·`stock_execution`·`stock_holding`을 직접 조회하거나 변경하지 않는 정적 계약 테스트를 두며, 관리자 API도 readiness 원장을 재계산하지 않고 cycle PK와 display order로 저장 결과만 읽습니다. 따라서 이 상세 진단 때문에 정규장 주문·체결 SQL·잠금·commit·hot-ledger 인덱스가 증가하지 않습니다.
 
 2026-07-24 cycle 377은 초반 phase를 `2026-07-22-eod-v3`, 후반 phase를
-`2026-07-23-auto-profile-v2-direct`로 완료했고 나머지 9개 readiness 검사가 모두
+`2026-07-27-auto-participant-v3-probabilistic`로 완료했고 나머지 9개 readiness 검사가 모두
 통과했지만, 이전 구현이 물리 schema revision 문자열을 phase 재시작 계약으로 사용해
 `RUNTIME_IDENTITY`에서 차단됐습니다. 이를 허용 목록으로 우회하지 않고
 `eod_contract_version`을 cycle과 phase attempt에 별도로 동결합니다. build SHA와

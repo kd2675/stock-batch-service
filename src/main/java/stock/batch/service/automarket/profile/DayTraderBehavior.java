@@ -36,12 +36,12 @@ public class DayTraderBehavior extends AbstractAutoProfileBehavior {
     public ProfileDecision decide(ProfileSignalContext context) {
         long secondsToClose = context.marketSignals().secondsToClose();
         long liquidationWindowSeconds = AutoMarketDeterministicRandom.stableLongRange(
-                context.strategy(), "V2:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS", 2_700L, 4_500L
+                context.strategy(), "V3:DAY_TRADER:LIQUIDATION_WINDOW_SECONDS", 2_700L, 4_500L
         );
         long entryStopWindowSeconds = Math.max(
                 liquidationWindowSeconds,
                 AutoMarketDeterministicRandom.stableLongRange(
-                        context.strategy(), "V2:DAY_TRADER:ENTRY_STOP_WINDOW_SECONDS", 5_400L, 9_000L
+                        context.strategy(), "V3:DAY_TRADER:ENTRY_STOP_WINDOW_SECONDS", 5_400L, 9_000L
                 )
         );
         if (secondsToClose <= liquidationWindowSeconds) {

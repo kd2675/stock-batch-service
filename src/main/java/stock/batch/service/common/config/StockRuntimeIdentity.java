@@ -15,7 +15,7 @@ public class StockRuntimeIdentity {
     public StockRuntimeIdentity(
             ObjectProvider<BuildProperties> buildPropertiesProvider,
             @Value("${BUILD_SHA:}") String environmentBuildSha,
-            @Value("${STOCK_SCHEMA_VERSION:2026-07-23-auto-profile-v2-direct}") String configuredSchemaVersion,
+            @Value("${STOCK_SCHEMA_VERSION:2026-07-27-auto-participant-v3-probabilistic}") String configuredSchemaVersion,
             @Value("${STOCK_EOD_CONTRACT_VERSION:EOD_V1}") String configuredEodContractVersion
     ) {
         BuildProperties buildProperties = buildPropertiesProvider.getIfAvailable();

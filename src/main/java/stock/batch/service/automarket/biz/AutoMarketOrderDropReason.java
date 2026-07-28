@@ -8,6 +8,7 @@ enum AutoMarketOrderDropReason {
     INSUFFICIENT_CASH("insufficient_cash"),
     INSUFFICIENT_HOLDING("insufficient_holding"),
     PROFILE_RISK_LIMIT("profile_risk_limit"),
+    FOLLOW_THROUGH_SKIPPED("follow_through_skipped"),
     FUNDING_BUDGET_EMPTY("funding_budget_empty"),
     FUNDING_BUDGET_RESERVATION_FAILED("funding_budget_reservation_failed"),
     SESSION_CLOSED("session_closed"),

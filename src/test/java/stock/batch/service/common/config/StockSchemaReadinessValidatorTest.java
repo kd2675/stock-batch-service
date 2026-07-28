@@ -149,7 +149,7 @@ class StockSchemaReadinessValidatorTest {
                 """
                 alter table stock_order
                   add constraint chk_stock_order_auto_profile_type check (
-                    auto_profile_type is null or auto_profile_type in ('MARKET_MAKER', 'OBSERVER')
+                    auto_profile_type is null or auto_profile_type in ('PASSIVE_LIMIT_TRADER', 'OBSERVER')
                   )
                 """
         );
