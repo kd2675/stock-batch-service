@@ -41,7 +41,7 @@
 13. 다중 종목 주문 청크의 보유 잠금은 계좌 집합과 종목 집합의 교차조합이 아니라 frozen 주문에 실제 존재하는 `(account_id, symbol)` 복합키만 사용한다. 후보 500건이면 보유 잠금 키도 최대 500개이며 종목 수 증가로 무관한 잠금이 곱셈 증폭되지 않아야 한다.
 14. 계좌 스냅샷의 watermark·청약·대사 조회는 계좌 청크마다 같은 저빈도 원장을 반복 스캔하지 않게 `(account_id, id)`, `(account_id, status)`, `(close_cycle_id, reconciliation_status, account_id)` 인덱스를 사용한다. 이 인덱스는 현금흐름·권리·EOD 스냅샷에만 두고 정규장 `stock_order`·`stock_execution` INSERT 인덱스 수는 늘리지 않는다.
 15. PRE_OPEN 외부 시세는 정규장 폴링과 EOD 완료 정책을 분리한다. 정규장 경량 폴링은 종목별 부분 성공을 허용하지만, close cycle의 `MARKET_DATA_PREPARED` 전이는 모든 대상의 DB 갱신과 Redis publish가 성공해야 한다. 재시도는 같은 `(symbol, price_time, price, provider)` tick을 다시 쓰지 않으며, 이 검증과 멱등화는 `VIRTUAL_PRICE` 활성 주문·보유 및 가격 원장에만 적용하고 주문장 주문·체결 쓰기 경로에는 추가 SQL을 넣지 않는다.
-16. scheduler thread가 다르더라도 native Spring Batch Job 두 개 또는 cycle 소속 lightweight 유지보수 두 개를 동시에 실행하지 않는다. 공통 `post-close-heavy-admission` lease를 먼저 획득한 작업 하나만 실행하고 job lock·cycle lease와 함께 heartbeat한다. 체결 worker·자동 주문·주문 만료·상장주관사 공급처럼 정규장 경량 실행기는 이 admission을 사용하지 않는다.
+16. scheduler thread가 다르더라도 native Spring Batch Job 두 개 또는 cycle 소속 lightweight 유지보수 두 개를 동시에 실행하지 않는다. 공통 `post-close-heavy-admission` lease를 먼저 획득한 작업 하나만 실행하고 job lock·cycle lease와 함께 heartbeat한다. 체결 worker·자동 주문·주문 만료·발행 인수기관 공급처럼 정규장 경량 실행기는 이 admission을 사용하지 않는다.
 17. 유상증자 자동청약은 계좌 수만큼 `SELECT FOR UPDATE`·현금 UPDATE·권리 UPDATE/INSERT·현금흐름 INSERT를 반복하지 않는다. action 행을 먼저 잠근 뒤 계좌 PK와 권리 PK를 각각 오름차순으로 한 번씩 잠그고, 200계좌 청크의 성공 결정만 CASE UPDATE·다중 INSERT로 반영한다. 수동청약과 같은 `action → account → entitlement` 잠금 순서를 유지하며 주문·체결 원장은 읽거나 쓰지 않는다.
 18. 자동 주문 만료·수동 종목 취소·상장폐지처럼 주문을 정리하는 경로도 정확한 주문 PK를 잠근 뒤 청크당 한 번의 주문 UPDATE만 허용한다. 예약 현금은 계좌 CASE UPDATE, 예약 매도수량은 실제 `(account_id, symbol)` 집합 CASE UPDATE로 반환하며 주문/계좌/보유 건수 불일치 시 청크 전체를 롤백한다.
 19. 정규장 자동 주문 생성도 계좌·보유마다 예약 UPDATE를 반복하지 않는다. 기본 25명, 허용 최대 100명의 참여자 청크에서 계좌 상태와 실제 매도 보유 복합키를 각각 한 번 잠가 읽고, 수락 가능한 매수 현금은 계좌 CASE UPDATE 1회, 매도수량은 보유 CASE UPDATE 1회, 주문은 명시적 multi-row INSERT 1회로 반영한다. 잔액·보유 부족 조건을 SQL에서 다시 검증하고 갱신 건수 불일치 시 청크 전체를 롤백한다. Connector/J의 `rewriteBatchedStatements` 설정 유무에 처리량을 의존하지 않으며 주문 INSERT 한 문장은 최대 800행으로 제한한다.
@@ -49,12 +49,12 @@
 21. 자동 참여자 schedule lease는 참여자별 UPDATE를 금지하고, 선택된 user key 집합을 한 번의 조건부 UPDATE로 claim한다. 다중 인스턴스 경합으로 일부만 claim된 경우에만 owner·lease 조건으로 한 번 재조회한다.
 22. Redis ready-symbol 큐가 체결의 정상 경로이며 DB fallback은 복구 경로다. `stock_order`에서 실제 체결 가능 종목을 찾는 무거운 fallback은 기본 30초·최소 10초로 제한하고, 5초 이하 polling으로 체결 반응시간을 맞추지 않는다. 별도의 기본 1초 경량 reconcile은 Redis token lease와 클러스터 공통 cooldown 아래 소형 시장 설정·활성 종목만 symbol keyset으로 순환하며 `stock_order`·`stock_execution`을 읽지 않는다. cursor도 Redis lease 소유권 확인 아래 공유하여 다중 인스턴스가 각자 첫 페이지를 반복하거나 인스턴스 수만큼 같은 간격의 scan을 직렬 반복하지 않고, lease를 잃은 이전 실행이 새 cursor를 덮어쓰지 못한다. reconcile 전용 bounded Lua는 Set/List cardinality가 실제로 어긋난 경우에만 List 앞부분 최대 10,000개를 한 번 읽어 membership map으로 만들며, 후보마다 선형 `LPOS`를 반복하지 않는다. 정상 불변식에서는 상수 시간 명령만 사용하고 비정상 복구도 O(N+M) 상한을 둔다. consumer도 한 호출에서 기본 8개의 distinct symbol만 probe하여 체결 0건인 대형 backlog가 후보 SQL 무제한 반복으로 바뀌지 않는다. DB·Redis 복구는 체결 consumer와 분리한 전용 단일 thread에서 실행해 느린 복구가 체결 worker 슬롯을 차지하지 않는다. 신규·정정 주문 after-commit enqueue, worker 처리시간, queue 누락률을 먼저 개선한다.
 23. 정규장 scheduler와 executor 설정은 운영 환경변수여도 무제한 확장할 수 없다. 체결 worker 1~8, execution scheduler 1~4, 자동 생성 executor 1~16·queue 0, auto-market run dispatcher 1/1/0, auto-market·maintenance·simulation-clock scheduler 1 thread를 기동 시 강제한다.
-24. 정규장 polling 주기는 자동 주문 최소 5초, 자동 주문 만료·상장주관사 공급 최소 5초, profile queue reconcile 최소 60초, 체결 DB fallback 최소 10초로 강제한다. 환경변수 오타나 과도한 튜닝이 millisecond 단위 scheduler wake-up·DB gate 조회·rejection 로그 폭주로 이어지지 않게 한다.
+24. 정규장 polling 주기는 자동 주문 최소 5초, 자동 주문 만료·발행 인수기관 공급 최소 5초, profile queue reconcile 최소 60초, 체결 DB fallback 최소 10초로 강제한다. 환경변수 오타나 과도한 튜닝이 millisecond 단위 scheduler wake-up·DB gate 조회·rejection 로그 폭주로 이어지지 않게 한다.
 25. 체결 파생요약 pending 저장소는 체결 건별 객체 큐가 아니라 `(거래일, 계좌)` 키별 누적값으로 즉시 병합한다. 기본 10만·최대 100만은 체결 건수가 아니라 고유 account-day 슬롯 상한이며, 같은 계좌의 체결이 수만 건 발생해도 슬롯과 flush row는 1개다. 슬롯 초과는 원본 체결을 실패시키지 않고 파생 실시간 요약만 포기하며 야간 원본 범위 재구축으로 복구한다. 메모리 상한을 환경값으로 무제한 확대하지 않는다.
 26. 자동 주문 모멘텀 기준가격의 per-symbol 최신값 조회는 윈도우 정렬 대신 index point-range `UNION ALL`을 유지하되 한 SQL에 최대 100종목만 포함한다. due 참여자가 0이면 실행하지 않고, 종목 수 증가가 SQL 문자열·placeholder·optimizer 파싱 비용의 무제한 증가로 이어지지 않게 한다.
-27. 자동 주문 만료와 상장주관사 공급은 종목당 후보 상한뿐 아니라 한 run의 종목 수도 기본 100·최대 500으로 제한한다. 활성 종목이 상한을 넘으면 현실 10초 버킷의 결정적 symbol slice를 순환하여 다중 서버의 로컬 cursor 불일치 없이 공정하게 처리하고, 한 run이 단일 auto-market scheduler를 장시간 점유하지 않게 한다.
-28. 정규장 metric은 symbol·account·order ID 같은 고카디널리티 tag를 금지한다. 만료·상장주관사 공급의 symbol-lock skip은 전역 counter로 집계하고 개별 종목은 debug 로그나 bounded 진단 API에서만 확인한다.
-29. 자동 주문 만료·상장주관사 공급의 활성 설정 조회는 자동 주문 생성 전용 최신 보고서 점수·분포 편향을 읽지 않는다. TTL·현재가·틱·수량만 반환하는 경량 쿼리로 분리하여 10초 polling이 보고서 이벤트 상관 서브쿼리를 반복하지 않게 한다.
+27. 자동 주문 만료와 발행 인수기관 공급은 종목당 후보 상한뿐 아니라 한 run의 종목 수도 기본 100·최대 500으로 제한한다. 활성 종목이 상한을 넘으면 현실 10초 버킷의 결정적 symbol slice를 순환하여 다중 서버의 로컬 cursor 불일치 없이 공정하게 처리하고, 한 run이 단일 auto-market scheduler를 장시간 점유하지 않게 한다.
+28. 정규장 metric은 symbol·account·order ID 같은 고카디널리티 tag를 금지한다. 만료·발행 인수기관 공급의 symbol-lock skip은 전역 counter로 집계하고 개별 종목은 debug 로그나 bounded 진단 API에서만 확인한다.
+29. 자동 주문 만료·발행 인수기관 공급의 활성 설정 조회는 자동 주문 생성 전용 최신 보고서 점수·분포 편향을 읽지 않는다. TTL·현재가·틱·수량만 반환하는 경량 쿼리로 분리하여 10초 polling이 보고서 이벤트 상관 서브쿼리를 반복하지 않게 한다.
 30. 자동 주문의 주 랜덤 regime·30분 보조 modifier는 5초 run마다 종목별 INSERT와 `DuplicateKeyException`을 발생시키지 않는다. 현재 키를 최대 500종목씩 조회하고 누락 row만 최대 500행 multi-row로 저장하며, 같은 거래일·구간 steady state의 쓰기는 0회여야 한다. 종목 수가 500을 넘더라도 SQL 문자열·placeholder·예외 생성 비용이 무제한 증가하지 않아야 한다.
 31. 주문 생성 후 schedule 완료도 참여자별 UPDATE를 금지한다. 고유 참여자를 최대 100명씩 묶어 profile·개별 next-run·interval·priority·lease 해제를 한 CASE UPDATE로 수행하며, 기본 25명 주문 청크의 추가 원격 쓰기는 정확히 1회로 제한한다.
 32. 5초 자동 주문 run은 Redis ready-profile zset에 현재 due profile이 없으면 전체 종목 설정·최신 보고서·프로필 정책·regime DB 조회를 시작하지 않는다. Redis due 확인은 읽기 전용 1회이며 실패 시 fail-closed한다. due가 있더라도 실제 profile claim이 모두 경합으로 실패하면 정책·regime 조회를 생략한다.
@@ -75,7 +75,7 @@
 - 자동 주문은 기본 25명·허용 최대 100명의 bounded 청크에서 고유 계좌 PK를 한 번에 오름차순 잠근 뒤 `계좌 → 보유 → 주문 INSERT` 순서를 지킨다. 매도 전용 청크도 보유를 먼저 잠그지 않으며, 계좌/보유 상태 잠금과 현금/수량 예약은 각각 청크당 1회로 제한한다. 종목별 due 후보도 1~500만 허용하고 범위를 벗어난 환경값은 서버 기동 시 거부한다.
 - 체결 후보 탐색은 잠금 없이 수행하되, 선택된 정확한 주문 두 행은 `PRIMARY`로 ID 오름차순 `FOR UPDATE`한다. 이 정확성 잠금에는 `SKIP LOCKED`를 사용하지 않는다. `SKIP LOCKED`는 signal·work queue claim처럼 누락을 다음 소비자가 처리할 수 있는 큐에만 허용한다.
 - 장마감은 `CLOSE_REQUESTED` 논리 cycle을 먼저 커밋한 뒤 종목 fence를 닫는다. 먼저 시작한 저빈도 계좌 변경은 business-state 공유 잠금이 끝날 때까지 drain하고, cycle 생성 뒤 들어온 변경은 계좌 row를 잠그기 전에 거부한다. fence를 먼저 닫고 cycle을 나중에 만드는 무보호 구간을 허용하지 않는다.
-- 테스트 프로필은 post-close coordinator, execution-account-summary, 일일 regime, 프로필 큐 reconcile, 자동 주문 만료, 상장주관사 공급 background scheduler를 명시적으로 비활성화한다. `auto-market.enabled=false`만으로 별도 scheduler 설정까지 꺼진다고 가정하지 않는다. 테스트 중 우연히 실행된 스케줄러의 DB 쓰기·잠금·메모리 큐 변경·로그를 기능 성공이나 성능 증거로 오인하지 않는다.
+- 테스트 프로필은 post-close coordinator, execution-account-summary, 일일 regime, 프로필 큐 reconcile, 자동 주문 만료, 발행 인수기관 공급 background scheduler를 명시적으로 비활성화한다. `auto-market.enabled=false`만으로 별도 scheduler 설정까지 꺼진다고 가정하지 않는다. 테스트 중 우연히 실행된 스케줄러의 DB 쓰기·잠금·메모리 큐 변경·로그를 기능 성공이나 성능 증거로 오인하지 않는다.
 - 실제 MySQL A/B를 실행할 수 없는 변경은 `검증 대기`로 남긴다. Java/H2·정적 계약이 통과해도 주문 TPS 95% 이상, 주문 p95 허용 증가 이내, 체결 반응 p95/p99, lock wait/deadlock/timeout 기준을 실측하기 전에는 “부하 문제 없음”으로 판정하지 않는다.
 
 이 게이트는 이번 EOD 리팩터링에만 한정하지 않는다. 이후 기업행사·보고서·자동시장·관리자 조회·신호 처리 변경도 같은 기준을 적용하며, 거래량 증가를 이유로 worker·DB pool부터 늘리는 변경은 승인하지 않는다.
@@ -111,7 +111,7 @@
 | 자동시장 regime·modifier | 조회·저장 SQL당 최대 500종목/행 | 기존 row는 읽기만 하고 누락 row만 multi-row INSERT | 같은 거래일·구간 steady state 쓰기 0회, 중복 키 예외 정상 흐름 금지 |
 | 내부 주문장 체결 | worker 2개 | 체결 후보 1쌍, 계좌 2행, 매도 보유 1행, 정확한 주문 2행, execution 2행 | worker 증설보다 후보 SQL·commit·symbol 공정성을 먼저 측정; 종목 수보다 worker가 많아지지 않게 함 |
 | 자동 주문 만료 | 10초마다 최대 100종목, 종목당 최대 100주문 | 실제 계좌 집합, 실제 매도 보유 복합키, 정확한 주문 PK만 잠금 | 주문 상한 1,000·종목 상한 500은 비상 조정 범위이며 기본값 초과는 execution symbol-lock skip과 취소 transaction p99를 먼저 검증 |
-| 상장주관사 공급 | 10초마다 최대 100종목, 종목별 설정 1건 | 만료·열린 주문 방향별 최대 200건, 신규 주문 방향별 최대 10건·양방향 20건. 계좌·보유 잠금과 예약·INSERT는 종목당 1회 batch | 목표 잔량은 방향별 `max_order_quantity × 10` 이하; 종목 상한 500; transaction p95 100ms·p99 300ms와 체결 symbol-lock skip 1%를 넘으면 증설 금지 |
+| 발행 인수기관 공급 | 10초마다 최대 100종목, 종목별 설정 1건 | 만료·열린 주문 방향별 최대 200건, 신규 주문 방향별 최대 10건·양방향 20건. 계좌·보유 잠금과 예약·INSERT는 종목당 1회 batch | 목표 잔량은 방향별 `max_order_quantity × 10` 이하; 종목 상한 500; transaction p95 100ms·p99 300ms와 체결 symbol-lock skip 1%를 넘으면 증설 금지 |
 | EOD·야간 무거운 작업 | 전역 1개 | 각 단계의 명시적 keyset chunk만 처리 | 정규장에는 실행하지 않고 `post-close-heavy-admission`을 우회하지 않음 |
 
 자동 참여자 기본 이론상 상한인 1,800건은 “한 번에 항상 저장되는 주문 수”가 아니라 9개 profile worker가 각각 25계좌에서 최대 8개를 모두 계획했을 때의 보수적 동시 상한이다. 이 수치를 평균치로 낮춰 잡아 capacity를 계산하지 않는다. 반대로 기술적 최대값인 worker 12·청크 100을 함께 적용하면 최대 9,600 계획 주문이 동시에 만들어질 수 있으므로, 두 설정을 함께 올리는 배포는 금지한다. 필요하면 계좌 청크를 키우는 대신 ready profile claim 예산, profile worker 수, symbol별 transaction 시간 예산 중 하나를 낮춰 전체 동시 잠금 행 수를 유지한다.
@@ -135,7 +135,7 @@
 
 | 구분 | 판정 | 근거·남은 일 |
 |---|---|---|
-| session fence·active business date | 소스 구현 | 사용자 주문·정정, 자동 주문, 상장주관사 주문, 체결의 최종 트랜잭션 검증과 장마감 fence 전환이 존재한다. |
+| session fence·active business date | 소스 구현 | 사용자 주문·정정, 자동 주문, 발행 인수기관 주문, 체결의 최종 트랜잭션 검증과 장마감 fence 전환이 존재한다. |
 | cycle·attempt·lease·복구 | 소스 구현 | 논리 cycle 유일성, phase attempt, owner/lease/heartbeat, 현재 phase 기준 backoff와 오래된 cycle 복구가 존재한다. |
 | 불변 스냅샷·정산 | 소스 구현 | 계좌·현금·보유·가격·취소 전 주문 cohort와 frozen reader, input hash·data quality 검증이 존재한다. |
 | 정산 저장 결과 대사 | 소스 구현 | 기존 frozen cohort 완료 조인 안에서 현금·평가액·총자산·수익률·보유수량·예약매도·포지션 수를 같은 산식으로 다시 계산해 저장 결과와 대조한다. 추가 운영 원장 스캔이나 정규장 이중 쓰기는 없다. |
@@ -172,7 +172,7 @@
 - 관리자 종목 수급 `ALL`은 전 기간 `stock_execution`을 직접 집계하지 않는다. 완료된 과거 거래일은 `stock_order_book_daily_snapshot`, 현재 거래일만 `[dayStart, now)` 원장 범위를 사용한다. 이 변경은 주문·체결 INSERT, 인덱스, 잠금에 영향을 주지 않는다.
 - 파일 크기 감사에서는 `MarketCloseRolloverWriter` 1,667행, 중복 오케스트레이션 제거 후 `CorporateActionService` 1,953행, `MarketSessionFenceService` 1,249행으로 책임 밀도가 높은 클래스가 확인됐다. 이름 검색·Spring wiring·호출 경로 기준으로 이 안의 SQL·청크 cursor·멱등 처리·대사 로직을 사장 코드로 판정할 근거는 없지만, 세 클래스 모두 유지보수 부채다.
 - 2026-07-16 시간대 coordinator·기업행사·정기 현금흐름·signal 재감사에서도 기본 coordinator가 대체한 호환 scheduler는 runtime control과 JobRepository 전에 반환하고, `POST_CLOSE` scheduler는 1 thread, native Job과 cycle 소속 lightweight task는 전역 heavy-admission 1개로 직렬화되는 것을 다시 확인했다. 기업행사는 due event 기본 25건·계좌 기본 200건, 정기 현금흐름은 계좌 기본 200건, signal claim은 poll당 기본 20건으로 상한이 있다. 이 제어 경로는 정규장 `stock_order`·`stock_execution`을 읽지 않는다.
-- 정규장 거래 경로의 fence도 다시 대조했다. 사용자 신규 주문과 소유 주문 변경, 자동 참여자 주문 청크, 상장주관사 주문, 실제 체결 반영은 각각 업무 트랜잭션 안에서 종목 fence와 소형 market-config/business-state/simulation-clock 문맥을 **한 SQL**로 읽고 fence 행만 공유 잠금한다. cycle·attempt·readiness·snapshot 조회는 추가하지 않는다. 다만 이 한 번의 원격 DB 왕복과 공유 잠금 비용까지 0이라고 주장하지 않으며, 현재 주문·체결량 기준 MySQL p95/p99 A/B 전에는 거래량 비회귀를 운영 승인하지 않는다.
+- 정규장 거래 경로의 fence도 다시 대조했다. 사용자 신규 주문과 소유 주문 변경, 자동 참여자 주문 청크, 발행 인수기관 주문, 실제 체결 반영은 각각 업무 트랜잭션 안에서 종목 fence와 소형 market-config/business-state/simulation-clock 문맥을 **한 SQL**로 읽고 fence 행만 공유 잠금한다. cycle·attempt·readiness·snapshot 조회는 추가하지 않는다. 다만 이 한 번의 원격 DB 왕복과 공유 잠금 비용까지 0이라고 주장하지 않으며, 현재 주문·체결량 기준 MySQL p95/p99 A/B 전에는 거래량 비회귀를 운영 승인하지 않는다.
 - 이 대형 클래스를 운영 ALTER·MySQL A/B 전에 단순히 파일 수를 늘려 분해하지 않는다. 지금의 기계적 분리는 런타임 SQL·트랜잭션 경계는 줄이지 못하면서 검증 diff만 키워 주문·체결 회귀 원인 추적을 어렵게 한다. 실 DB A/B와 첫 운영 cycle이 안정화된 뒤에만 SQL과 트랜잭션 동작을 바꾸지 않는 별도 리팩터링으로 `MarketCloseRolloverWriter`를 주문 캡처·예약 반환·불변 스냅샷·대사/지표, `CorporateActionService`를 현금 단계·PRE_OPEN 변환·검증/오케스트레이션, `MarketSessionFenceService`를 거래 승인 gate·거래일 전환·저빈도 원장 변경 허가 책임으로 나눈다.
 - 위 후속 분리는 새 추상화 수나 파일 수 자체를 목표로 하지 않는다. 기존 public 호출 계약, 잠금 순서, SQL 문장 수, 청크 상한, 커밋 수와 p95/p99가 같거나 개선됐다는 회귀 증거가 승인 조건이며, 런타임 비용을 늘리는 공통 인터페이스·reflection·추가 이벤트 계층은 도입하지 않는다.
 
@@ -182,7 +182,7 @@ DDL 경로는 `stock-back-service/src/main/resources/db/ddl/stock_all.sql`과 �
 
 현재 소스에는 다음 기반 작업이 반영되어 있습니다.
 
-- 종목별 session fence와 사용자 주문·정정·자동 주문·상장주관사 주문·체결 최종 검증
+- 종목별 session fence와 사용자 주문·정정·자동 주문·발행 인수기관 주문·체결 최종 검증
 - `READY_TO_OPEN`은 단계 이름만으로 통과하지 않고 `PENDING`, 최종 `COMPLETED`는 `COMPLETED` 상태까지 일치할 때만 개장 자격으로 인정하며, 거래일 singleton 행이 없거나 원시 날짜·준비 날짜가 어긋난 경우도 소형 제어 테이블에서 fail-closed 처리
 - AFTER_CLOSE 진입 시 full-market `CLOSE_REQUESTED` cycle을 먼저 확정한 뒤 종목 fence를 닫아, cycle 생성 전 저빈도 현금·계좌 변경이 계좌 스냅샷 기준시각을 침범하던 admission 공백을 제거
 - 거래일별 논리 cycle, phase attempt, lease/CAS와 수동 신호 실행 기준 고정. 모든 신호는 요청 거래일을, 종목 신호는 session epoch까지 보존한다. 요청 시점에 이미 존재하는 cycle은 `expected_cycle_id`도 고정하고, 아직 없으면 `(business_date, scope_type, scope_key)` 유일 제약으로 첫 실행이 만든 동일 cycle을 이후 재시도에서 재사용한다.
@@ -253,7 +253,7 @@ DDL 경로는 `stock-back-service/src/main/resources/db/ddl/stock_all.sql`과 �
 - 체결의 잠금 없는 단일 후보 쿼리는 `TransactionTemplate` 밖에서 실행하고 실제 교차 후보가 있을 때만 business transaction과 종목 session fence 공유 잠금을 시작. fence 이후에는 계좌·보유·정확한 주문 PK 순으로 잠근 뒤 상태·가격·계좌를 재검증하므로 cutoff 정확성은 유지하면서, 미체결 probe가 빈 COMMIT·fence DB 왕복·장마감 drain 대기를 만들지 않음
 - 체결 chunk는 종료 사유를 명시적으로 반환한다. 후보 소진·장 종료면 재등록하지 않고, 건수·시간·전체 처리 상한 또는 bounded stale 재시도 상한에 도달한 경우에만 별도 `hasExecutablePair` 조회 없이 즉시 재등록한다. 신규/변경 주문의 after-commit enqueue와 저주기 fallback은 이후 새 기회를 복구하므로 가격 미교차 symbol의 이중 조회와 Redis hot loop를 차단한다.
 - 10초 세션 동기화는 이미 정합한 REGULAR/PRE_OPEN/AFTER_CLOSE 상태를 소형 config/fence 읽기로 판정하고 즉시 반환하여, 정상 장중 모든 종목 fence를 반복 `FOR UPDATE`·UPDATE하지 않는 read-only fast path
-- 자동 주문·주문 만료·상장주관사 공급·fallback 체결 scheduler는 작은 시장 설정/fence/business-state gate가 닫혀 있으면 주문 후보나 계좌를 읽기 전에 즉시 반환
+- 자동 주문·주문 만료·발행 인수기관 공급·fallback 체결 scheduler는 작은 시장 설정/fence/business-state gate가 닫혀 있으면 주문 후보나 계좌를 읽기 전에 즉시 반환
 - 자동 주문 한 번의 run에서 읽은 시뮬레이션 시각을 모든 profile/symbol shard의 배당 신호 기간 계산까지 전달하여, 거래량·종목 수에 비례하던 `stock_simulation_clock` singleton 재조회를 제거
 - ready-profile 정합화는 DB에 실제 활성 스케줄이 있는 프로필만 권위 집합으로 유지하고 비활성·삭제 프로필을 Redis에서 단일 `ZREM`으로 제거하며, 실패 lease가 남은 프로필은 1초 재등록 대신 실제 lease 만료 시각까지 대기하여 빈 후보 조회가 worker 슬롯과 DB 연결을 소모하지 않게 함
 - coordinator와 정산 lifecycle 양쪽에서 열린 시장을 이중 차단하여 수동/내부 직접 호출도 정규장 스냅샷 검증·정산 쿼리를 실행하지 않게 함
@@ -906,7 +906,7 @@ Spring Batch flow 전이는 Step별 성공·실패 상태에 따라 구성할 �
 - 사용자 신규 주문: `TradingService.placeOrder()`
 - 사용자 주문 정정: `TradingService.amendOrder()` — 현재 장 상태 재검증 없음
 - 자동 참여자 주문: `AutoMarketOrderExecutor.placeOrder()`
-- 상장주관사 주문
+- 발행 인수기관 주문
 - 내부 주문장 체결: `InternalOrderBookExecutionService`
 - 최종 후보 조회: `OrderBookExecutionReader.findBestMatchCandidate()`
 
@@ -966,7 +966,7 @@ MySQL REPEATABLE READ에서는 범위 검색이 next-key/gap lock을 만들 수 
 | 시뮬레이션 heartbeat | 항상 | 유지 |
 | 주문·정정·체결 | REGULAR | 최종 트랜잭션 fence |
 | 자동 참여자 주문 | REGULAR | chunk마다 fence 재검증 |
-| 상장주관사 공급 | REGULAR | fence 적용 |
+| 발행 인수기관 공급 | REGULAR | fence 적용 |
 | 자동 주문 만료 | REGULAR | 최대 100건 exact-PK/set-based 청크, 장마감 이후 잔여분은 close 취소에 통합 |
 | 전체 장마감 | 18:00 | 최우선 전용 executor |
 | 포트폴리오 정산 | 18:10 이후 | 스냅샷 기반 |
@@ -1068,7 +1068,7 @@ EOD 정확성을 위해 일반 거래 경로에 무제한 쿼리와 잠금을 �
 |---|---:|---|---|
 | 사용자 신규 주문 | symbol당 1회 | fence PK 공유 잠금 | 전역 거래일/시계 행 잠금, 별도 세션 재조회 |
 | 사용자 취소·정정 | 주문당 1회 | 소유 주문 PK 조회 + fence PK 공유 잠금을 한 SQL로 결합 | 계좌·주문 descriptor 사전 개별 조회 |
-| 자동 참여자·상장주관사 주문 | 고유 symbol당 1회 | fence PK 공유 잠금 | 계획 주문 건별 fence 조회 |
+| 자동 참여자·발행 인수기관 주문 | 고유 symbol당 1회 | fence PK 공유 잠금 | 계획 주문 건별 fence 조회 |
 | 내부 주문장 체결 | 체결 트랜잭션당 1회 | 해당 symbol fence PK 공유 잠금 | 후보별 fence 재조회 |
 | 장마감 | 대상 symbol당 1회 | symbol 정렬 후 fence PK 배타 잠금 | 전 테이블 범위 잠금 |
 
@@ -1091,8 +1091,8 @@ schedule lease claim도 후보 참여자 수만큼 원격 UPDATE를 반복하지
 - 체결 worker 수가 2개 이상이어도 공유 캐시로 기본 최대 초당 1회만 조회
 - worker gate 캐시 기본값 1초; 짧게 줄이는 대신 최종 거래 트랜잭션 fence가 정확성을 담당
 - worker의 runtime-control refresh는 정상 상태에서 제어 PK SELECT만 수행하고 명시적 쓰기 transaction/commit을 열지 않음. 최초 row 생성·설정 동기화와 관리자 변경만 쓰기 허용
-- 자동 주문 5초, 만료 10초, 상장주관사 공급 10초, fallback 체결 30초의 각 scheduler 진입당 최대 1회. fallback은 최소 10초보다 짧게 설정할 수 없고 Redis 누락 복구에만 사용
-- 자동시장 서비스 내부의 세션 재검증도 같은 clock snapshot으로 수행하고, 종목별 만료·상장주관사 주문은 잠긴 fence의 `businessEffectiveAt`을 재사용하여 종목 수에 비례한 clock singleton 재조회 금지
+- 자동 주문 5초, 만료 10초, 발행 인수기관 공급 10초, fallback 체결 30초의 각 scheduler 진입당 최대 1회. fallback은 최소 10초보다 짧게 설정할 수 없고 Redis 누락 복구에만 사용
+- 자동시장 서비스 내부의 세션 재검증도 같은 clock snapshot으로 수행하고, 종목별 만료·발행 인수기관 주문은 잠긴 fence의 `businessEffectiveAt`을 재사용하여 종목 수에 비례한 clock singleton 재조회 금지
 - 자동 주문은 Redis ready-profile due 존재 여부를 전체 종목/보고서 설정 조회보다 먼저 확인. due가 없으면 auto-market service 업무 DB 쿼리 0회이며, due 확인 후 실제 profile claim이 성공한 경우에만 프로필 정책과 regime 조회
 - 자동 참여자 주문 계획의 최근 배당 기간 계산도 상위 run의 `businessEffectiveAt`을 전달받아 사용하며, profile/symbol shard마다 시계 singleton을 다시 읽지 않음
 - ready-profile 큐는 활성 DB 스케줄의 profile 집합과 주기적으로 맞추고, 존재하지 않는 profile은 재등록하지 않음. 미래 lease는 `max(next_run_at, lease_until)`을 다음 ready 시각으로 사용해 실패 profile의 1초 빈 재시도 폭주를 막음
@@ -1519,7 +1519,7 @@ Coordinator는 시장이 열린 뒤에도 `READY_TO_OPEN`인 직전 cycle 하나
   - 현재 계좌 수 비교 제거
   - frozen cohort `NOT EXISTS` 검증
 
-- 체결·자동 주문·상장주관사 주문 경로
+- 체결·자동 주문·발행 인수기관 주문 경로
   - 최종 트랜잭션 session fence
   - 공통 lock-order helper
 
@@ -1601,7 +1601,7 @@ Coordinator는 시장이 열린 뒤에도 `READY_TO_OPEN`인 직전 cycle 하나
 
 - session fence 테이블
 - 사용자 주문·정정 적용
-- 자동 주문·상장주관사 주문 적용
+- 자동 주문·발행 인수기관 주문 적용
 - 체결 적용
 - 정규장 수동 마감 이중 차단
 - 경계 동시성 MySQL 테스트
@@ -1801,7 +1801,7 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 - 17:59:59 사용자 신규 주문 vs 장마감
 - 17:59:59 주문 정정 vs 장마감
 - 자동 참여자 주문 vs 장마감
-- 상장주관사 주문 vs 장마감
+- 발행 인수기관 주문 vs 장마감
 - 체결 후보 확정 vs 장마감
 - 장마감 후 취소 요청
 - fence 전환 직전/직후 승인 시각 검증
@@ -1915,7 +1915,7 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 현재 워킹트리에서 다음 검증을 통과했습니다. 2026-07-16 21:56 KST에는 두 모듈을 공유 Gradle 산출물 경합 없이 하나의 invocation과 `--max-workers=2`로 다시 실행해 같은 전체 결과를 확인했습니다. 22:09 KST에는 정산 reader의 죽은 `eligible` 분기 제거와 EOD volume ALTER 재실행 스캔 guard 보강 후 `./gradlew :stock-back-service:test :stock-batch-service:test`를 한 invocation으로 다시 실행했습니다. 22:27 KST에는 bounded 정산 shadow 진단 계약을 추가한 뒤 두 모듈을 각각 `--rerun-tasks`로 다시 실행해 back 490건, batch 850건이 모두 skipped/failure/error 0임을 확인했고, shadow 가드를 다음 야간 phase attempt 부재까지 강화한 현재 트리도 22:31 KST에 batch 전체 850건을 다시 실행해 같은 결과를 확인했습니다. 22:45 KST에는 문서·실제 Job 구조 재감사 후 두 모듈을 한 invocation, `--rerun-tasks --max-workers=2`로 다시 실행해 back 490건·batch 850건, skipped/failure/error 0을 확인했습니다. 이 재감사에서 정산 문서의 가상 4-Step 표기를 실제 3-Step 구조로 바로잡았고, 대사와 phase 전이를 분리하는 불필요한 Step은 추가하지 않았습니다. 22:52 KST에는 두 legacy 내부 close phase 복구 테스트를 추가한 현재 batch 전체 852건을 `--rerun-tasks --max-workers=2`로 실행해 skipped/failure/error 0을 확인했습니다. 23:12~23:16 KST 최종 감사에서는 현재 트리의 back 490건과 batch 852건을 각각 `--no-parallel --max-workers=2`로 재실행하고, 테스트 전용 중복 기업행사 public 오케스트레이션 두 개를 제거한 뒤 실제 Step 순서 집중 테스트 41건과 batch 전체 852건을 다시 통과시켰습니다. 프론트도 lint·typecheck·production build와 contract·navigation·auth·corporate-action 검증을 순차 실행했습니다.
 
 - `./gradlew :stock-batch-service:test --rerun-tasks --max-workers=2` — 852건, skipped/failure/error 0
-- 전체 suite에서만 자동시장 프로필 선택 테스트가 간헐적으로 실패하던 원인은 운영 랜덤값이 아니라 test profile에서 별도 설정인 일일 regime·프로필 큐 reconcile·자동 주문 만료·상장주관사 scheduler가 살아 있어 공유 H2/메모리 큐를 건드린 격리 공백이었다. test profile에서 네 scheduler를 명시적으로 끈 뒤 전체 suite를 강제 재실행했다. Docker 없는 `mysqlTest`가 조용히 skip되지 않게 하는 검증 gate, read-only 정산 shadow SQL 계약, 두 legacy 내부 close phase 복구 변형을 포함한 현재 전체 수가 852건이다. production 설정·주문 SQL·체결 SQL에는 변화가 없다.
+- 전체 suite에서만 자동시장 프로필 선택 테스트가 간헐적으로 실패하던 원인은 운영 랜덤값이 아니라 test profile에서 별도 설정인 일일 regime·프로필 큐 reconcile·자동 주문 만료·발행 인수기관 scheduler가 살아 있어 공유 H2/메모리 큐를 건드린 격리 공백이었다. test profile에서 네 scheduler를 명시적으로 끈 뒤 전체 suite를 강제 재실행했다. Docker 없는 `mysqlTest`가 조용히 skip되지 않게 하는 검증 gate, read-only 정산 shadow SQL 계약, 두 legacy 내부 close phase 복구 변형을 포함한 현재 전체 수가 852건이다. production 설정·주문 SQL·체결 SQL에는 변화가 없다.
 - `./gradlew :stock-back-service:test` — 490건, skipped/failure/error 0
 - Gradle `dependencyInsight`로 실제 해석된 버전을 다시 확인했다. 런타임 Spring Batch는 `6.0.2`/Spring Boot Batch는 `4.0.2`, MySQL 동시성 테스트의 Connector/J는 `8.3.0`, Testcontainers는 `2.0.3`이다. 로컬 `spring-batch-core-6.0.2.jar`의 `JobRepository`·`JobParameter` API도 `deleteJobInstance(JobInstance)`와 identifying flag를 직접 확인해, 문서가 다른 major 버전의 재시작·metadata 삭제 API를 전제로 하지 않음을 검증했다.
 - MySQL 8 공식 locking-read 계약을 재대조했다. `FOR SHARE OF fence`는 읽은 fence 행의 공유 잠금을 transaction 종료까지 유지하고, exact unique/PK 조건은 해당 record만 잠그지만 비고유 range 조건은 next-key/gap lock을 만들 수 있다. `SKIP LOCKED`는 불일치 view를 허용하는 queue-like claim에만 사용하고, 선택된 주문 PK·fence·계좌·보유 원장의 정확성 잠금에는 사용하지 않는 현재 원칙을 유지한다.
@@ -2010,17 +2010,17 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 - 수동 내부 API의 월급·전체 마감·종목 마감·미체결 취소·포트폴리오 정산은 원시 날짜 대신 `stock_market_business_state.active_business_date`를 사용한다.
 - scheduler의 정상 당일 경로와 coordinator가 명시적인 과거 거래일을 넘기는 overload는 그대로 유지한다.
 
-이 보완은 저빈도 수동/내부 배치 진입점에서 singleton business-state 행을 한 번 읽는 변경입니다. 사용자 주문, 주문 정정, 자동 주문, 상장주관사 주문, 체결 worker의 SQL·인덱스·잠금 순서·commit 수에는 변경이 없습니다. 따라서 정규장 거래량 경로의 추가 왕복은 0건이며, 거래량 비회귀 최상위 승인 게이트도 그대로 유지합니다. `StockBatchJobLauncherTest`와 `BatchJobSignalProcessorTest`를 강제 재컴파일해 요청 거래일 보존과 원시 날짜 선행 시 active-business-date 사용을 검증했습니다.
+이 보완은 저빈도 수동/내부 배치 진입점에서 singleton business-state 행을 한 번 읽는 변경입니다. 사용자 주문, 주문 정정, 자동 주문, 발행 인수기관 주문, 체결 worker의 SQL·인덱스·잠금 순서·commit 수에는 변경이 없습니다. 따라서 정규장 거래량 경로의 추가 왕복은 0건이며, 거래량 비회귀 최상위 승인 게이트도 그대로 유지합니다. `StockBatchJobLauncherTest`와 `BatchJobSignalProcessorTest`를 강제 재컴파일해 요청 거래일 보존과 원시 날짜 선행 시 active-business-date 사용을 검증했습니다.
 
 현재 실행 환경도 소스 완료와 운영 적용을 분리해 판정해야 합니다. 점검 시점의 백엔드·배치 프로세스는 모두 health `UP`이지만 2026-07-15에 IntelliJ `out/production`으로 시작한 구형 클래스이며, 신규 `PostCloseCoordinatorScheduler`, `MarketSessionFenceService`, `EodOperationsOverviewService` class가 실행 산출물에 없습니다. 별도로 2026-07-16 생성한 back·batch `bootJar`에는 이 신규 클래스와 schema readiness validator가 포함되고 build SHA도 각각 `eacb2484517d-dirty`, `b26da0334f74-dirty`로 기록됨을 확인했지만, 아직 실행하지 않았고 dirty 산출물이라 운영 승인 대상도 아닙니다. 같은 날 읽기 전용 DB 재조회에서도 신규 cycle/fence/snapshot/action-ledger/readiness EOD 테이블은 12개 중 0개, signal lease 컬럼은 10개 중 0개였고, `portfolio_snapshot`의 신규 필수 컬럼은 9개 중 기존 보유지표 3개만 존재했습니다. 기존 EOD 관련 테이블 5개를 더해도 계획 스키마가 준비된 상태가 아닙니다. 따라서 현재 서버를 그대로 재시작하면 안 되며, 사용자가 백엔드와 배치 종료를 확인한 뒤 ALTER 적용 → 승인 가능한 clean SHA 산출물 재기동 → startup schema readiness → MySQL 동시성·거래량 A/B 순서로 진행해야 합니다. 이 상태는 “계획 소스가 구현됨”을 “운영 반영 완료”로 오인하지 않기 위한 배포 차단 조건입니다.
 
 ### 17.3 MySQL 동시성 검증 범위 재감사
 
-현재 `StockMysqlConcurrencyTest`의 동적 MySQL 계약은 정확한 주문 PK 잠금의 인접 INSERT 비차단, 기존 상태·종목 인덱스를 사용한 주문 캡처 keyset, 공유 fence를 보유한 in-flight 주문을 close가 기다린 뒤 stale 주문을 거부하는 drain barrier, 소유 주문 조회가 fence 외 hot-ledger 행을 선점하지 않는지, signal `SKIP LOCKED`가 잠긴 선두를 건너뛰는지의 5개 원시 동시성 계약만 다룹니다. 사용자 주문·정정, 자동 참여자 주문, 상장주관사 주문, 실제 체결 서비스와 장마감의 전체 transaction 경합은 각각 H2 통합·단위·소스 잠금순서 계약으로만 검증돼 있습니다.
+현재 `StockMysqlConcurrencyTest`의 동적 MySQL 계약은 정확한 주문 PK 잠금의 인접 INSERT 비차단, 기존 상태·종목 인덱스를 사용한 주문 캡처 keyset, 공유 fence를 보유한 in-flight 주문을 close가 기다린 뒤 stale 주문을 거부하는 drain barrier, 소유 주문 조회가 fence 외 hot-ledger 행을 선점하지 않는지, signal `SKIP LOCKED`가 잠긴 선두를 건너뛰는지의 5개 원시 동시성 계약만 다룹니다. 사용자 주문·정정, 자동 참여자 주문, 발행 인수기관 주문, 실제 체결 서비스와 장마감의 전체 transaction 경합은 각각 H2 통합·단위·소스 잠금순서 계약으로만 검증돼 있습니다.
 
 따라서 Testcontainers 클래스가 존재한다는 사실을 “첨부 문서의 MySQL 경계 시나리오 전체 완료”로 해석하지 않습니다. Docker가 없는 현재 환경에서 실행하지 못하는 서비스 조립 테스트를 대량으로 추가하는 것은 검증되지 않은 테스트 코드만 늘리므로 하지 않았습니다. 운영 ALTER 후 별도 복제 데이터베이스에서 다음을 실제 서비스 진입점과 동일한 transaction manager로 실행해야 운영 승인할 수 있습니다.
 
-- 17:59:59 사용자 신규·정정, 자동 주문, 상장주관사 주문, 체결 후보 확정과 `beginClose`의 동시 경합
+- 17:59:59 사용자 신규·정정, 자동 주문, 발행 인수기관 주문, 체결 후보 확정과 `beginClose`의 동시 경합
 - fence 공유 잠금 선행/close 배타 잠금 선행 두 순서에서 승인·동결 결과 대사
 - phase별 강제 종료, lease 만료·다른 owner 인계, 3일 이상 누락 거래일 순차 복구
 - 정산 중 신규 계좌·현금·가격 변경과 동일 cycle 재실행 `input_hash` 불변
@@ -2040,7 +2040,7 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 - `LEDGER_FROZEN` 이후 phase와 완료 cycle은 기존처럼 즉시 0건 반환한다.
 - 두 호환 phase 각각에서 완료된 close run과 `LEDGER_FROZEN/PENDING`으로 전이하는 회귀 테스트를 추가했다.
 
-이 보완은 장애 복구 시 cycle 제어행을 선택하는 분기만 변경합니다. 사용자 주문·정정, 자동 주문, 상장주관사 주문, 체결 worker의 SQL·잠금·commit 수는 변하지 않고, 정상 `CLOSE_REQUESTED` 경로에도 추가 DB 왕복이 없습니다. 호환 phase를 실제 복구 가능하게 만들어 유지 근거를 코드와 일치시켰으므로, 이를 삭제하거나 별도 Step·wrapper를 추가하지 않았습니다.
+이 보완은 장애 복구 시 cycle 제어행을 선택하는 분기만 변경합니다. 사용자 주문·정정, 자동 주문, 발행 인수기관 주문, 체결 worker의 SQL·잠금·commit 수는 변하지 않고, 정상 `CLOSE_REQUESTED` 경로에도 추가 DB 왕복이 없습니다. 호환 phase를 실제 복구 가능하게 만들어 유지 근거를 코드와 일치시켰으므로, 이를 삭제하거나 별도 Step·wrapper를 추가하지 않았습니다.
 
 같은 시점의 실행 환경도 읽기 전용으로 다시 확인했습니다. PID 14622 배치와 PID 14624 백엔드는 여전히 2026-07-15 IntelliJ `out/production` 산출물로 실행 중이고 두 health endpoint는 `UP`이지만 신규 EOD 핵심 class 세 개는 산출물에 없습니다. 운영 schema readiness 대상 17개 테이블 중 존재하는 것은 5개이고 12개가 누락됐으며, signal 신규 컬럼은 0/10, `portfolio_snapshot` EOD 귀속·검증 컬럼은 0/6입니다. 서버나 DB 상태는 변경하지 않았고, 이 상태에서는 ALTER·새 코드 runtime 검증·거래량 비회귀 A/B를 완료로 표시하지 않습니다.
 
@@ -2060,7 +2060,7 @@ H2만으로는 부족합니다. MySQL 8 Testcontainers 테스트를 추가해야
 
 정규장 거래량 영향은 다음과 같이 판정합니다.
 
-- 이번 5개 보완은 수동·호환·장애 복구·PREOPEN 제어면 분기만 변경하므로 사용자 주문, 주문 정정, 자동 주문, 상장주관사 주문, 체결 transaction의 SQL·인덱스·잠금 행·commit 수 증가가 0입니다.
+- 이번 5개 보완은 수동·호환·장애 복구·PREOPEN 제어면 분기만 변경하므로 사용자 주문, 주문 정정, 자동 주문, 발행 인수기관 주문, 체결 transaction의 SQL·인덱스·잠금 행·commit 수 증가가 0입니다.
 - 전체 리팩터링의 정규장 hot path 추가 비용은 거래 transaction마다 해당 종목 fence PK를 공유 잠금하는 1회 조회입니다. 전역 clock/business-state/cycle 행을 잠그지 않고, EOD snapshot·attempt·readiness 테이블도 읽지 않습니다.
 - 자동 주문은 기본 25명 bounded 청크의 계좌·실제 보유 복합키 set lock, CASE 예약 UPDATE, 최대 800행 multi-row INSERT를 유지합니다. 체결은 lock-free 단일 후보 선택 뒤 계좌 정렬, 실제 보유, 정확한 주문 PK 정렬 잠금만 사용합니다. 두 경로 모두 신규 hot-ledger index와 추가 per-fill commit이 없습니다.
 - EOD freeze는 실제 시장이 닫힌 뒤 bounded 주문 cohort를 캡처·취소하고, 정산은 `settlement_eligible_at` 이후 frozen snapshot만 읽습니다. 00시 이후 현금·기업행사·보고서, 04:30 이후 수량·가격 변환, 05:30 이후 가격·자동시장·readiness 순서를 coordinator phase와 공통 heavy admission으로 직렬화합니다.
