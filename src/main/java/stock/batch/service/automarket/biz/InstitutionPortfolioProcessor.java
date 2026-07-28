@@ -45,6 +45,11 @@ class InstitutionPortfolioProcessor {
                 simulationDateTime.toLocalDate(),
                 simulationDateTime
         );
+        repository.disableCompletedLiquidationMandates(
+                policy.portfolioId(),
+                policy.accountId(),
+                simulationDateTime
+        );
         LocalDateTime decisionSlot = decisionSlot(
                 simulationDateTime,
                 policy.decisionIntervalMinutes()

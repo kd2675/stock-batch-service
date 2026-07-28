@@ -1,5 +1,6 @@
 package stock.batch.service.automarket.biz;
 
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,8 @@ public class InstitutionMarketService {
 
     private final InstitutionPortfolioRepository repository;
     private final InstitutionPortfolioProcessor processor;
+    private final InstitutionScheduledPolicyActivationService
+            scheduledPolicyActivationService;
     private final InstitutionOrderIntentExecutionService intentExecutionService;
     private final InstitutionPortfolioRunMetrics metrics;
     private final AutoMarketReader autoMarketReader;
@@ -32,10 +35,12 @@ public class InstitutionMarketService {
     private final SimulationMarketSessionService marketSessionService;
     private final MarketSessionFenceService marketSessionFenceService;
     private final int portfolioLimitPerRun;
+    private volatile LocalDate policyActivationCheckedDate;
 
     InstitutionMarketService(
             InstitutionPortfolioRepository repository,
             InstitutionPortfolioProcessor processor,
+            InstitutionScheduledPolicyActivationService scheduledPolicyActivationService,
             InstitutionOrderIntentExecutionService intentExecutionService,
             InstitutionPortfolioRunMetrics metrics,
             AutoMarketReader autoMarketReader,
@@ -47,6 +52,7 @@ public class InstitutionMarketService {
     ) {
         this.repository = repository;
         this.processor = processor;
+        this.scheduledPolicyActivationService = scheduledPolicyActivationService;
         this.intentExecutionService = intentExecutionService;
         this.metrics = metrics;
         this.autoMarketReader = autoMarketReader;
@@ -64,6 +70,10 @@ public class InstitutionMarketService {
                 || !marketSessionFenceService.hasOpenOrderBookMarket()) {
             return 0;
         }
+        activateScheduledPoliciesOncePerBusinessDate(
+                clock.simulationDate(),
+                clock.simulationDateTime()
+        );
         List<Long> duePortfolioIds = repository.findDuePortfolioIds(
                 clock.simulationDateTime(),
                 portfolioLimitPerRun
@@ -132,5 +142,16 @@ public class InstitutionMarketService {
                 clock.simulationDateTime()
         );
         return completed;
+    }
+
+    private synchronized void activateScheduledPoliciesOncePerBusinessDate(
+            LocalDate simulationTradeDate,
+            java.time.LocalDateTime now
+    ) {
+        if (simulationTradeDate.equals(policyActivationCheckedDate)) {
+            return;
+        }
+        scheduledPolicyActivationService.activateDuePolicies(simulationTradeDate, now);
+        policyActivationCheckedDate = simulationTradeDate;
     }
 }

@@ -212,6 +212,47 @@ class InstitutionPortfolioRepository {
                 .list();
     }
 
+    void disableCompletedLiquidationMandates(
+            long portfolioId,
+            long accountId,
+            LocalDateTime updatedAt
+    ) {
+        jdbcTemplate.update(
+                """
+                update stock_institution_symbol_mandate
+                   set enabled = false,
+                       updated_at = ?
+                 where portfolio_id = ?
+                   and enabled = true
+                   and base_symbol_weight = 0.000001
+                   and min_portfolio_allocation_rate = 0
+                   and max_portfolio_allocation_rate = 0
+                   and not exists (
+                       select 1
+                         from stock_holding holding
+                        where holding.account_id = ?
+                          and holding.symbol =
+                              stock_institution_symbol_mandate.symbol
+                          and holding.quantity > 0
+                   )
+                   and not exists (
+                       select 1
+                         from stock_order stock_order
+                        where stock_order.account_id = ?
+                          and stock_order.symbol =
+                              stock_institution_symbol_mandate.symbol
+                          and stock_order.market_type = 'ORDER_BOOK'
+                          and stock_order.status in ('PENDING', 'PARTIALLY_FILLED')
+                          and stock_order.quantity > stock_order.filled_quantity
+                   )
+                """,
+                updatedAt,
+                portfolioId,
+                accountId,
+                accountId
+        );
+    }
+
     InstitutionAccountSnapshot lockAndLoadAccountSnapshot(
             InstitutionPortfolioPolicy policy,
             List<String> symbols,

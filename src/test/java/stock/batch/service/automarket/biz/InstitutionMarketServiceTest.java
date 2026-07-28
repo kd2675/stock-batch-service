@@ -30,6 +30,8 @@ class InstitutionMarketServiceTest {
                 mock(InstitutionPortfolioRepository.class);
         InstitutionPortfolioProcessor processor =
                 mock(InstitutionPortfolioProcessor.class);
+        InstitutionScheduledPolicyActivationService scheduledPolicyActivationService =
+                mock(InstitutionScheduledPolicyActivationService.class);
         InstitutionOrderIntentExecutionService intentExecutionService =
                 mock(InstitutionOrderIntentExecutionService.class);
         InstitutionPortfolioRunMetrics metrics =
@@ -52,6 +54,7 @@ class InstitutionMarketServiceTest {
         InstitutionMarketService service = new InstitutionMarketService(
                 repository,
                 processor,
+                scheduledPolicyActivationService,
                 intentExecutionService,
                 metrics,
                 autoMarketReader,

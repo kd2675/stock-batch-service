@@ -780,7 +780,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
         return literals;
     }
 
-    private String normalize(String value) {
+    private static String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 

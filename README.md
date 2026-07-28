@@ -195,6 +195,7 @@ KIS_MARKET_DIV_CODE=J
 - `issue-underwriter-market`는 계약·계좌·보유·주문 origin·자기체결 그룹뿐 아니라 `전체 보유주식 합계 = 현재 발행주식`과 최초 배정원장을 매 실행 재검증합니다. 계약 기간 또는 수량·금액 상한이 끝나면 계약을 `COMPLETED`, 현재 정책을 `RETIRED`로 같은 트랜잭션에서 종료합니다. 유통주식이 없거나 시장·역할·주식수 대사가 맞지 않으면 주문을 만들지 않고 일일 gate 사유만 남기며, 계약 origin과 실제 주문 계좌·종목·정책 버전이 어긋난 손상 주문은 자동 취소하지 않고 공급을 차단합니다. 수동 실행은 `POST /internal/stock-batch/v1/jobs/issue-underwriter-market/run`입니다.
 - 일반 자동참여자에는 별도의 일일 위험예산이나 공용 예산 행 잠금을 적용하지 않습니다. 기존 현금·주식 예약, 공매도 방지, 주문당·미체결 수량 제한과 프로필 정책을 유지하며, 유한 일일 수량·금액 예산은 새 기관·LP·인수기관 역할에만 적용합니다.
 - `stock.batch.institution-market.enabled`: 기관 포트폴리오 목표 비중 계산과 제한된 다종목 LIVE 주문 job 활성화 여부입니다. `institution-market` runtime control과 `POST /internal/stock-batch/v1/jobs/institution-market/run` 수동 실행을 함께 지원합니다.
+- 기관 정책 버전은 해당 거래일 첫 기관 실행 전에 적용합니다. 다음 개장으로 예약된 전체 정책 JSON의 포트폴리오·종목 정합성, 미체결 주문·대기 intent 부재, 당일 결정·예산 미사용을 확인한 뒤 현재 정책과 종목 위임을 한 트랜잭션으로 교체합니다. 새 종목은 운용 위임을 생성하고, 제외 종목의 보유분은 목표 0% 청산 전용으로 유지하며 보유·미체결이 모두 사라진 뒤 위임을 비활성화합니다.
 - 기관 LIVE는 미체결을 포함한 예상 포지션, 종목 참여율, 일일 총매매, 결정당·단일 주문 한도를 모두 적용합니다. 한 주문 의도가 3회 실패하면 포트폴리오와 정책 버전을 자동 `SUSPENDED`로 고정하고, 나머지 대기 의도를 거절한 뒤 전용 계좌의 기존 미체결 주문도 같은 트랜잭션에서 취소해 현금·주식 예약을 반환합니다.
 - 역할별 장마감 감사는 새 중복 테이블을 만들지 않고 동결된 `stock_close_account_snapshot`, `stock_execution_daily_account_snapshot`, `stock_order_book_daily_snapshot`을 기본 원장으로 사용합니다. 기관 결정·예산과 LP 의무·손익은 각 전용 일일 테이블에서 보완합니다.
 - 자동 주문 만료와 LP 공급의 symbol-lock skip metric은 종목 코드를 tag로 사용하지 않는 전역 counter입니다. 종목 식별은 debug 로그에만 남겨 종목 수 증가가 Micrometer 시계열 cardinality와 heap 사용량으로 이어지지 않습니다.
