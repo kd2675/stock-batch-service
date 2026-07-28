@@ -75,6 +75,30 @@ class InstitutionOrderIntentExecutionService {
             LocalDate simulationTradeDate,
             LocalDateTime observedAt
     ) {
+        Integer reconciledClosedIntents = null;
+        try {
+            reconciledClosedIntents = transactionTemplate.execute(status ->
+                    repository.reconcileClosedSubmittedIntents(
+                            simulationTradeDate,
+                            observedAt
+                    )
+            );
+        } catch (CannotAcquireLockException ex) {
+            log.warn(
+                    "Institution closed-order reconciliation deferred after lock contention: "
+                            + "tradeDate={}, reason={}",
+                    simulationTradeDate,
+                    ex.getMessage()
+            );
+        }
+        if (reconciledClosedIntents != null && reconciledClosedIntents > 0) {
+            log.info(
+                    "Reconciled closed institution orders and released unused participation "
+                            + "capacity: count={}, tradeDate={}",
+                    reconciledClosedIntents,
+                    simulationTradeDate
+            );
+        }
         int rejectedStaleIntents = repository.rejectStalePendingIntents(
                 simulationTradeDate,
                 observedAt

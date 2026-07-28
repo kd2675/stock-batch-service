@@ -326,6 +326,8 @@ CREATE TABLE IF NOT EXISTS stock_institution_order_intent (
     CASE status
       WHEN 'PENDING' THEN 1
       WHEN 'SUBMITTED' THEN 1
+      WHEN 'COMPLETED' THEN 1
+      WHEN 'CANCELLED' THEN 1
       WHEN 'REJECTED' THEN 1
       WHEN 'FAILED' THEN 1
       ELSE 0
@@ -333,14 +335,14 @@ CREATE TABLE IF NOT EXISTS stock_institution_order_intent (
   ),
   CONSTRAINT chk_stock_institution_order_intent_submission CHECK (
     (
-      status = 'SUBMITTED'
+      status IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
       AND submitted_order_id IS NOT NULL
       AND submitted_price > 0
       AND submitted_quantity > 0
       AND submitted_at IS NOT NULL
     )
     OR (
-      status <> 'SUBMITTED'
+      status NOT IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
       AND submitted_order_id IS NULL
       AND submitted_price IS NULL
       AND submitted_quantity = 0
@@ -352,3 +354,68 @@ CREATE TABLE IF NOT EXISTS stock_institution_order_intent (
     attempt_count BETWEEN 0 AND 3
   )
 );
+
+SET @stock_institution_intent_status_check_exists = (
+  SELECT COUNT(*)
+    FROM information_schema.table_constraints
+   WHERE constraint_schema = DATABASE()
+     AND table_name = 'stock_institution_order_intent'
+     AND constraint_name = 'chk_stock_institution_order_intent_status'
+     AND constraint_type = 'CHECK'
+);
+SET @stock_institution_intent_drop_status_check_sql = IF(
+  @stock_institution_intent_status_check_exists = 1,
+  'ALTER TABLE stock_institution_order_intent DROP CHECK chk_stock_institution_order_intent_status',
+  'SELECT 1'
+);
+PREPARE stock_institution_intent_drop_status_check_stmt
+  FROM @stock_institution_intent_drop_status_check_sql;
+EXECUTE stock_institution_intent_drop_status_check_stmt;
+DEALLOCATE PREPARE stock_institution_intent_drop_status_check_stmt;
+
+SET @stock_institution_intent_submission_check_exists = (
+  SELECT COUNT(*)
+    FROM information_schema.table_constraints
+   WHERE constraint_schema = DATABASE()
+     AND table_name = 'stock_institution_order_intent'
+     AND constraint_name = 'chk_stock_institution_order_intent_submission'
+     AND constraint_type = 'CHECK'
+);
+SET @stock_institution_intent_drop_submission_check_sql = IF(
+  @stock_institution_intent_submission_check_exists = 1,
+  'ALTER TABLE stock_institution_order_intent DROP CHECK chk_stock_institution_order_intent_submission',
+  'SELECT 1'
+);
+PREPARE stock_institution_intent_drop_submission_check_stmt
+  FROM @stock_institution_intent_drop_submission_check_sql;
+EXECUTE stock_institution_intent_drop_submission_check_stmt;
+DEALLOCATE PREPARE stock_institution_intent_drop_submission_check_stmt;
+
+ALTER TABLE stock_institution_order_intent
+  ADD CONSTRAINT chk_stock_institution_order_intent_status CHECK (
+    CASE status
+      WHEN 'PENDING' THEN 1
+      WHEN 'SUBMITTED' THEN 1
+      WHEN 'COMPLETED' THEN 1
+      WHEN 'CANCELLED' THEN 1
+      WHEN 'REJECTED' THEN 1
+      WHEN 'FAILED' THEN 1
+      ELSE 0
+    END = 1
+  ),
+  ADD CONSTRAINT chk_stock_institution_order_intent_submission CHECK (
+    (
+      status IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
+      AND submitted_order_id IS NOT NULL
+      AND submitted_price > 0
+      AND submitted_quantity > 0
+      AND submitted_at IS NOT NULL
+    )
+    OR (
+      status NOT IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
+      AND submitted_order_id IS NULL
+      AND submitted_price IS NULL
+      AND submitted_quantity = 0
+      AND submitted_at IS NULL
+    )
+  );

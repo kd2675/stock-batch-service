@@ -53,6 +53,7 @@ class InstitutionOrderIntentProcessor {
             repository.markRejected(
                     intent,
                     plan.reason(),
+                    simulationTradeDate,
                     sessionApproval.businessEffectiveAt()
             );
             return new ProcessResult(true, false, plan.reason());
@@ -86,6 +87,7 @@ class InstitutionOrderIntentProcessor {
             repository.markRejected(
                     intent,
                     reason,
+                    simulationTradeDate,
                     sessionApproval.businessEffectiveAt()
             );
             return new ProcessResult(true, false, reason);

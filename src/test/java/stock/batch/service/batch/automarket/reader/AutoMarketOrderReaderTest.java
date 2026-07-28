@@ -67,6 +67,12 @@ class AutoMarketOrderReaderTest {
                     created_at timestamp
                 )
                 """);
+        jdbcTemplate.execute("""
+                create table stock_order_strategy_origin(
+                    order_id bigint not null,
+                    origin_type varchar(40) not null
+                )
+                """);
         reader = new AutoMarketOrderReader(jdbcTemplate);
     }
 
@@ -131,6 +137,40 @@ class AutoMarketOrderReaderTest {
             assertThat(order.behaviorModelVersion()).isEqualTo(AutoParticipantBehaviorModelVersion.V2);
             assertThat(order.expiresAt()).isEqualTo(now);
         });
+    }
+
+    @Test
+    void findExpiredInstitutionOrders_onlyReturnsPinnedInstitutionOrders() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 29, 10, 0);
+        insertOrder(
+                115L, 15L, "STOCK001", "BUY", "LIMIT", "PENDING",
+                new BigDecimal("70000.00"), 3L, 0L, new BigDecimal("210000.00"),
+                now.minusMinutes(11)
+        );
+        insertOrder(
+                116L, 16L, "STOCK001", "BUY", "LIMIT", "PENDING",
+                new BigDecimal("70000.00"), 3L, 0L, new BigDecimal("210000.00"),
+                now.minusMinutes(11)
+        );
+        jdbcTemplate.update(
+                "update stock_order set expires_at = ? where id in (115, 116)",
+                now
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_strategy_origin(order_id, origin_type)
+                values (115, 'INSTITUTIONAL_INVESTOR'),
+                       (116, 'AUTO_PARTICIPANT')
+                """
+        );
+
+        List<AutoOrder> orders = reader.findExpiredInstitutionOrders(
+                "STOCK001",
+                now,
+                10
+        );
+
+        assertThat(orders).extracting(AutoOrder::id).containsExactly(115L);
     }
 
     @Test

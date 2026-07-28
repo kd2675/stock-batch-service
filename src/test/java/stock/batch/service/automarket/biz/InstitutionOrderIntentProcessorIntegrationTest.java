@@ -134,7 +134,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                    and portfolio_id = 900
                    and symbol = 'DEMO001'
                 """
-        )).containsEntry("planned_buy_amount", new BigDecimal("5000.00"))
+        )).containsEntry("planned_buy_amount", new BigDecimal("4950.00"))
                 .containsEntry("submitted_buy_amount", new BigDecimal("4950.00"))
                 .containsEntry("version", 1L);
     }
@@ -150,6 +150,86 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                 "select count(*) from stock_order where account_id = 900",
                 Integer.class
         )).isEqualTo(1);
+    }
+
+    @Test
+    void markRejected_releasesUnsubmittedQuantityAndNotionalCapacity() {
+        transactionTemplate.executeWithoutResult(status -> {
+            InstitutionOrderIntent intent =
+                    repository.lockIntent(900L, "DEMO001", TRADE_DATE).orElseThrow();
+            repository.markRejected(
+                    intent,
+                    "EXECUTION_PRICE_OR_DEPTH_UNAVAILABLE",
+                    TRADE_DATE,
+                    NOW
+            );
+        });
+
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select planned_buy_quantity, planned_buy_amount, version
+                  from stock_institution_daily_budget
+                 where simulation_trade_date = date '2027-01-27'
+                   and portfolio_id = 900
+                   and symbol = 'DEMO001'
+                """
+        )).containsEntry("planned_buy_quantity", 0L)
+                .containsEntry("planned_buy_amount", new BigDecimal("0.00"))
+                .containsEntry("version", 1L);
+    }
+
+    @Test
+    void reconcileClosedSubmittedIntent_releasesUnfilledCapacityExactlyOnce() {
+        process();
+        jdbcTemplate.update(
+                """
+                update stock_order
+                   set status = 'CANCELLED',
+                       reserved_cash = 0,
+                       updated_at = ?
+                 where account_id = 900
+                """,
+                NOW.plusMinutes(10)
+        );
+
+        int first = transactionTemplate.execute(status ->
+                repository.reconcileClosedSubmittedIntents(
+                        TRADE_DATE,
+                        NOW.plusMinutes(10)
+                )
+        );
+        int second = transactionTemplate.execute(status ->
+                repository.reconcileClosedSubmittedIntents(
+                        TRADE_DATE,
+                        NOW.plusMinutes(11)
+                )
+        );
+
+        assertThat(first).isOne();
+        assertThat(second).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select status
+                  from stock_institution_order_intent
+                 where decision_run_id = 900
+                   and symbol = 'DEMO001'
+                """,
+                String.class
+        )).isEqualTo("CANCELLED");
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select planned_buy_quantity, planned_buy_amount,
+                       submitted_buy_amount, executed_buy_amount, version
+                  from stock_institution_daily_budget
+                 where simulation_trade_date = date '2027-01-27'
+                   and portfolio_id = 900
+                   and symbol = 'DEMO001'
+                """
+        )).containsEntry("planned_buy_quantity", 0L)
+                .containsEntry("planned_buy_amount", new BigDecimal("0.00"))
+                .containsEntry("submitted_buy_amount", new BigDecimal("4950.00"))
+                .containsEntry("executed_buy_amount", new BigDecimal("0.00"))
+                .containsEntry("version", 2L);
     }
 
     @Test

@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -117,7 +118,37 @@ class AutoMarketOrderExpiryService {
                 now,
                 candidateLimit
         );
-        int remainingCandidateCapacity = Math.max(0, candidateLimit - expiredCandidates.size());
+        List<AutoOrder> institutionCandidates =
+                autoMarketOrderReader.findExpiredInstitutionOrders(
+                        config.symbol(),
+                        now,
+                        candidateLimit
+                );
+        List<AutoOrder> combinedCandidates = new ArrayList<>(
+                expiredCandidates.size() + institutionCandidates.size()
+        );
+        combinedCandidates.addAll(expiredCandidates);
+        combinedCandidates.addAll(institutionCandidates);
+        combinedCandidates.sort(
+                Comparator.comparing(
+                                AutoOrder::expiresAt,
+                                Comparator.nullsLast(Comparator.naturalOrder())
+                        )
+                        .thenComparing(
+                                AutoOrder::createdAt,
+                                Comparator.nullsLast(Comparator.naturalOrder())
+                        )
+                        .thenComparingLong(AutoOrder::id)
+        );
+        if (combinedCandidates.size() > candidateLimit) {
+            combinedCandidates = new ArrayList<>(
+                    combinedCandidates.subList(0, candidateLimit)
+            );
+        }
+        int remainingCandidateCapacity = Math.max(
+                0,
+                candidateLimit - combinedCandidates.size()
+        );
         List<AutoOrder> marketMakerCandidates = findMarketMakerReplacementCandidates(
                 config,
                 activeV2MarketMakerAccountIds,
@@ -128,7 +159,7 @@ class AutoMarketOrderExpiryService {
                 thresholdsByProfile,
                 fallbackThreshold,
                 candidateLimit,
-                expiredCandidates,
+                combinedCandidates,
                 marketMakerCandidates
         );
     }

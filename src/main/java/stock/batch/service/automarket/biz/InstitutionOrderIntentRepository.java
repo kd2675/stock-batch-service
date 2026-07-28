@@ -1,6 +1,7 @@
 package stock.batch.service.automarket.biz;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -284,11 +285,23 @@ class InstitutionOrderIntentRepository {
         }
         BigDecimal submittedAmount = plan.price()
                 .multiply(BigDecimal.valueOf(plan.quantity()))
-                .setScale(2, java.math.RoundingMode.HALF_UP);
+                .setScale(2, RoundingMode.HALF_UP);
+        long releasedQuantity = Math.max(
+                0L,
+                intent.requestedQuantity() - plan.quantity()
+        );
+        BigDecimal releasedAmount = intent.plannedAmount()
+                .subtract(submittedAmount)
+                .max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
         int budgetUpdated = jdbcTemplate.update(
                 """
                 update stock_institution_daily_budget
-                   set submitted_buy_amount = submitted_buy_amount + ?,
+                   set planned_buy_quantity = greatest(0, planned_buy_quantity - ?),
+                       planned_sell_quantity = greatest(0, planned_sell_quantity - ?),
+                       planned_buy_amount = greatest(0, planned_buy_amount - ?),
+                       planned_sell_amount = greatest(0, planned_sell_amount - ?),
+                       submitted_buy_amount = submitted_buy_amount + ?,
                        submitted_sell_amount = submitted_sell_amount + ?,
                        version = version + 1,
                        updated_at = ?
@@ -297,6 +310,10 @@ class InstitutionOrderIntentRepository {
                    and symbol = ?
                    and policy_version = ?
                 """,
+                "BUY".equals(intent.side()) ? releasedQuantity : 0L,
+                "SELL".equals(intent.side()) ? releasedQuantity : 0L,
+                "BUY".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
+                "SELL".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
                 "BUY".equals(intent.side()) ? submittedAmount : BigDecimal.ZERO,
                 "SELL".equals(intent.side()) ? submittedAmount : BigDecimal.ZERO,
                 submittedAt,
@@ -313,6 +330,7 @@ class InstitutionOrderIntentRepository {
     void markRejected(
             InstitutionOrderIntent intent,
             String reason,
+            LocalDate simulationTradeDate,
             LocalDateTime rejectedAt
     ) {
         int updated = jdbcTemplate.update(
@@ -332,6 +350,197 @@ class InstitutionOrderIntentRepository {
         );
         if (updated != 1) {
             throw new IllegalStateException("Institution order intent rejection audit failed");
+        }
+        releasePlannedBudget(
+                intent,
+                simulationTradeDate,
+                intent.requestedQuantity(),
+                intent.plannedAmount(),
+                rejectedAt
+        );
+    }
+
+    int reconcileClosedSubmittedIntents(
+            LocalDate simulationTradeDate,
+            LocalDateTime reconciledAt
+    ) {
+        List<ClosedSubmittedIntent> closedIntents = jdbcClient.sql(
+                        """
+                        select intent.decision_run_id,
+                               intent.symbol,
+                               intent.portfolio_id,
+                               intent.side,
+                               intent.policy_version,
+                               intent.submitted_order_id,
+                               intent.submitted_price,
+                               intent.submitted_quantity,
+                               intent.submission_reason,
+                               order_row.status as order_status,
+                               order_row.filled_quantity,
+                               coalesce((
+                                   select sum(execution.gross_amount)
+                                     from stock_execution execution
+                                    where execution.order_id = order_row.id
+                               ), 0) as executed_amount
+                          from stock_institution_order_intent intent
+                          join stock_institution_decision_run decision_run
+                            on decision_run.id = intent.decision_run_id
+                           and decision_run.simulation_trade_date = :simulationTradeDate
+                          join stock_order order_row
+                            on order_row.id = intent.submitted_order_id
+                         where intent.status = 'SUBMITTED'
+                           and order_row.status not in ('PENDING', 'PARTIALLY_FILLED')
+                         order by intent.decision_run_id, intent.symbol
+                         for update
+                        """
+                )
+                .param("simulationTradeDate", simulationTradeDate)
+                .query((rs, rowNum) -> new ClosedSubmittedIntent(
+                        rs.getLong("decision_run_id"),
+                        rs.getString("symbol"),
+                        rs.getLong("portfolio_id"),
+                        rs.getString("side"),
+                        rs.getLong("policy_version"),
+                        rs.getLong("submitted_order_id"),
+                        rs.getBigDecimal("submitted_price"),
+                        rs.getLong("submitted_quantity"),
+                        rs.getString("submission_reason"),
+                        rs.getString("order_status"),
+                        rs.getLong("filled_quantity"),
+                        rs.getBigDecimal("executed_amount")
+                ))
+                .list();
+        for (ClosedSubmittedIntent intent : closedIntents) {
+            reconcileClosedSubmittedIntent(
+                    intent,
+                    simulationTradeDate,
+                    reconciledAt
+            );
+        }
+        return closedIntents.size();
+    }
+
+    private void reconcileClosedSubmittedIntent(
+            ClosedSubmittedIntent intent,
+            LocalDate simulationTradeDate,
+            LocalDateTime reconciledAt
+    ) {
+        long filledQuantity = Math.min(
+                intent.submittedQuantity(),
+                Math.max(0L, intent.filledQuantity())
+        );
+        long releasedQuantity = intent.submittedQuantity() - filledQuantity;
+        BigDecimal submittedAmount = intent.submittedPrice()
+                .multiply(BigDecimal.valueOf(intent.submittedQuantity()))
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal executedAmount = intent.executedAmount()
+                .max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal releasedAmount = submittedAmount
+                .subtract(executedAmount)
+                .max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
+        int budgetUpdated = jdbcTemplate.update(
+                """
+                update stock_institution_daily_budget
+                   set planned_buy_quantity = greatest(0, planned_buy_quantity - ?),
+                       planned_sell_quantity = greatest(0, planned_sell_quantity - ?),
+                       planned_buy_amount = greatest(0, planned_buy_amount - ?),
+                       planned_sell_amount = greatest(0, planned_sell_amount - ?),
+                       executed_buy_amount = executed_buy_amount + ?,
+                       executed_sell_amount = executed_sell_amount + ?,
+                       version = version + 1,
+                       updated_at = ?
+                 where simulation_trade_date = ?
+                   and portfolio_id = ?
+                   and symbol = ?
+                   and policy_version = ?
+                """,
+                "BUY".equals(intent.side()) ? releasedQuantity : 0L,
+                "SELL".equals(intent.side()) ? releasedQuantity : 0L,
+                "BUY".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
+                "SELL".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
+                "BUY".equals(intent.side()) ? executedAmount : BigDecimal.ZERO,
+                "SELL".equals(intent.side()) ? executedAmount : BigDecimal.ZERO,
+                reconciledAt,
+                simulationTradeDate,
+                intent.portfolioId(),
+                intent.symbol(),
+                intent.policyVersion()
+        );
+        if (budgetUpdated != 1) {
+            throw new IllegalStateException(
+                    "Institution closed-order budget reconciliation failed"
+            );
+        }
+        String terminalStatus = filledQuantity >= intent.submittedQuantity()
+                ? "COMPLETED"
+                : "CANCELLED";
+        String terminalReason = truncate(
+                intent.submissionReason()
+                        + ":ORDER_"
+                        + intent.orderStatus()
+        );
+        int intentUpdated = jdbcTemplate.update(
+                """
+                update stock_institution_order_intent
+                   set status = ?,
+                       submission_reason = ?,
+                       updated_at = ?
+                 where decision_run_id = ?
+                   and symbol = ?
+                   and status = 'SUBMITTED'
+                   and submitted_order_id = ?
+                """,
+                terminalStatus,
+                terminalReason,
+                reconciledAt,
+                intent.decisionRunId(),
+                intent.symbol(),
+                intent.submittedOrderId()
+        );
+        if (intentUpdated != 1) {
+            throw new IllegalStateException(
+                    "Institution closed-order intent reconciliation failed"
+            );
+        }
+    }
+
+    private void releasePlannedBudget(
+            InstitutionOrderIntent intent,
+            LocalDate simulationTradeDate,
+            long releasedQuantity,
+            BigDecimal releasedAmount,
+            LocalDateTime releasedAt
+    ) {
+        int updated = jdbcTemplate.update(
+                """
+                update stock_institution_daily_budget
+                   set planned_buy_quantity = greatest(0, planned_buy_quantity - ?),
+                       planned_sell_quantity = greatest(0, planned_sell_quantity - ?),
+                       planned_buy_amount = greatest(0, planned_buy_amount - ?),
+                       planned_sell_amount = greatest(0, planned_sell_amount - ?),
+                       version = version + 1,
+                       updated_at = ?
+                 where simulation_trade_date = ?
+                   and portfolio_id = ?
+                   and symbol = ?
+                   and policy_version = ?
+                """,
+                "BUY".equals(intent.side()) ? releasedQuantity : 0L,
+                "SELL".equals(intent.side()) ? releasedQuantity : 0L,
+                "BUY".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
+                "SELL".equals(intent.side()) ? releasedAmount : BigDecimal.ZERO,
+                releasedAt,
+                simulationTradeDate,
+                intent.portfolioId(),
+                intent.symbol(),
+                intent.policyVersion()
+        );
+        if (updated != 1) {
+            throw new IllegalStateException(
+                    "Institution rejected-order budget release failed"
+            );
         }
     }
 
@@ -589,6 +798,22 @@ class InstitutionOrderIntentRepository {
             String executionMode,
             String status,
             long policyVersion
+    ) {
+    }
+
+    private record ClosedSubmittedIntent(
+            long decisionRunId,
+            String symbol,
+            long portfolioId,
+            String side,
+            long policyVersion,
+            long submittedOrderId,
+            BigDecimal submittedPrice,
+            long submittedQuantity,
+            String submissionReason,
+            String orderStatus,
+            long filledQuantity,
+            BigDecimal executedAmount
     ) {
     }
 }

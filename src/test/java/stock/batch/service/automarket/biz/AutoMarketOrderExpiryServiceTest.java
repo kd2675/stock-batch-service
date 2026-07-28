@@ -130,6 +130,35 @@ class AutoMarketOrderExpiryServiceTest {
     }
 
     @Test
+    void expireInstitutionOrders_usesPinnedTtlWithoutAutoParticipantJoin() {
+        LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
+        AutoOrder institutionOrder = new AutoOrder(
+                77L,
+                700L,
+                "STOCK001",
+                "BUY",
+                1_000L,
+                250L,
+                new BigDecimal("52500000.00"),
+                new BigDecimal("70000.00"),
+                null,
+                null,
+                now.minusSeconds(1),
+                now.minusMinutes(11)
+        );
+        when(reader.findExpiredInstitutionOrders("STOCK001", now, 100))
+                .thenReturn(List.of(institutionOrder));
+        when(executor.expireOrders(any(), eq(now))).thenReturn(1);
+
+        AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =
+                service.planExpiryCandidates(config, policies, now, List.of());
+        int expired = service.expirePlannedOrders(config, plan, now);
+
+        assertThat(expired).isEqualTo(1);
+        verify(executor).expireOrders(List.of(institutionOrder), now);
+    }
+
+    @Test
     void expireOldAutoOrders_withoutV2MarketMakerCandidates_skipsOrderBookSnapshot() {
         LocalDateTime now = LocalDateTime.of(2027, 1, 18, 10, 0);
         AutoMarketOrderExpiryService.ExpiryCandidatePlan plan =

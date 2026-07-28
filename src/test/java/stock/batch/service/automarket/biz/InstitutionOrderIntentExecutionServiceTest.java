@@ -63,7 +63,7 @@ class InstitutionOrderIntentExecutionServiceTest {
         );
 
         assertThat(submitted).isZero();
-        verify(transactionTemplate, times(3)).execute(any());
+        verify(transactionTemplate, times(4)).execute(any());
         verify(repository, never()).recordFailure(any(), any(), any());
     }
 }

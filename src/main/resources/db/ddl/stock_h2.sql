@@ -2041,18 +2041,20 @@ CREATE TABLE IF NOT EXISTS stock_institution_order_intent (
     execution_aggression_pressure BETWEEN -1 AND 1
   ),
   CONSTRAINT chk_stock_institution_order_intent_status CHECK (
-    status IN ('PENDING', 'SUBMITTED', 'REJECTED', 'FAILED')
+    status IN (
+      'PENDING', 'SUBMITTED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FAILED'
+    )
   ),
   CONSTRAINT chk_stock_institution_order_intent_submission CHECK (
     (
-      status = 'SUBMITTED'
+      status IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
       AND submitted_order_id IS NOT NULL
       AND submitted_price > 0
       AND submitted_quantity > 0
       AND submitted_at IS NOT NULL
     )
     OR (
-      status <> 'SUBMITTED'
+      status NOT IN ('SUBMITTED', 'COMPLETED', 'CANCELLED')
       AND submitted_order_id IS NULL
       AND submitted_price IS NULL
       AND submitted_quantity = 0

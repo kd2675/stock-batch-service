@@ -114,6 +114,57 @@ public class AutoMarketOrderReader {
                 .list();
     }
 
+    public List<AutoOrder> findExpiredInstitutionOrders(
+            String symbol,
+            LocalDateTime now,
+            int limit
+    ) {
+        return jdbcClient.sql(
+                        """
+                        select o.id,
+                               o.account_id,
+                               o.symbol,
+                               o.side,
+                               o.quantity,
+                               o.filled_quantity,
+                               o.reserved_cash,
+                               o.limit_price,
+                               o.expires_at,
+                               o.created_at
+                          from %s
+                          join stock_order_strategy_origin strategy_origin
+                            on strategy_origin.order_id = o.id
+                           and strategy_origin.origin_type = 'INSTITUTIONAL_INVESTOR'
+                         where o.symbol = :symbol
+                           and o.status in ('PENDING', 'PARTIALLY_FILLED')
+                           and o.market_type = 'ORDER_BOOK'
+                           and o.quantity > o.filled_quantity
+                           and o.expires_at is not null
+                           and o.expires_at <= :now
+                         order by o.expires_at asc, o.id asc
+                         limit :limit
+                        """.formatted(expiryOrderTable)
+                )
+                .param("symbol", symbol)
+                .param("now", now)
+                .param("limit", Math.max(1, limit))
+                .query((rs, rowNum) -> new AutoOrder(
+                        rs.getLong("id"),
+                        rs.getLong("account_id"),
+                        rs.getString("symbol"),
+                        rs.getString("side"),
+                        rs.getLong("quantity"),
+                        rs.getLong("filled_quantity"),
+                        rs.getBigDecimal("reserved_cash"),
+                        rs.getBigDecimal("limit_price"),
+                        null,
+                        null,
+                        rs.getObject("expires_at", LocalDateTime.class),
+                        rs.getObject("created_at", LocalDateTime.class)
+                ))
+                .list();
+    }
+
     public List<Long> findActiveV2MarketMakerAccountIds(int limit) {
         return jdbcClient.sql(
                 """
