@@ -186,6 +186,7 @@ class InstitutionOrderIntentProcessorIntegrationTest {
                 update stock_order
                    set status = 'CANCELLED',
                        reserved_cash = 0,
+                       cancel_reason = 'TTL_EXPIRED',
                        updated_at = ?
                  where account_id = 900
                 """,

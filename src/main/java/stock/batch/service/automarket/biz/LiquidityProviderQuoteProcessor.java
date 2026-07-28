@@ -71,7 +71,11 @@ class LiquidityProviderQuoteProcessor {
         );
         LiquidityProviderQuotePlan plan = quotePlanner.plan(input);
 
-        int cancelledOrderCount = orderExecutor.expireOrders(plan.cancellationOrders(), now);
+        int cancelledOrderCount = orderExecutor.expireOrders(
+                plan.cancellationOrders(),
+                now,
+                "REPRICE"
+        );
         if (cancelledOrderCount != plan.cancellationOrders().size()) {
             throw new IllegalStateException(
                     "Liquidity-provider cancellation count mismatch: mandateId=%d, expected=%d, actual=%d"
