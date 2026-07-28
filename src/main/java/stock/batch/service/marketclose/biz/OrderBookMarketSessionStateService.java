@@ -28,6 +28,13 @@ public class OrderBookMarketSessionStateService {
         };
     }
 
+    public int syncPreOpen(LocalDate businessDate, LocalDateTime preparedAt) {
+        if (businessDate == null || preparedAt == null) {
+            throw new IllegalArgumentException("businessDate and preparedAt are required");
+        }
+        return marketSessionFenceService.keepClosedForPreOpen(businessDate, preparedAt);
+    }
+
     private int synchronizeRegularSession(LocalDateTime now) {
         LocalDate businessDate = now.toLocalDate();
         if (marketSessionFenceService.isRegularSessionSynchronized(businessDate)) {

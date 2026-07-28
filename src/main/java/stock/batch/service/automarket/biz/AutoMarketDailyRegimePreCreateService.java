@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import web.common.core.simulation.SimulationClockSnapshot;
 
 import stock.batch.service.batch.automarket.reader.AutoMarketReader;
+import stock.batch.service.marketclose.biz.OrderBookMarketSessionStateService;
 import stock.batch.service.simulation.SimulationClockService;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 
@@ -22,6 +23,8 @@ public class AutoMarketDailyRegimePreCreateService {
     private final SimulationMarketSessionService simulationMarketSessionService;
     private final AutoMarketReader autoMarketReader;
     private final AutoMarketDailyRegimeService autoMarketDailyRegimeService;
+    private final MarketRoleScheduledActivationService marketRoleActivationService;
+    private final OrderBookMarketSessionStateService marketSessionStateService;
 
     @Value("${stock.batch.auto-market.daily-regime.pre-create-before-minutes:30}")
     private int preCreateBeforeMinutes;
@@ -31,9 +34,7 @@ public class AutoMarketDailyRegimePreCreateService {
         if (!shouldPreCreateDailyRegimes(clock)) {
             return 0;
         }
-        var configs = autoMarketReader.findDailyRegimePreparationConfigs();
-        return autoMarketDailyRegimeService.ensureFullDayDailyRegimes(
-                configs,
+        return prepareForOpening(
                 clock.simulationDateTime().toLocalDate(),
                 clock.simulationDateTime()
         );
@@ -43,6 +44,12 @@ public class AutoMarketDailyRegimePreCreateService {
         if (businessDate == null || preparedAt == null) {
             throw new IllegalArgumentException("businessDate and preparedAt are required");
         }
+        return prepareForOpening(businessDate, preparedAt);
+    }
+
+    private int prepareForOpening(LocalDate businessDate, LocalDateTime preparedAt) {
+        marketRoleActivationService.activateForPreOpen(businessDate, preparedAt);
+        marketSessionStateService.syncPreOpen(businessDate, preparedAt);
         var configs = autoMarketReader.findDailyRegimePreparationConfigs();
         return autoMarketDailyRegimeService.ensureFullDayDailyRegimes(
                 configs,

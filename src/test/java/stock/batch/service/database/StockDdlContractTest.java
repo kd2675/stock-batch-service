@@ -957,6 +957,33 @@ class StockDdlContractTest {
     }
 
     @Test
+    void marketRoleScheduledActivationAlterDdl_isSyncedAndAllowsPendingLifecycle()
+            throws IOException {
+        String batchDdl = Files.readString(
+                Path.of("src/main/resources/db/ddl/stock_market_role_scheduled_activation_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+        String backDdl = Files.readString(
+                Path.of("../stock-back-service/src/main/resources/db/ddl/"
+                        + "stock_market_role_scheduled_activation_alter.sql"),
+                StandardCharsets.UTF_8
+        );
+
+        assertThat(firstExecutableSqlLine(batchDdl)).isEqualTo("USE STOCK_SERVICE;");
+        assertThat(normalizeSqlBlock(batchDdl)).isEqualTo(normalizeSqlBlock(backDdl));
+        assertThat(batchDdl).contains(
+                "status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'EXPIRED')",
+                "stage IN ('PENDING_ACTIVATION', 'LIVE_ACTIVE', 'SUSPENDED')",
+                "(stage = 'PENDING_ACTIVATION' AND activated_at IS NULL)"
+        ).doesNotContain(
+                "UPDATE stock_account",
+                "UPDATE stock_holding",
+                "UPDATE stock_order",
+                "DELETE FROM stock_order"
+        );
+    }
+
+    @Test
     void liquidityLiveOnlyAlterDdl_isSyncedAndDoesNotRewriteBusinessLedgers()
             throws IOException {
         String batchDdl = Files.readString(

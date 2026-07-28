@@ -21,6 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import stock.batch.service.batch.config.BatchRepositoryDataSourceConfig;
 import stock.batch.service.simulation.SimulationMarketSessionService;
+import web.common.core.simulation.SimulationMarketSession;
 
 @Service
 @Slf4j
@@ -49,21 +50,30 @@ public class LiquidityProviderScheduledPolicyActivationService {
     }
 
     public int activateDuePolicies(LocalDate businessDate, LocalDateTime activatedAt) {
+        return activateDuePolicies(
+                businessDate,
+                activatedAt,
+                marketSessionService.currentSession() == SimulationMarketSession.PRE_OPEN
+        );
+    }
+
+    public int activateDuePoliciesForPreOpen(
+            LocalDate businessDate,
+            LocalDateTime activatedAt
+    ) {
+        return activateDuePolicies(businessDate, activatedAt, true);
+    }
+
+    private int activateDuePolicies(
+            LocalDate businessDate,
+            LocalDateTime activatedAt,
+            boolean lifecycleActivationAllowed
+    ) {
         if (businessDate == null || activatedAt == null) {
             throw new IllegalArgumentException(
                     "LP policy activation requires businessDate and activatedAt"
             );
         }
-        Integer activated = transactionTemplate.execute(ignored ->
-                activateDuePoliciesInTransaction(businessDate, activatedAt)
-        );
-        return activated == null ? 0 : activated;
-    }
-
-    private int activateDuePoliciesInTransaction(
-            LocalDate businessDate,
-            LocalDateTime activatedAt
-    ) {
         List<DuePolicyReference> duePolicies = jdbcClient.sql(
                         """
                         select id, scope_key
@@ -88,8 +98,27 @@ public class LiquidityProviderScheduledPolicyActivationService {
         requireUniqueDueSymbols(duePolicies);
         int activatedCount = 0;
         for (DuePolicyReference duePolicy : duePolicies) {
-            if (activatePolicy(duePolicy, businessDate, activatedAt)) {
-                activatedCount = Math.addExact(activatedCount, 1);
+            try {
+                Boolean activated = transactionTemplate.execute(ignored ->
+                        activatePolicy(
+                                duePolicy,
+                                businessDate,
+                                activatedAt,
+                                lifecycleActivationAllowed
+                        )
+                );
+                if (Boolean.TRUE.equals(activated)) {
+                    activatedCount = Math.addExact(activatedCount, 1);
+                }
+            } catch (RuntimeException ex) {
+                log.error(
+                        "Scheduled LP policy activation failed and was rolled back: "
+                                + "businessDate={}, symbol={}, policyId={}",
+                        businessDate,
+                        duePolicy.symbol(),
+                        duePolicy.id(),
+                        ex
+                );
             }
         }
         if (activatedCount > 0) {
@@ -105,7 +134,8 @@ public class LiquidityProviderScheduledPolicyActivationService {
     private boolean activatePolicy(
             DuePolicyReference duePolicy,
             LocalDate businessDate,
-            LocalDateTime activatedAt
+            LocalDateTime activatedAt,
+            boolean lifecycleActivationAllowed
     ) {
         MandateRow mandate = lockMandate(duePolicy.symbol());
         ScheduledPolicyRow scheduledPolicy = lockScheduledPolicy(
@@ -114,6 +144,18 @@ public class LiquidityProviderScheduledPolicyActivationService {
         );
         if (scheduledPolicy == null) {
             return false;
+        }
+        String activationAction = activationAction(scheduledPolicy);
+        if (isLifecycleActivation(activationAction) && !lifecycleActivationAllowed) {
+            return false;
+        }
+        if ("PROVISION".equals(activationAction)) {
+            return activateProvision(
+                    mandate,
+                    scheduledPolicy,
+                    businessDate,
+                    activatedAt
+            );
         }
         if (!"LIVE".equals(mandate.executionMode())
                 || (!"ACTIVE".equals(mandate.status())
@@ -146,7 +188,15 @@ public class LiquidityProviderScheduledPolicyActivationService {
         requireUnusedDailyState(mandate.id(), businessDate);
         deleteEmptyDailyState(mandate.id(), businessDate);
 
-        LocalDateTime nextQuoteAt = "ACTIVE".equals(mandate.status())
+        String targetStatus = "RESUME".equals(activationAction)
+                ? "ACTIVE"
+                : mandate.status();
+        if ("RESUME".equals(activationAction) && !"SUSPENDED".equals(mandate.status())) {
+            throw new IllegalStateException(
+                    "Scheduled LP resume target is not suspended: " + scheduledPolicy.symbol()
+            );
+        }
+        LocalDateTime nextQuoteAt = "ACTIVE".equals(targetStatus)
                 ? businessDate.atTime(marketSessionService.openTime())
                 : null;
         requireSingleUpdate(
@@ -177,6 +227,7 @@ public class LiquidityProviderScheduledPolicyActivationService {
                                order_ttl_seconds = ?,
                                quote_interval_seconds = ?,
                                daily_loss_limit_amount = ?,
+                               status = ?,
                                next_quote_at = ?,
                                policy_version = ?,
                                updated_at = ?
@@ -207,6 +258,7 @@ public class LiquidityProviderScheduledPolicyActivationService {
                         policy.orderTtlSeconds(),
                         policy.quoteIntervalSeconds(),
                         policy.dailyLossLimitAmount(),
+                        targetStatus,
                         nextQuoteAt,
                         scheduledPolicy.version(),
                         activatedAt,
@@ -215,19 +267,11 @@ public class LiquidityProviderScheduledPolicyActivationService {
                 ),
                 "Scheduled LP mandate policy activation"
         );
-        requireSingleUpdate(
-                jdbcTemplate.update(
-                        """
-                        update stock_liquidity_transition
-                           set policy_version = ?,
-                               updated_at = ?
-                         where mandate_id = ?
-                        """,
-                        scheduledPolicy.version(),
-                        activatedAt,
-                        mandate.id()
-                ),
-                "Scheduled LP transition policy activation"
+        updateTransition(
+                mandate.id(),
+                scheduledPolicy.version(),
+                "RESUME".equals(activationAction),
+                activatedAt
         );
         requireSingleUpdate(
                 jdbcTemplate.update(
@@ -263,6 +307,175 @@ public class LiquidityProviderScheduledPolicyActivationService {
         return true;
     }
 
+    private boolean activateProvision(
+            MandateRow mandate,
+            ScheduledPolicyRow scheduledPolicy,
+            LocalDate businessDate,
+            LocalDateTime activatedAt
+    ) {
+        if (!"LIVE".equals(mandate.executionMode()) || !"PENDING".equals(mandate.status())) {
+            throw new IllegalStateException(
+                    "Scheduled LP provisioning target is not pending: " + scheduledPolicy.symbol()
+            );
+        }
+        if (scheduledPolicy.version() != mandate.policyVersion()) {
+            throw new IllegalStateException(
+                    "Scheduled LP provisioning policy version is inconsistent: "
+                            + scheduledPolicy.symbol()
+            );
+        }
+        validatePendingProvisionReadiness(
+                mandate,
+                scheduledPolicy.symbol(),
+                businessDate
+        );
+        requireNoOpenOrders(mandate);
+        requireUnusedDailyState(mandate.id(), businessDate);
+        activatePendingMarket(scheduledPolicy.symbol(), activatedAt);
+        requireSingleUpdate(
+                jdbcTemplate.update(
+                        """
+                        update stock_liquidity_mandate
+                           set status = 'ACTIVE',
+                               next_quote_at = ?,
+                               updated_at = ?
+                         where id = ?
+                           and status = 'PENDING'
+                           and policy_version = ?
+                        """,
+                        businessDate.atTime(marketSessionService.openTime()),
+                        activatedAt,
+                        mandate.id(),
+                        mandate.policyVersion()
+                ),
+                "Pending LP mandate activation"
+        );
+        requireSingleUpdate(
+                jdbcTemplate.update(
+                        """
+                        update stock_liquidity_transition
+                           set stage = 'LIVE_ACTIVE',
+                               activated_at = ?,
+                               policy_version = ?,
+                               updated_at = ?
+                         where mandate_id = ?
+                           and stage = 'PENDING_ACTIVATION'
+                           and effective_business_date <= ?
+                        """,
+                        activatedAt,
+                        scheduledPolicy.version(),
+                        activatedAt,
+                        mandate.id(),
+                        businessDate
+                ),
+                "Pending LP transition activation"
+        );
+        activateScheduledPolicy(scheduledPolicy, activatedAt);
+        return true;
+    }
+
+    private void activatePendingMarket(String symbol, LocalDateTime activatedAt) {
+        MarketConfig market = jdbcClient.sql(
+                        """
+                        select enabled, market_status
+                          from stock_order_book_market_config
+                         where symbol = :symbol
+                         for update
+                        """
+                )
+                .param("symbol", symbol)
+                .query((rs, rowNum) -> new MarketConfig(
+                        rs.getBoolean("enabled"),
+                        rs.getString("market_status")
+                ))
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pending LP market configuration is missing: " + symbol
+                ));
+        if (market.enabled()) {
+            if (!"CLOSED".equals(market.status())) {
+                throw new IllegalStateException(
+                        "Pending LP market must remain closed before activation: " + symbol
+                );
+            }
+            return;
+        }
+        if (!"CLOSED".equals(market.status())) {
+            throw new IllegalStateException(
+                    "Pending LP market is not safely closed: " + symbol
+            );
+        }
+        requireSingleUpdate(
+                jdbcTemplate.update(
+                        """
+                        update stock_order_book_market_config
+                           set enabled = true,
+                               updated_at = ?
+                         where symbol = ?
+                           and enabled = false
+                           and market_status = 'CLOSED'
+                        """,
+                        activatedAt,
+                        symbol
+                ),
+                "Pending LP market activation"
+        );
+    }
+
+    private void updateTransition(
+            long mandateId,
+            long policyVersion,
+            boolean resumed,
+            LocalDateTime activatedAt
+    ) {
+        String sql = resumed
+                ? """
+                  update stock_liquidity_transition
+                     set stage = 'LIVE_ACTIVE',
+                         policy_version = ?,
+                         updated_at = ?
+                   where mandate_id = ?
+                     and stage = 'SUSPENDED'
+                  """
+                : """
+                  update stock_liquidity_transition
+                     set policy_version = ?,
+                         updated_at = ?
+                   where mandate_id = ?
+                  """;
+        requireSingleUpdate(
+                jdbcTemplate.update(
+                        sql,
+                        policyVersion,
+                        activatedAt,
+                        mandateId
+                ),
+                "Scheduled LP transition policy activation"
+        );
+    }
+
+    private void activateScheduledPolicy(
+            ScheduledPolicyRow scheduledPolicy,
+            LocalDateTime activatedAt
+    ) {
+        requireSingleUpdate(
+                jdbcTemplate.update(
+                        """
+                        update stock_market_policy_version
+                           set status = 'ACTIVE',
+                               updated_at = ?
+                         where id = ?
+                           and status = 'SCHEDULED'
+                           and version_no = ?
+                        """,
+                        activatedAt,
+                        scheduledPolicy.id(),
+                        scheduledPolicy.version()
+                ),
+                "Scheduled LP policy activation"
+        );
+    }
+
     private void requireUniqueDueSymbols(List<DuePolicyReference> duePolicies) {
         Set<String> symbols = new HashSet<>();
         for (DuePolicyReference duePolicy : duePolicies) {
@@ -278,7 +491,8 @@ public class LiquidityProviderScheduledPolicyActivationService {
     private MandateRow lockMandate(String symbol) {
         return jdbcClient.sql(
                         """
-                        select id, account_id, execution_mode, status, policy_version
+                        select id, account_id, execution_mode, status,
+                               target_inventory_quantity, policy_version
                           from stock_liquidity_mandate
                          where symbol = :symbol
                          for update
@@ -290,12 +504,147 @@ public class LiquidityProviderScheduledPolicyActivationService {
                         rs.getLong("account_id"),
                         rs.getString("execution_mode"),
                         rs.getString("status"),
+                        rs.getLong("target_inventory_quantity"),
                         rs.getLong("policy_version")
                 ))
                 .optional()
                 .orElseThrow(() -> new IllegalStateException(
                         "Scheduled LP policy mandate is missing: " + symbol
                 ));
+    }
+
+    private void validatePendingProvisionReadiness(
+            MandateRow mandate,
+            String symbol,
+            LocalDate businessDate
+    ) {
+        ProvisionReadiness readiness = jdbcClient.sql(
+                        """
+                        select participant.participant_type,
+                               participant.status as participant_status,
+                               participant.self_trade_group_id as participant_group,
+                               account.status as account_status,
+                               account.participant_category,
+                               account.self_trade_group_id as account_group,
+                               account.cash_balance,
+                               mapping.account_role,
+                               mapping.status as mapping_status,
+                               mapping.effective_from,
+                               mapping.effective_to,
+                               holding.quantity as holding_quantity,
+                               holding.reserved_quantity,
+                               instrument.enabled as instrument_enabled,
+                               instrument.issued_shares,
+                               instrument.tradable_shares,
+                               auto_config.enabled as auto_market_enabled,
+                               price.current_price,
+                               (
+                                   select count(*)
+                                     from stock_holding unmanaged
+                                    where unmanaged.account_id = mandate.account_id
+                                      and unmanaged.symbol <> mandate.symbol
+                                      and (
+                                          unmanaged.quantity > 0
+                                          or unmanaged.reserved_quantity > 0
+                                      )
+                               ) as unmanaged_holding_count,
+                               (
+                                   select coalesce(sum(symbol_holding.quantity), 0)
+                                     from stock_holding symbol_holding
+                                    where symbol_holding.symbol = mandate.symbol
+                               ) as total_holding_quantity,
+                               (
+                                   select count(*)
+                                     from stock_holding invalid_holding
+                                    where invalid_holding.symbol = mandate.symbol
+                                      and (
+                                          invalid_holding.quantity < 0
+                                          or invalid_holding.reserved_quantity < 0
+                                          or invalid_holding.reserved_quantity
+                                             > invalid_holding.quantity
+                                      )
+                               ) as invalid_holding_count
+                          from stock_liquidity_mandate mandate
+                          join stock_market_participant participant
+                            on participant.id = mandate.participant_id
+                          join stock_account account
+                            on account.id = mandate.account_id
+                          join stock_market_participant_account mapping
+                            on mapping.participant_id = mandate.participant_id
+                           and mapping.account_id = mandate.account_id
+                          join stock_holding holding
+                            on holding.account_id = mandate.account_id
+                           and holding.symbol = mandate.symbol
+                          join stock_order_book_instrument instrument
+                            on instrument.symbol = mandate.symbol
+                          join stock_auto_market_config auto_config
+                            on auto_config.symbol = mandate.symbol
+                          join stock_price price
+                            on price.symbol = mandate.symbol
+                         where mandate.id = :mandateId
+                           and mandate.symbol = :symbol
+                         for update
+                        """
+                )
+                .param("mandateId", mandate.id())
+                .param("symbol", symbol)
+                .query((rs, rowNum) -> new ProvisionReadiness(
+                        rs.getString("participant_type"),
+                        rs.getString("participant_status"),
+                        rs.getString("participant_group"),
+                        rs.getString("account_status"),
+                        rs.getString("participant_category"),
+                        rs.getString("account_group"),
+                        rs.getBigDecimal("cash_balance"),
+                        rs.getString("account_role"),
+                        rs.getString("mapping_status"),
+                        rs.getObject("effective_from", LocalDate.class),
+                        rs.getObject("effective_to", LocalDate.class),
+                        rs.getLong("holding_quantity"),
+                        rs.getLong("reserved_quantity"),
+                        rs.getBoolean("instrument_enabled"),
+                        rs.getLong("issued_shares"),
+                        rs.getLong("tradable_shares"),
+                        rs.getBoolean("auto_market_enabled"),
+                        rs.getBigDecimal("current_price"),
+                        rs.getLong("unmanaged_holding_count"),
+                        rs.getLong("total_holding_quantity"),
+                        rs.getLong("invalid_holding_count")
+                ))
+                .optional()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pending LP role or market readiness is missing: " + symbol
+                ));
+        boolean effectiveRole = readiness.effectiveFrom() != null
+                && !businessDate.isBefore(readiness.effectiveFrom())
+                && (readiness.effectiveTo() == null
+                || !businessDate.isAfter(readiness.effectiveTo()));
+        if (!"LIQUIDITY_PROVIDER".equals(readiness.participantType())
+                || !"ACTIVE".equals(readiness.participantStatus())
+                || !"ACTIVE".equals(readiness.accountStatus())
+                || !"LIQUIDITY_PROVIDER".equals(readiness.participantCategory())
+                || readiness.participantGroup() == null
+                || !readiness.participantGroup().equals(readiness.accountGroup())
+                || !"LIQUIDITY_PROVIDER".equals(readiness.accountRole())
+                || !"ACTIVE".equals(readiness.mappingStatus())
+                || !effectiveRole
+                || readiness.cashBalance() == null
+                || readiness.cashBalance().signum() <= 0
+                || readiness.holdingQuantity() < mandate.targetInventoryQuantity()
+                || readiness.reservedQuantity() != 0L
+                || readiness.unmanagedHoldingCount() != 0L
+                || !readiness.instrumentEnabled()
+                || readiness.issuedShares() <= 0L
+                || readiness.tradableShares() <= 0L
+                || !readiness.autoMarketEnabled()
+                || readiness.currentPrice() == null
+                || readiness.currentPrice().signum() <= 0
+                || readiness.totalHoldingQuantity() != readiness.issuedShares()
+                || readiness.invalidHoldingCount() != 0L) {
+            throw new IllegalStateException(
+                    "Pending LP role, inventory, or market readiness is invalid: " + symbol
+            );
+        }
     }
 
     private ScheduledPolicyRow lockScheduledPolicy(long policyId, LocalDate businessDate) {
@@ -396,23 +745,7 @@ public class LiquidityProviderScheduledPolicyActivationService {
     }
 
     private PolicyConfig parsePolicy(ScheduledPolicyRow scheduledPolicy) {
-        JsonNode root;
-        try {
-            root = objectMapper.readTree(scheduledPolicy.configJson());
-            if (root != null && root.isTextual()) {
-                root = objectMapper.readTree(root.textValue());
-            }
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException(
-                    "Scheduled LP policy JSON is invalid: " + scheduledPolicy.symbol(),
-                    ex
-            );
-        }
-        if (root == null || !root.isObject()) {
-            throw new IllegalStateException(
-                    "Scheduled LP policy JSON must be an object: " + scheduledPolicy.symbol()
-            );
-        }
+        JsonNode root = parsePolicyRoot(scheduledPolicy);
         return new PolicyConfig(
                 text(root, "symbol"),
                 text(root, "executionMode"),
@@ -441,6 +774,45 @@ public class LiquidityProviderScheduledPolicyActivationService {
                 integer(root, "quoteIntervalSeconds"),
                 decimal(root, "dailyLossLimitAmount")
         );
+    }
+
+    private String activationAction(ScheduledPolicyRow scheduledPolicy) {
+        JsonNode value = parsePolicyRoot(scheduledPolicy).get("activationAction");
+        if (value == null || value.isNull() || value.asText().isBlank()) {
+            return "POLICY_UPDATE";
+        }
+        String action = value.asText();
+        if (!Set.of("POLICY_UPDATE", "PROVISION", "RESUME").contains(action)) {
+            throw new IllegalStateException(
+                    "Scheduled LP activation action is invalid: " + action
+            );
+        }
+        return action;
+    }
+
+    private boolean isLifecycleActivation(String activationAction) {
+        return "PROVISION".equals(activationAction) || "RESUME".equals(activationAction);
+    }
+
+    private JsonNode parsePolicyRoot(ScheduledPolicyRow scheduledPolicy) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(scheduledPolicy.configJson());
+            if (root != null && root.isTextual()) {
+                root = objectMapper.readTree(root.textValue());
+            }
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException(
+                    "Scheduled LP policy JSON is invalid: " + scheduledPolicy.symbol(),
+                    ex
+            );
+        }
+        if (root == null || !root.isObject()) {
+            throw new IllegalStateException(
+                    "Scheduled LP policy JSON must be an object: " + scheduledPolicy.symbol()
+            );
+        }
+        return root;
     }
 
     private JsonNode requiredNode(JsonNode root, String fieldName) {
@@ -500,7 +872,36 @@ public class LiquidityProviderScheduledPolicyActivationService {
             long accountId,
             String executionMode,
             String status,
+            long targetInventoryQuantity,
             long policyVersion
+    ) {
+    }
+
+    private record MarketConfig(boolean enabled, String status) {
+    }
+
+    private record ProvisionReadiness(
+            String participantType,
+            String participantStatus,
+            String participantGroup,
+            String accountStatus,
+            String participantCategory,
+            String accountGroup,
+            BigDecimal cashBalance,
+            String accountRole,
+            String mappingStatus,
+            LocalDate effectiveFrom,
+            LocalDate effectiveTo,
+            long holdingQuantity,
+            long reservedQuantity,
+            boolean instrumentEnabled,
+            long issuedShares,
+            long tradableShares,
+            boolean autoMarketEnabled,
+            BigDecimal currentPrice,
+            long unmanagedHoldingCount,
+            long totalHoldingQuantity,
+            long invalidHoldingCount
     ) {
     }
 

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   ),
   CONSTRAINT chk_stock_liquidity_transition_stage CHECK (
     CASE stage
+      WHEN 'PENDING_ACTIVATION' THEN 1
       WHEN 'LIVE_ACTIVE' THEN 1
       WHEN 'SUSPENDED' THEN 1
       ELSE 0
@@ -66,8 +67,8 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     AND transferred_cash_amount >= 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
-    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
-    AND activated_at IS NOT NULL
+    (stage = 'PENDING_ACTIVATION' AND activated_at IS NULL)
+    OR (stage IN ('LIVE_ACTIVE', 'SUSPENDED') AND activated_at IS NOT NULL)
   ),
   CONSTRAINT chk_stock_liquidity_transition_audit CHECK (
     transition_key <> ''

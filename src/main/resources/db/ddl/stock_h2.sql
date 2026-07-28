@@ -2135,7 +2135,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
     execution_mode = 'LIVE'
   ),
   CONSTRAINT chk_stock_liquidity_mandate_status CHECK (
-    status IN ('ACTIVE', 'SUSPENDED', 'EXPIRED')
+    status IN ('PENDING', 'ACTIVE', 'SUSPENDED', 'EXPIRED')
   ),
   CONSTRAINT chk_stock_liquidity_mandate_contract CHECK (
     contract_end_date IS NULL OR contract_end_date >= contract_start_date
@@ -2319,7 +2319,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   CONSTRAINT chk_stock_liquidity_transition_stage CHECK (
-    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
+    stage IN ('PENDING_ACTIVATION', 'LIVE_ACTIVE', 'SUSPENDED')
   ),
   CONSTRAINT chk_stock_liquidity_transition_seed CHECK (
     reference_daily_volume > 0
@@ -2331,8 +2331,8 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_transition (
     AND transferred_cash_amount >= 0
   ),
   CONSTRAINT chk_stock_liquidity_transition_activation CHECK (
-    stage IN ('LIVE_ACTIVE', 'SUSPENDED')
-    AND activated_at IS NOT NULL
+    (stage = 'PENDING_ACTIVATION' AND activated_at IS NULL)
+    OR (stage IN ('LIVE_ACTIVE', 'SUSPENDED') AND activated_at IS NOT NULL)
   ),
   CONSTRAINT chk_stock_liquidity_transition_audit CHECK (
     transition_key <> ''

@@ -43,6 +43,7 @@
   - 양쪽이 모두 시장가이면 가격 기준이 없으므로 체결하지 않고 다음 스캔을 기다립니다.
 - `PortfolioSettlementScheduler`: 기본 EOD의 지연 민감 prefix. 10초마다 소형 세션·cycle 제어행을 확인하고 18시 시장 차단·원장 동결과 `settlement_eligible_at` 이후 포트폴리오 정산까지 실행
 - `PostCloseCoordinatorScheduler`: `PORTFOLIO_SETTLED` 이후의 기본 EOD suffix. 00시 이후 현금·기업행사·보고서, PRE_OPEN 가격·자동시장 준비와 readiness를 거래일 cycle 기준으로 한 phase씩 실행
+- `AutoMarketDailyRegimePreCreateService`: 다음 개장 예약 역할을 LP, 인수기관 순서로 활성화하고 장전 종목 fence를 동기화한 뒤 일일 시장 레짐을 생성
 - `MarketCloseRolloverService`: 장마감 종가를 다음 장 가격제한폭 기준가로 넘기기 위해 `stock_price.current_price`를 `previous_close`로 복사
 - `HoldingCleanupScheduler`: 체결 hot path에서 즉시 삭제하지 않은 0주/0예약 보유 row를 보존 기간 이후 별도 유지보수 job으로 정리
 - `BatchMetadataRetentionJob`: 기본 비활성인 POST_CLOSE 경량 유지보수. 오래된 완료 JobInstance를 compact archive로 옮기고, 별도 승인된 job name만 선택적으로 purge
@@ -177,8 +178,9 @@ KIS_MARKET_DIV_CODE=J
 - 일반 자동 참여자는 V3 방향성 주문만 생성하며 시장조성 재호가 후보를 별도로 조회하지 않습니다. 공식 양방향 호가·재고 의무·재호가는 `liquidity-provider-market`이 담당합니다.
 - V3 전환은 서버를 종료한 유지보수 창에서 선행 공통 ALTER를 적용한 뒤 `stock_auto_participant_v3_alter.sql`을 마지막에 실행합니다. 이 ALTER는 정책 리비전·일일 잠재 상태·이중 시계 스케줄·강제청산 계획·주문 스냅샷을 만들고, 프로필 모델·가격·재고 모드를 각각 `V3`·`DIRECTIONAL`·`SIGNAL_DRIVEN`으로 단일화합니다. 과거 rollout/SHADOW ALTER 파일은 이미 해당 중간 스키마를 가진 DB의 업그레이드 호환용일 뿐 런타임 모델 선택지나 롤백 경로가 아닙니다.
 - `stock_eod_runtime_contract_alter.sql`은 위 자동시장 정책 ALTER와 별개의 EOD 제어 테이블 마이그레이션입니다. cycle과 phase attempt에 `eod_contract_version`을 추가하고, 재시작 가능한 현행 cycle만 `EOD_V1`, 과거 완료 cycle은 `LEGACY_COMPLETED`, 증명할 수 없는 미완료 cycle은 `UNDECLARED`로 보정합니다. 기본값을 `UNDECLARED`로 두므로 신규 컬럼을 모르는 구형 프로세스가 만든 cycle은 호환으로 오인되지 않습니다. 이 ALTER는 `stock_order`·`stock_execution`을 읽거나 변경하지 않습니다.
-- `stock.batch.liquidity-provider-market.enabled`: 역할·계약·종목별 전용 LP 호가 job 활성화 여부입니다. LP는 생성 시점부터 LIVE이며 그 외 실행 모드는 `INVALID_EXECUTION_MODE`로 실패 폐쇄합니다.
+- `stock.batch.liquidity-provider-market.enabled`: 역할·계약·종목별 전용 LP 호가 job 활성화 여부입니다. 신규 LP는 PENDING으로 준비되고 예약 개장일의 자동시장 준비 단계에서 계정·주문·당일 사용량을 검증한 뒤 ACTIVE와 LIVE_ACTIVE로 전환합니다. 정규장에는 기한이 지난 생성·재개 예약도 활성화하지 않습니다.
 - `stock.batch.issue-underwriter-market.enabled`: 역할 분리형 인수계정의 유한 초기 공급 job 활성화 여부입니다. 활성 계약만 `SELL` 지정가 1개를 유지하며 매수, 레짐 방향 추종, 가격 추격, 영구 목표잔량 보충을 하지 않습니다. 기준 거래량은 현재 유통주식의 3%로 독립 계산하고, 기본 일일 제출상한은 그 기준 거래량의 10%, 주문 1건은 2%이며 종목·계약별 하루 신규 주문도 최대 20건입니다. 외부 매수 5호가가 있으면 그 깊이의 10%를 추가 상한으로 사용합니다. 자동참여자용 `max_order_quantity`는 신규 종목 기본값이 4주인 별도 정책이므로 인수기관 상한으로 재사용하지 않습니다. TTL 취소와 관리자 중단은 주식 예약만 반환하고 이미 사용한 일일·계약 제출예산과 주문 횟수는 복원하지 않습니다.
+- 인수기관 공급 활성화 예약은 ALLOCATED 상태로 대기합니다. 예약 개장일 장전에는 LP 활성화 다음에 현재 가용 재고, 시장, 역할, 발행량 대사를 다시 확인하고 성공한 계약만 STABILIZING으로 전환합니다. 신규 역할 하나의 활성화 실패는 그 비활성 CLOSED 종목에만 남기고 기존 시장의 개장 준비는 계속합니다.
 - `issue-underwriter-market`는 계약·계좌·보유·주문 origin·자기체결 그룹뿐 아니라 `전체 보유주식 합계 = 현재 발행주식`과 최초 배정원장을 매 실행 재검증합니다. 계약 기간 또는 수량·금액 상한이 끝나면 계약을 `COMPLETED`, 현재 정책을 `RETIRED`로 같은 트랜잭션에서 종료합니다. 유통주식이 없거나 시장·역할·주식수 대사가 맞지 않으면 주문을 만들지 않고 일일 gate 사유만 남기며, 계약 origin과 실제 주문 계좌·종목·정책 버전이 어긋난 손상 주문은 자동 취소하지 않고 공급을 차단합니다. 수동 실행은 `POST /internal/stock-batch/v1/jobs/issue-underwriter-market/run`입니다.
 - 일반 자동참여자에는 별도의 일일 위험예산이나 공용 예산 행 잠금을 적용하지 않습니다. 기존 현금·주식 예약, 공매도 방지, 주문당·미체결 수량 제한과 프로필 정책을 유지하며, 유한 일일 수량·금액 예산은 새 기관·LP·인수기관 역할에만 적용합니다.
 - `stock.batch.institution-market.enabled`: 기관 포트폴리오 목표 비중 계산과 제한된 다종목 LIVE 주문 job 활성화 여부입니다. `institution-market` runtime control과 `POST /internal/stock-batch/v1/jobs/institution-market/run` 수동 실행을 함께 지원합니다.

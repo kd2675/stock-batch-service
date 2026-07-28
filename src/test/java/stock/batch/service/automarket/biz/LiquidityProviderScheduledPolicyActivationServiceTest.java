@@ -21,7 +21,6 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import stock.batch.service.simulation.SimulationMarketSessionService;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -120,7 +119,7 @@ class LiquidityProviderScheduledPolicyActivationServiceTest {
     }
 
     @Test
-    void activateDuePolicies_dailyUsageAlreadyStarted_rollsBackEveryPolicyMutation() {
+    void activateDuePolicies_dailyUsageAlreadyStarted_rollsBackFailedPolicy() {
         seedEmptyDailyState();
         jdbcTemplate.update(
                 """
@@ -132,11 +131,8 @@ class LiquidityProviderScheduledPolicyActivationServiceTest {
                 BUSINESS_DATE
         );
 
-        assertThatThrownBy(() ->
-                service.activateDuePolicies(BUSINESS_DATE, ACTIVATED_AT)
-        )
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("daily usage started");
+        assertThat(service.activateDuePolicies(BUSINESS_DATE, ACTIVATED_AT))
+                .isZero();
 
         assertThat(jdbcTemplate.queryForMap(
                 """
@@ -169,6 +165,195 @@ class LiquidityProviderScheduledPolicyActivationServiceTest {
                 "select policy_version from stock_liquidity_transition where mandate_id = 1",
                 Long.class
         )).isEqualTo(3L);
+    }
+
+    @Test
+    void activateDuePoliciesForPreOpen_pendingProvision_enablesMarketAndMandateTogether() {
+        jdbcTemplate.update("delete from stock_market_policy_version");
+        jdbcTemplate.update(
+                """
+                update stock_liquidity_mandate
+                   set status = 'PENDING',
+                       policy_version = 1,
+                       next_quote_at = null
+                 where id = 1
+                """
+        );
+        jdbcTemplate.update(
+                """
+                update stock_liquidity_transition
+                   set stage = 'PENDING_ACTIVATION',
+                       effective_business_date = ?,
+                       activated_at = null,
+                       policy_version = 1
+                 where mandate_id = 1
+                """,
+                BUSINESS_DATE
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(
+                    symbol, enabled, market_status, updated_at
+                ) values ('DEMO001', false, 'CLOSED', ?)
+                """,
+                ACTIVATED_AT.minusMinutes(1)
+        );
+        seedPendingProvisionReadiness();
+        jdbcTemplate.update(
+                """
+                insert into stock_market_policy_version(
+                    policy_scope, scope_key, version_no,
+                    effective_business_date, status, config_json,
+                    change_reason, changed_by, created_at, updated_at
+                ) values (
+                    'LIQUIDITY_MANDATE', 'DEMO001', 1, ?,
+                    'SCHEDULED',
+                    '{"symbol":"DEMO001","executionMode":"LIVE","activationAction":"PROVISION","targetStatus":"ACTIVE"}',
+                    '신규 LP 활성화', 'stock-admin', ?, ?
+                )
+                """,
+                BUSINESS_DATE,
+                ACTIVATED_AT.minusMinutes(1),
+                ACTIVATED_AT.minusMinutes(1)
+        );
+
+        int activated = service.activateDuePoliciesForPreOpen(
+                BUSINESS_DATE,
+                ACTIVATED_AT
+        );
+
+        assertThat(activated).isOne();
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select status, next_quote_at, policy_version
+                  from stock_liquidity_mandate
+                 where id = 1
+                """
+        )).containsEntry("status", "ACTIVE")
+                .containsEntry(
+                        "next_quote_at",
+                        java.sql.Timestamp.valueOf(BUSINESS_DATE.atTime(6, 0))
+                )
+                .containsEntry("policy_version", 1L);
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select stage, activated_at, policy_version
+                  from stock_liquidity_transition
+                 where mandate_id = 1
+                """
+        )).containsEntry("stage", "LIVE_ACTIVE")
+                .containsEntry(
+                        "activated_at",
+                        java.sql.Timestamp.valueOf(ACTIVATED_AT)
+                )
+                .containsEntry("policy_version", 1L);
+        assertThat(jdbcTemplate.queryForMap(
+                "select enabled, market_status from stock_order_book_market_config where symbol = 'DEMO001'"
+        )).containsEntry("enabled", true)
+                .containsEntry("market_status", "CLOSED");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select status
+                  from stock_market_policy_version
+                 where policy_scope = 'LIQUIDITY_MANDATE'
+                   and scope_key = 'DEMO001'
+                   and version_no = 1
+                """,
+                String.class
+        )).isEqualTo("ACTIVE");
+    }
+
+    private void seedPendingProvisionReadiness() {
+        jdbcTemplate.update(
+                """
+                insert into stock_market_participant(
+                    id, participant_code, display_name, participant_type,
+                    status, self_trade_group_id, created_at, updated_at
+                ) values (
+                    10, 'LP_ONE', 'Liquidity Provider One', 'LIQUIDITY_PROVIDER',
+                    'ACTIVE', 'LP:ONE', ?, ?
+                )
+                """,
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_account(
+                    id, user_key, account_code, status, participant_category,
+                    self_trade_group_id, cash_balance, created_at, updated_at
+                ) values
+                    (
+                        200, 'lp-demo001', 'LP-DEMO001', 'ACTIVE',
+                        'LIQUIDITY_PROVIDER', 'LP:ONE', 500000.00, ?, ?
+                    ),
+                    (
+                        201, 'custody-demo001', 'CUSTODY-DEMO001', 'ACTIVE',
+                        'SYSTEM_CUSTODY', 'SYSTEM_CUSTODY:DEFAULT', 0.00, ?, ?
+                    )
+                """,
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_market_participant_account(
+                    participant_id, account_id, account_role, desk_code,
+                    effective_from, status, created_at, updated_at
+                ) values (
+                    10, 200, 'LIQUIDITY_PROVIDER', 'DEMO001',
+                    ?, 'ACTIVE', ?, ?
+                )
+                """,
+                BUSINESS_DATE,
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_instrument(
+                    symbol, name, market, initial_price,
+                    issued_shares, tradable_shares, tick_size,
+                    price_limit_rate, enabled, created_at, updated_at
+                ) values (
+                    'DEMO001', 'Demo One', 'KOSPI', 1000.00,
+                    2000, 2000, 1.00, 30.00, true, ?, ?
+                )
+                """,
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_holding(
+                    account_id, symbol, quantity, reserved_quantity,
+                    average_price, updated_at
+                ) values
+                    (200, 'DEMO001', 1000, 0, 1000.00, ?),
+                    (201, 'DEMO001', 1000, 0, 1000.00, ?)
+                """,
+                ACTIVATED_AT.minusDays(1),
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_auto_market_config(
+                    symbol, enabled, max_order_quantity,
+                    order_ttl_seconds, updated_at
+                ) values ('DEMO001', true, 4, 15, ?)
+                """,
+                ACTIVATED_AT.minusDays(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_price(
+                    symbol, current_price, previous_close, price_time, provider
+                ) values ('DEMO001', 1000.00, 1000.00, ?, 'TEST')
+                """,
+                ACTIVATED_AT.minusMinutes(1)
+        );
     }
 
     private void seedMandateAndPolicies() {

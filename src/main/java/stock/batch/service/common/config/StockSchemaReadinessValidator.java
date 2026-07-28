@@ -304,7 +304,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
             )),
             Map.entry("chk_stock_liquidity_mandate_mode", Set.of("live")),
             Map.entry("chk_stock_liquidity_mandate_status", Set.of(
-                    "active", "suspended", "expired"
+                    "pending", "active", "suspended", "expired"
             )),
             Map.entry("chk_stock_liquidity_mandate_spread", Set.of(
                     "target_spread_ticks", "max_spread_ticks"
@@ -351,7 +351,7 @@ public class StockSchemaReadinessValidator implements SmartInitializingSingleton
                     "quote_run_count", "policy_version", "version"
             )),
             Map.entry("chk_stock_liquidity_transition_stage", Set.of(
-                    "live_active", "suspended"
+                    "pending_activation", "live_active", "suspended"
             )),
             Map.entry("chk_stock_liquidity_transition_seed", Set.of(
                     "reference_daily_volume", "seed_inventory_quantity", "seed_cash_amount"

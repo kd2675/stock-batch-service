@@ -68,6 +68,7 @@ class StockMysqlDdlMigrationTest {
             "stock_underwriter_scaled_supply_alter.sql",
             "stock_liquidity_transition_alter.sql",
             "stock_liquidity_live_only_alter.sql",
+            "stock_market_role_scheduled_activation_alter.sql",
             "stock_obsolete_participant_role_cleanup_alter.sql",
             "stock_eod_runtime_contract_alter.sql",
             "stock_capital_increase_lifecycle_hardening_alter.sql"

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS stock_liquidity_mandate (
   ),
   CONSTRAINT chk_stock_liquidity_mandate_status CHECK (
     CASE `status`
+      WHEN 'PENDING' THEN 1
       WHEN 'ACTIVE' THEN 1
       WHEN 'SUSPENDED' THEN 1
       WHEN 'EXPIRED' THEN 1

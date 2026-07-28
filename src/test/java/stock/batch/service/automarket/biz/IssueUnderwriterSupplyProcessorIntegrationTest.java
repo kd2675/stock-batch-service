@@ -1,5 +1,7 @@
 package stock.batch.service.automarket.biz;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -37,6 +39,7 @@ class IssueUnderwriterSupplyProcessorIntegrationTest {
     private TransactionTemplate transactionTemplate;
     private IssueUnderwriterSupplyRepository repository;
     private IssueUnderwriterSupplyProcessor processor;
+    private IssueUnderwriterScheduledSupplyActivationService activationService;
 
     @BeforeEach
     void setUp() {
@@ -51,10 +54,15 @@ class IssueUnderwriterSupplyProcessorIntegrationTest {
                 new ClassPathResource("db/ddl/stock_h2.sql")
         ).execute(dataSource);
         jdbcTemplate = new JdbcTemplate(dataSource);
-        transactionTemplate = new TransactionTemplate(
-                new DataSourceTransactionManager(dataSource)
-        );
+        DataSourceTransactionManager transactionManager =
+                new DataSourceTransactionManager(dataSource);
+        transactionTemplate = new TransactionTemplate(transactionManager);
         repository = new IssueUnderwriterSupplyRepository(jdbcTemplate);
+        activationService = new IssueUnderwriterScheduledSupplyActivationService(
+                jdbcTemplate,
+                new ObjectMapper(),
+                transactionManager
+        );
 
         AutoMarketOrderExecutor orderExecutor = new AutoMarketOrderExecutor(
                 new AutoMarketOrderReader(jdbcTemplate),
@@ -72,6 +80,91 @@ class IssueUnderwriterSupplyProcessorIntegrationTest {
                 orderExecutor
         );
         seedActiveContract();
+    }
+
+    @Test
+    void activateDuePolicies_allocatedContract_recalculatesInventoryAtPreOpen() {
+        scheduleAllocatedContract();
+
+        int activated = activationService.activateDuePolicies(
+                TRADE_DATE,
+                TRADE_DATE.atTime(5, 30)
+        );
+
+        assertThat(activated).isOne();
+        assertThat(jdbcTemplate.queryForMap(
+                """
+                select status, stabilization_start_date, stabilization_end_date,
+                       stabilization_quantity_limit, stabilization_amount_limit,
+                       policy_version
+                  from stock_underwriting_contract
+                 where id = 1
+                """
+        )).containsEntry("status", "STABILIZING")
+                .containsEntry(
+                        "stabilization_start_date",
+                        java.sql.Date.valueOf(TRADE_DATE)
+                )
+                .containsEntry(
+                        "stabilization_end_date",
+                        java.sql.Date.valueOf(TRADE_DATE.plusDays(19))
+                )
+                .containsEntry("stabilization_quantity_limit", 50_000L)
+                .containsEntry(
+                        "stabilization_amount_limit",
+                        new BigDecimal("500000000.00")
+                )
+                .containsEntry("policy_version", 2L);
+        assertThat(jdbcTemplate.query(
+                """
+                select version_no, status
+                  from stock_market_policy_version
+                 where policy_scope = 'UNDERWRITING_CONTRACT'
+                   and scope_key = 'UW-DEMO001-20270127'
+                 order by version_no
+                """,
+                (rs, rowNum) -> Map.of(
+                        "version", rs.getLong("version_no"),
+                        "status", rs.getString("status")
+                )
+        )).containsExactly(
+                Map.of("version", 1L, "status", "RETIRED"),
+                Map.of("version", 2L, "status", "ACTIVE")
+        );
+    }
+
+    @Test
+    void activateDuePolicies_issuedShareMismatch_rollsBackScheduledContract() {
+        scheduleAllocatedContract();
+        jdbcTemplate.update(
+                """
+                update stock_holding
+                   set quantity = quantity - 1
+                 where account_id = 201
+                   and symbol = 'DEMO001'
+                """
+        );
+
+        int activated = activationService.activateDuePolicies(
+                TRADE_DATE,
+                TRADE_DATE.atTime(5, 30)
+        );
+
+        assertThat(activated).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from stock_underwriting_contract where id = 1",
+                String.class
+        )).isEqualTo("ALLOCATED");
+        assertThat(jdbcTemplate.queryForObject(
+                """
+                select status
+                  from stock_market_policy_version
+                 where policy_scope = 'UNDERWRITING_CONTRACT'
+                   and scope_key = 'UW-DEMO001-20270127'
+                   and version_no = 2
+                """,
+                String.class
+        )).isEqualTo("SCHEDULED");
     }
 
     @Test
@@ -442,6 +535,46 @@ class IssueUnderwriterSupplyProcessorIntegrationTest {
                 "select count(*) from stock_order where account_id = 200",
                 Integer.class
         )).isZero();
+    }
+
+    private void scheduleAllocatedContract() {
+        jdbcTemplate.update(
+                """
+                update stock_underwriting_contract
+                   set stabilization_start_date = null,
+                       stabilization_end_date = null,
+                       stabilization_quantity_limit = 0,
+                       stabilization_amount_limit = 0,
+                       status = 'ALLOCATED',
+                       policy_version = 1
+                 where id = 1
+                """
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_order_book_market_config(
+                    symbol, enabled, market_status, updated_at
+                ) values ('DEMO001', true, 'CLOSED', ?)
+                """,
+                NOW.minusHours(1)
+        );
+        jdbcTemplate.update(
+                """
+                insert into stock_market_policy_version(
+                    policy_scope, scope_key, version_no,
+                    effective_business_date, status, config_json,
+                    change_reason, changed_by, created_at, updated_at
+                ) values (
+                    'UNDERWRITING_CONTRACT', 'UW-DEMO001-20270127', 2,
+                    ?, 'SCHEDULED',
+                    '{"activationAction":"ACTIVATE_SUPPLY","targetStatus":"STABILIZING","contractId":1,"contractCode":"UW-DEMO001-20270127","symbol":"DEMO001","supplyRate":0.100000,"durationDays":20}',
+                    '다음 개장 공급', 'stock-admin', ?, ?
+                )
+                """,
+                TRADE_DATE,
+                NOW.minusHours(1),
+                NOW.minusHours(1)
+        );
     }
 
     private IssueUnderwriterSupplyProcessor.ProcessResult process(LocalDateTime now) {
