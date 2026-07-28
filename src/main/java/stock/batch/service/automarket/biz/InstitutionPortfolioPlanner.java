@@ -27,7 +27,7 @@ class InstitutionPortfolioPlanner {
     private static final double VALUE_NORMALIZATION = 0.20;
     private static final double EPSILON = 1.0e-10;
     private static final BigDecimal LIVE_SINGLE_DECISION_REFERENCE_RATE =
-            new BigDecimal("0.005000");
+            new BigDecimal("0.015000");
 
     InstitutionDecisionPlan plan(
             InstitutionPortfolioPolicy policy,

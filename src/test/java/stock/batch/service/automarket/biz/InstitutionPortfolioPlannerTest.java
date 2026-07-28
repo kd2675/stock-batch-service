@@ -54,8 +54,8 @@ class InstitutionPortfolioPlannerTest {
         InstitutionDecisionItem item = plan.items().getFirst();
         assertThat(item.action()).isEqualTo(InstitutionDecisionAction.BUY);
         assertThat(item.dailyGrossQuantityLimit()).isEqualTo(20L);
-        assertThat(item.gatedQuantity()).isEqualTo(5L);
-        assertThat(item.gatedTradeAmount()).isEqualByComparingTo("500.00");
+        assertThat(item.gatedQuantity()).isEqualTo(15L);
+        assertThat(item.gatedTradeAmount()).isEqualByComparingTo("1500.00");
         assertThat(item.gateReason()).contains("SINGLE_ORDER_LIMIT");
     }
 

@@ -13,11 +13,11 @@ import stock.batch.service.batch.automarket.model.AutoMarketConfig;
 class InstitutionOrderExecutionPlanner {
 
     private static final BigDecimal MAX_SINGLE_ORDER_REFERENCE_RATE =
-            new BigDecimal("0.005000");
+            new BigDecimal("0.015000");
     private static final BigDecimal MAX_AGGRESSIVE_DEPTH_RATE =
             new BigDecimal("0.100000");
-    private static final double MIN_AGGRESSIVE_PROBABILITY = 0.05;
-    private static final double MAX_AGGRESSIVE_PROBABILITY = 0.15;
+    private static final double MIN_AGGRESSIVE_PROBABILITY = 0.10;
+    private static final double MAX_AGGRESSIVE_PROBABILITY = 0.25;
     private static final int ORDER_TTL_SECONDS = 600;
 
     InstitutionOrderExecutionPlan plan(

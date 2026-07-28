@@ -33,7 +33,7 @@ class InstitutionOrderExecutionPlannerTest {
 
         assertThat(plan.executable()).isTrue();
         assertThat(plan.aggressive()).isFalse();
-        assertThat(plan.quantity()).isEqualTo(50L);
+        assertThat(plan.quantity()).isEqualTo(150L);
         assertThat(plan.price()).isLessThan(new BigDecimal("101.00"));
         assertThat(plan.expiresAt()).isEqualTo(NOW.plusSeconds(600));
     }
